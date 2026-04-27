@@ -1,0 +1,29 @@
+# ── Core ──────────────────────────────────────────────────────────────────────
+PyQt6
+openai-whisper
+deep-translator
+openai
+
+# ── Step 4 — Voice separation ─────────────────────────────────────────────────
+demucs
+
+# ── Step 5 — TTS ──────────────────────────────────────────────────────────────
+gtts
+pydub
+elevenlabs
+
+# Fix pydub on Python 3.13 (pyaudioop was removed in 3.13)
+audioop-lts
+
+# Optional — Coqui TTS (heavier, ~1GB model, better quality)
+# pip install TTS
+
+# ── Utils ─────────────────────────────────────────────────────────────────────
+ffmpeg-python
+
+# ── Notes ─────────────────────────────────────────────────────────────────────
+# ffmpeg binary must be installed separately:
+#   Windows : winget install ffmpeg
+#   macOS   : brew install ffmpeg
+#
+# After installing, verify: ffmpeg -version
