@@ -1,24 +1,43 @@
 """
-Step 4 — Separate vocals from background music using Demucs (Meta, free, local).
+Step 4 — Separate audio stems using Demucs (Meta, free, local).
 
-Output:
-  step4_vocals.wav       — human voice only
-  step4_background.wav   — music / background only
+Modes:
+  2-stem: vocals + background (no_vocals)
+  4-stem: vocals + drums + bass + other
+          → drums chứa: trống, percussion, tiếng gõ, lục đục
+          → other chứa: nhạc nền còn lại
+
+Output files:
+  step4_vocals.mp3      — giọng người
+  step4_background.mp3  — toàn bộ nhạc nền (2-stem) hoặc tổng hợp (4-stem)
+  step4_drums.mp3       — trống + percussion + tiếng động (4-stem only)
+  step4_bass.mp3        — bass (4-stem only)
+  step4_other.mp3       — nhạc nền còn lại (4-stem only)
 """
 
 import shutil
 import subprocess
 from pathlib import Path
 
-from PyQt6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QWidget
+from PyQt6.QtWidgets import (
+    QComboBox,
+    QHBoxLayout,
+    QLabel,
+    QVBoxLayout,
+    QWidget,
+)
 
 from core.pipeline.base import BaseStep
 
-# Demucs model options
 DEMUCS_MODELS = {
     "htdemucs (recommended)": "htdemucs",
     "htdemucs_ft (fine-tuned)": "htdemucs_ft",
     "mdx_extra (MDX Net)": "mdx_extra",
+}
+
+STEM_MODES = {
+    "2-stem: vocals + background": "2",
+    "4-stem: vocals + drums + bass + other": "4",
 }
 
 
@@ -30,13 +49,15 @@ class SeparateStep(BaseStep):
 
     def __init__(self):
         self._model_combo = None
+        self._stem_combo = None
 
     def run(self, session, config, log, cancel):
         source = session.source_file
         model = config["model"]
+        stems = config.get("stems", "2")  # "2" or "4"
         out_dir = session.folder
 
-        log(f"🎵 Separating vocals using Demucs ({model})…")
+        log(f"🎵 Separating audio using Demucs ({model}) — {stems}-stem mode…")
         log("   This may take a few minutes on first run (downloads model)…")
 
         try:
@@ -49,8 +70,7 @@ class SeparateStep(BaseStep):
 
             raise CancelledError()
 
-        # ── Copy source to a safe ASCII filename to avoid UnicodeEncodeError
-        # on Windows when Demucs prints the path to console (cp1252/cp1258)
+        # Copy source to ASCII temp name to avoid UnicodeEncodeError on Windows
         import shutil as _shutil
         import tempfile
 
@@ -62,22 +82,36 @@ class SeparateStep(BaseStep):
         tmp_out = out_dir / "demucs_tmp"
         tmp_out.mkdir(exist_ok=True)
 
-        cmd = [
-            "python",
-            "-m",
-            "demucs",
-            "--name",
-            model,
-            "--out",
-            str(tmp_out),
-            "--mp3",
-            "--two-stems",
-            "vocals",
-            str(tmp_input),
-        ]
+        if stems == "2":
+            cmd = [
+                "python",
+                "-m",
+                "demucs",
+                "--name",
+                model,
+                "--out",
+                str(tmp_out),
+                "--mp3",
+                "--two-stems",
+                "vocals",
+                str(tmp_input),
+            ]
+        else:
+            # 4-stem: no --two-stems flag
+            cmd = [
+                "python",
+                "-m",
+                "demucs",
+                "--name",
+                model,
+                "--out",
+                str(tmp_out),
+                "--mp3",
+                str(tmp_input),
+            ]
+
         log(f"   $ {' '.join(cmd)}")
 
-        # Force UTF-8 output on Windows via PYTHONUTF8 env var
         import os as _os
 
         env = _os.environ.copy()
@@ -108,20 +142,17 @@ class SeparateStep(BaseStep):
 
         # Cleanup temp input
         try:
-            tmp_input.parent.rmdir() if tmp_input.exists() else None
             tmp_input.unlink(missing_ok=True)
+            tmp_input.parent.rmdir()
         except Exception:
             pass
 
         if proc.returncode != 0:
             raise RuntimeError("Demucs failed — check log above.")
 
-        # Move outputs to session root with clean names
-        # Demucs uses the stem of the input file as subfolder name
-        tmp_stem = tmp_input.stem  # "demucs_input"
+        # Locate output folder
+        tmp_stem = "demucs_input"
         tmp_model_dir = tmp_out / model / tmp_stem
-
-        # Fallback: search for any subfolder if exact name not found
         if not tmp_model_dir.exists():
             candidates = (
                 list((tmp_out / model).iterdir()) if (tmp_out / model).exists() else []
@@ -130,41 +161,158 @@ class SeparateStep(BaseStep):
                 tmp_model_dir = candidates[0]
                 log(f"   Found output dir: {tmp_model_dir.name}")
 
-        vocals_src = tmp_model_dir / "vocals.mp3"
-        bgm_src = tmp_model_dir / "no_vocals.mp3"
-        vocals_dst = session.step4_vocals
-        bgm_dst = session.step4_background
+        result = {}
 
-        if vocals_src.exists():
-            shutil.move(str(vocals_src), str(vocals_dst))
-            log(f"✅ Vocals     → {vocals_dst.name}")
-        else:
-            log(f"⚠️  vocals.mp3 not found in {tmp_model_dir}")
+        if stems == "2":
+            # ── 2-stem outputs ──────────────────────────────────────────────
+            self._move(
+                tmp_model_dir / "vocals.mp3",
+                session.step4_vocals,
+                "Vocals",
+                log,
+                result,
+            )
+            self._move(
+                tmp_model_dir / "no_vocals.mp3",
+                session.step4_background,
+                "Background",
+                log,
+                result,
+            )
 
-        if bgm_src.exists():
-            shutil.move(str(bgm_src), str(bgm_dst))
-            log(f"✅ Background → {bgm_dst.name}")
         else:
-            log(f"⚠️  no_vocals.mp3 not found in {tmp_model_dir}")
+            # ── 4-stem outputs ──────────────────────────────────────────────
+            self._move(
+                tmp_model_dir / "vocals.mp3",
+                session.step4_vocals,
+                "Vocals",
+                log,
+                result,
+            )
+            self._move(
+                tmp_model_dir / "drums.mp3", session.step4_drums, "Drums", log, result
+            )
+            self._move(
+                tmp_model_dir / "bass.mp3", session.step4_bass, "Bass", log, result
+            )
+            self._move(
+                tmp_model_dir / "other.mp3", session.step4_other, "Other", log, result
+            )
+
+            # Mix drums + bass + other → background.mp3 for Step 5 compatibility
+            log("🎚️  Mixing stems into background track…")
+            self._mix_background(
+                parts=[
+                    str(session.step4_drums) if session.step4_drums.exists() else None,
+                    str(session.step4_bass) if session.step4_bass.exists() else None,
+                    str(session.step4_other) if session.step4_other.exists() else None,
+                ],
+                out=str(session.step4_background),
+                log=log,
+            )
+            result["background"] = str(session.step4_background)
+            log(f"✅ Background → {session.step4_background.name}")
 
         shutil.rmtree(str(tmp_out), ignore_errors=True)
-        return {"vocals": str(vocals_dst), "background": str(bgm_dst)}
+        return result
+
+    def _move(self, src: Path, dst: Path, label: str, log, result: dict):
+        if src.exists():
+            shutil.move(str(src), str(dst))
+            log(f"✅ {label:<12} → {dst.name}")
+            result[label.lower()] = str(dst)
+        else:
+            log(f"⚠️  {label}: not found in {src.parent}")
+
+    def _mix_background(self, parts, out, log):
+        """Mix multiple audio stems into one background track using ffmpeg."""
+        valid = [p for p in parts if p and Path(p).exists()]
+        if not valid:
+            log("⚠️  No background stems to mix")
+            return
+
+        if len(valid) == 1:
+            shutil.copy2(valid[0], out)
+            return
+
+        inputs = []
+        for p in valid:
+            inputs += ["-i", p]
+
+        mix_inputs = "".join(f"[{i}:a]" for i in range(len(valid)))
+        filter_complex = (
+            f"{mix_inputs}amix=inputs={len(valid)}:"
+            f"duration=longest:normalize=0[out]"
+        )
+
+        r = subprocess.run(
+            ["ffmpeg", "-y"]
+            + inputs
+            + [
+                "-filter_complex",
+                filter_complex,
+                "-map",
+                "[out]",
+                "-c:a",
+                "mp3",
+                "-b:a",
+                "192k",
+                out,
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if r.returncode != 0:
+            log(f"⚠️  Background mix failed: {r.stderr[-500:]}")
 
     def build_config_widget(self, parent=None):
         w = QWidget(parent)
-        h = QHBoxLayout(w)
-        h.setContentsMargins(0, 0, 0, 0)
-        h.addWidget(QLabel("Model:"))
+        v = QVBoxLayout(w)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(6)
+
+        # Model
+        r1 = QHBoxLayout()
+        r1.addWidget(QLabel("Model:"))
         self._model_combo = QComboBox()
         self._model_combo.addItems(DEMUCS_MODELS.keys())
-        h.addWidget(self._model_combo)
-        h.addStretch()
+        r1.addWidget(self._model_combo)
+        r1.addStretch()
+        v.addLayout(r1)
+
+        # Stem mode
+        r2 = QHBoxLayout()
+        r2.addWidget(QLabel("Stems:"))
+        self._stem_combo = QComboBox()
+        self._stem_combo.addItems(STEM_MODES.keys())
+        self._stem_combo.setCurrentIndex(0)
+        self._stem_combo.setToolTip(
+            "2-stem: vocals + background (nhanh hơn)\n"
+            "4-stem: vocals + drums + bass + other\n"
+            "  → drums chứa tiếng gõ, lục đục, percussion\n"
+            "  → other chứa nhạc nền còn lại\n"
+            "  → tự động mix thành background cho Step 5"
+        )
+        r2.addWidget(self._stem_combo)
+        r2.addStretch()
+        v.addLayout(r2)
+
         return w
 
     def collect_config(self):
-        key = (
+        model_key = (
             self._model_combo.currentText()
             if self._model_combo
             else "htdemucs (recommended)"
         )
-        return {"model": DEMUCS_MODELS.get(key, "htdemucs")}
+        stem_key = (
+            self._stem_combo.currentText()
+            if self._stem_combo
+            else "2-stem: vocals + background"
+        )
+        return {
+            "model": DEMUCS_MODELS.get(model_key, "htdemucs"),
+            "stems": STEM_MODES.get(stem_key, "2"),
+        }

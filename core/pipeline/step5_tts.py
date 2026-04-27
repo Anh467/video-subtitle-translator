@@ -80,6 +80,7 @@ class TTSStep(BaseStep):
         self._bgm_vol_slider = None
         self._orig_vol_slider = None
         self._speed_spin = None
+        self._sync_combo = None
 
     # ── Run ───────────────────────────────────────────────────────────────────
 
@@ -92,6 +93,7 @@ class TTSStep(BaseStep):
         tts_vol = config.get("tts_vol", 1.0)
         bgm_vol = config.get("bgm_vol", 0.3)
         orig_vol = config.get("orig_vol", 0.1)
+        sync_mode = config.get("sync_mode", "trim")
 
         segments = session.load_translated()
         if not segments:
@@ -109,7 +111,15 @@ class TTSStep(BaseStep):
         tts_path = str(session.step5_tts)
         log("🎙️  Generating TTS audio…")
         self._generate_tts(
-            segments, lang, backend, api_key, voice_id, tts_path, log, cancel
+            segments,
+            lang,
+            backend,
+            api_key,
+            voice_id,
+            tts_path,
+            log,
+            cancel,
+            sync_mode=sync_mode,
         )
         log(f"✅ TTS audio → {Path(tts_path).name}")
 
@@ -308,28 +318,135 @@ class TTSStep(BaseStep):
     # ── TTS generation ────────────────────────────────────────────────────────
 
     def _generate_tts(
-        self, segments, lang, backend, api_key, voice_id, out_path, log, cancel
+        self,
+        segments,
+        lang,
+        backend,
+        api_key,
+        voice_id,
+        out_path,
+        log,
+        cancel,
+        sync_mode="trim",
     ):
         if backend == "fpt":
-            self._fpt(segments, api_key, voice_id, out_path, log, cancel)
+            self._fpt(segments, api_key, voice_id, out_path, log, cancel, sync_mode)
         elif backend == "zalo":
-            self._zalo(segments, api_key, voice_id, out_path, log, cancel)
+            self._zalo(segments, api_key, voice_id, out_path, log, cancel, sync_mode)
         elif backend == "gtts":
-            self._gtts(segments, lang, out_path, log, cancel)
+            self._gtts(segments, lang, out_path, log, cancel, sync_mode)
         elif backend == "openai_tts":
-            self._openai_tts(segments, lang, api_key, out_path, log, cancel)
+            self._openai_tts(segments, lang, api_key, out_path, log, cancel, sync_mode)
         elif backend == "elevenlabs":
-            self._elevenlabs(segments, lang, api_key, voice_id, out_path, log, cancel)
+            self._elevenlabs(
+                segments, lang, api_key, voice_id, out_path, log, cancel, sync_mode
+            )
         else:
             raise RuntimeError(f"Unknown TTS backend: {backend}")
 
-    # ── FPT AI TTS ────────────────────────────────────────────────────────────
+    # ── Audio sync helper ─────────────────────────────────────────────────────
 
-    def _fpt(self, segments, api_key, voice_id, out_path, log, cancel):
+    def _fit_audio_to_segment(
+        self, audio, seg_duration_ms: int, sync_mode: str = "trim"
+    ):
+        """
+        Fit TTS audio to match segment duration.
+
+        sync_mode:
+          "trim"     — nếu TTS dài hơn segment → cắt bớt, nếu ngắn hơn → giữ nguyên
+          "pad"      — nếu ngắn → thêm silence, nếu dài → cắt
+          "stretch"  — speed up/slow down để khớp timestamp
+          "none"     — không làm gì
+
+        seg_duration_ms: target duration in ms (seg.end - seg.start) * 1000
+        """
+        from pydub import AudioSegment
+
+        audio_ms = len(audio)
+
+        if sync_mode == "none" or seg_duration_ms <= 0:
+            return audio
+
+        if sync_mode == "trim":
+            # Nếu TTS dài hơn segment → trim cứng
+            if audio_ms > seg_duration_ms:
+                return audio[:seg_duration_ms]
+            # Nếu ngắn hơn → giữ nguyên (không pad silence)
+            return audio
+
+        elif sync_mode == "pad":
+            if audio_ms < seg_duration_ms:
+                padding = seg_duration_ms - audio_ms
+                return audio + AudioSegment.silent(duration=padding)
+            elif audio_ms > seg_duration_ms:
+                return audio[:seg_duration_ms]
+            return audio
+
+        elif sync_mode == "stretch":
+            ratio = audio_ms / seg_duration_ms
+            # Only stretch if significantly off (>10% difference)
+            if 0.9 <= ratio <= 1.1:
+                return audio  # close enough, no change
+
+            # Clamp stretch ratio: don't speed up more than 2x or slow down more than 0.5x
+            ratio = max(0.5, min(2.0, ratio))
+
+            # Use ffmpeg atempo to change speed
+            tmp_in = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
+            tmp_out = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
+            tmp_in.close()
+            tmp_out.close()
+            try:
+                audio.export(tmp_in.name, format="mp3")
+
+                # ffmpeg atempo: range 0.5-2.0
+                # For ratio outside range, chain two atempo filters
+                if ratio <= 2.0:
+                    atempo = f"atempo={ratio:.4f}"
+                else:
+                    # Split: e.g. ratio=2.5 → atempo=1.25,atempo=2.0
+                    atempo = f"atempo=2.0,atempo={ratio/2.0:.4f}"
+
+                r = subprocess.run(
+                    [
+                        "ffmpeg",
+                        "-y",
+                        "-i",
+                        tmp_in.name,
+                        "-af",
+                        atempo,
+                        "-c:a",
+                        "mp3",
+                        tmp_out.name,
+                    ],
+                    capture_output=True,
+                    text=True,
+                )
+
+                if r.returncode == 0:
+                    stretched = AudioSegment.from_mp3(tmp_out.name)
+                    return stretched
+                else:
+                    return audio  # fallback
+            except Exception:
+                return audio
+            finally:
+                os.unlink(tmp_in.name)
+                if os.path.exists(tmp_out.name):
+                    os.unlink(tmp_out.name)
+
+        return audio
+
+    def _fpt(
+        self, segments, api_key, voice_id, out_path, log, cancel, sync_mode="trim"
+    ):
         """
         FPT AI TTS — tốt nhất cho tiếng Việt, 1M ký tự free.
-        Lấy key tại: fpt.ai/tts
-        Voice IDs: banmai, leminh, lannhi, minhquang, giahuy, linhsan
+        API docs: https://console.fpt.ai
+        - Text gửi qua raw body (không phải JSON)
+        - Headers: api_key, voice, speed
+        - Response: {"async": "url_to_mp3", "error": 0}
+        - Audio URL ready sau 1-10s (async processing)
         """
         import requests
         from pydub import AudioSegment
@@ -338,11 +455,11 @@ class TTSStep(BaseStep):
         if not key:
             raise RuntimeError(
                 "FPT AI API key required.\n"
-                "Get FREE key at: fpt.ai/tts → Đăng ký\n"
+                "Get FREE key at: console.fpt.ai\n"
                 "Set FPT_API_KEY env var or enter in UI."
             )
 
-        voice = voice_id or "banmai"  # default: giọng nữ miền Nam
+        voice = voice_id or "banmai"
         log(f"🎙️  FPT AI TTS | voice: {voice}")
 
         result = AudioSegment.silent(duration=0)
@@ -363,35 +480,44 @@ class TTSStep(BaseStep):
                 continue
 
             try:
+                # FPT API: text là raw body, KHÔNG phải JSON
                 resp = requests.post(
                     "https://api.fpt.ai/hmi/tts/v5",
                     headers={
-                        "api-key": key,
+                        "api_key": key,  # header name: api_key
                         "voice": voice,
+                        "speed": "0",  # 0 = normal speed
                         "Cache-Control": "no-cache",
-                        "Content-Type": "application/json",
+                        "Content-Type": "application/x-www-form-urlencoded",
                     },
-                    json={"text": txt},
+                    data=txt.encode("utf-8"),  # raw text body
                     timeout=15,
                 )
                 resp.raise_for_status()
                 data = resp.json()
 
-                # FPT returns async URL — need to poll
+                if data.get("error", 0) != 0:
+                    raise RuntimeError(
+                        f"FPT error {data.get('error')}: {data.get('message')}"
+                    )
+
                 async_url = data.get("async", "")
                 if not async_url:
-                    raise RuntimeError(f"FPT: no async URL in response: {data}")
+                    raise RuntimeError(f"FPT: no async URL: {data}")
 
-                # Poll for audio (FPT processes async, usually ready in 1-3s)
-                audio_url = self._fpt_poll(async_url, log)
-                audio_resp = requests.get(audio_url, timeout=30)
-                audio_resp.raise_for_status()
+                # Poll until audio is ready (FPT processes async, 1-30s)
+                audio_content = self._fpt_poll_download(async_url, log)
+                if not audio_content:
+                    raise RuntimeError("FPT: audio not ready after timeout")
 
                 tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
-                tmp.write(audio_resp.content)
+                tmp.write(audio_content)
                 tmp.close()
                 try:
                     audio = AudioSegment.from_mp3(tmp.name)
+                    # Fit audio to segment duration
+                    seg_dur_ms = int((seg.end - seg.start) * 1000)
+                    audio = self._fit_audio_to_segment(audio, seg_dur_ms, sync_mode)
                     result += audio
                     cursor_ms += len(audio)
                 finally:
@@ -402,34 +528,42 @@ class TTSStep(BaseStep):
 
             if i % 5 == 0 or i == total:
                 log(f"   [{i}/{total}] TTS generated")
-            time.sleep(0.2)  # rate limit
+            time.sleep(0.3)
 
         result.export(out_path, format="mp3")
 
-    def _fpt_poll(self, url, log, max_wait=30):
-        """Poll FPT async URL until audio is ready."""
+    def _fpt_poll_download(self, url, log, max_wait=60):
+        """
+        Poll FPT async URL until audio file is ready.
+        FPT processes async — file may not exist for up to 30s.
+        Returns audio bytes or None if timeout.
+        """
         import requests
 
-        for _ in range(max_wait):
+        for attempt in range(max_wait):
             try:
-                r = requests.head(url, timeout=5)
-                if r.status_code == 200:
-                    return url
+                r = requests.get(url, timeout=10)
+                if r.status_code == 200 and len(r.content) > 100:
+                    # Validate it's MP3
+                    if r.content[:3] in (b"ID3",) or r.content[:2] in (
+                        b"\xff\xfb",
+                        b"\xff\xf3",
+                        b"\xff\xf2",
+                    ):
+                        return r.content
+                    # Sometimes FPT returns HTML/error page briefly
+                    if attempt > 5:
+                        log("   ⚠️  FPT: unexpected content type, retrying…")
             except Exception:
                 pass
             time.sleep(1)
-        # Try GET anyway
-        return url
+        return None
 
     # ── Zalo AI TTS ───────────────────────────────────────────────────────────
 
-    def _zalo(self, segments, api_key, voice_id, out_path, log, cancel):
-        """
-        Zalo AI TTS — giọng Việt native, mượt.
-        Lấy key tại: zalo.ai → Developers → TTS API
-        Voice codes: 1 (nữ miền Nam), 2 (nam miền Nam),
-                     3 (nữ miền Bắc), 4 (nam miền Bắc)
-        """
+    def _zalo(
+        self, segments, api_key, voice_id, out_path, log, cancel, sync_mode="trim"
+    ):
         import requests
         from pydub import AudioSegment
 
@@ -441,7 +575,7 @@ class TTSStep(BaseStep):
                 "Set ZALO_API_KEY env var or enter in UI."
             )
 
-        voice_code = voice_id or "1"  # default: nữ miền Nam
+        voice_code = voice_id or "1"
         log(f"🎙️  Zalo AI TTS | voice: {voice_code}")
 
         result = AudioSegment.silent(duration=0)
@@ -462,21 +596,37 @@ class TTSStep(BaseStep):
                 continue
 
             try:
-                resp = requests.post(
-                    "https://api.zalo.ai/v1/tts/synthesize",
-                    headers={
-                        "apikey": key,
-                        "Content-Type": "application/x-www-form-urlencoded",
-                    },
-                    data={
-                        "input": txt,
-                        "voice_id": str(voice_code),
-                        "speed": "1.0",
-                    },
-                    timeout=15,
-                )
+                # Retry up to 3 times on 429
+                resp = None
+                for attempt in range(3):
+                    resp = requests.post(
+                        "https://api.zalo.ai/v1/tts/synthesize",
+                        headers={
+                            "apikey": key,
+                            "Content-Type": "application/x-www-form-urlencoded",
+                        },
+                        data={
+                            "input": txt,
+                            "voice_id": str(voice_code),
+                            "speed": "1.0",
+                        },
+                        timeout=15,
+                    )
+                    if resp.status_code == 429:
+                        wait = 2**attempt  # 1s, 2s, 4s
+                        log(f"   ⏳ Rate limited, waiting {wait}s…")
+                        time.sleep(wait)
+                        continue
+                    break
                 resp.raise_for_status()
                 data = resp.json()
+
+                # Check error code from Zalo
+                error_code = data.get("error_code", 0)
+                if error_code != 0:
+                    raise RuntimeError(
+                        f"Zalo API error {error_code}: {data.get('error_message','unknown')}"
+                    )
 
                 audio_url = data.get("data", {}).get("url", "")
                 if not audio_url:
@@ -485,11 +635,35 @@ class TTSStep(BaseStep):
                 audio_resp = requests.get(audio_url, timeout=30)
                 audio_resp.raise_for_status()
 
-                tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
-                tmp.write(audio_resp.content)
+                # Detect audio format by header
+                content = audio_resp.content
+                if len(content) < 100:
+                    raise RuntimeError(f"Zalo: audio too small ({len(content)} bytes)")
+
+                # WAV: starts with RIFF
+                # MP3: starts with ID3 or \xff\xfb/\xff\xf3/\xff\xf2
+                if content[:4] == b"RIFF":
+                    suffix = ".wav"
+                elif content[:3] in (b"ID3",) or content[:2] in (
+                    b"\xff\xfb",
+                    b"\xff\xf3",
+                    b"\xff\xf2",
+                ):
+                    suffix = ".mp3"
+                else:
+                    preview = content[:100].decode("utf-8", errors="replace")
+                    raise RuntimeError(f"Zalo: unknown audio format: {preview[:80]}")
+
+                tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+                tmp.write(content)
                 tmp.close()
                 try:
-                    audio = AudioSegment.from_mp3(tmp.name)
+                    if suffix == ".wav":
+                        audio = AudioSegment.from_wav(tmp.name)
+                    else:
+                        audio = AudioSegment.from_mp3(tmp.name)
+                    seg_dur_ms = int((seg.end - seg.start) * 1000)
+                    audio = self._fit_audio_to_segment(audio, seg_dur_ms, sync_mode)
                     result += audio
                     cursor_ms += len(audio)
                 finally:
@@ -500,11 +674,11 @@ class TTSStep(BaseStep):
 
             if i % 5 == 0 or i == total:
                 log(f"   [{i}/{total}] TTS generated")
-            time.sleep(0.2)
+            time.sleep(1.0)  # Zalo rate limit: ~1 req/s
 
         result.export(out_path, format="mp3")
 
-    def _gtts(self, segments, lang, out_path, log, cancel):
+    def _gtts(self, segments, lang, out_path, log, cancel, sync_mode="trim"):
         try:
             from gtts import gTTS
             from pydub import AudioSegment
@@ -531,6 +705,8 @@ class TTSStep(BaseStep):
             try:
                 gTTS(text=txt, lang=lang[:2], slow=False).save(tmp.name)
                 audio = AudioSegment.from_mp3(tmp.name)
+                seg_dur_ms = int((seg.end - seg.start) * 1000)
+                audio = self._fit_audio_to_segment(audio, seg_dur_ms, sync_mode)
                 result += audio
                 cursor_ms += len(audio)
             except Exception as e:
@@ -544,7 +720,9 @@ class TTSStep(BaseStep):
 
         result.export(out_path, format="mp3")
 
-    def _openai_tts(self, segments, lang, api_key, out_path, log, cancel):
+    def _openai_tts(
+        self, segments, lang, api_key, out_path, log, cancel, sync_mode="trim"
+    ):
         try:
             from openai import OpenAI
             from pydub import AudioSegment
@@ -593,6 +771,8 @@ class TTSStep(BaseStep):
                 )
                 resp.stream_to_file(tmp.name)
                 audio = AudioSegment.from_mp3(tmp.name)
+                seg_dur_ms = int((seg.end - seg.start) * 1000)
+                audio = self._fit_audio_to_segment(audio, seg_dur_ms, sync_mode)
                 result += audio
                 cursor_ms += len(audio)
             except Exception as e:
@@ -606,7 +786,9 @@ class TTSStep(BaseStep):
 
         result.export(out_path, format="mp3")
 
-    def _elevenlabs(self, segments, lang, api_key, voice_id, out_path, log, cancel):
+    def _elevenlabs(
+        self, segments, lang, api_key, voice_id, out_path, log, cancel, sync_mode="trim"
+    ):
         try:
             from elevenlabs import VoiceSettings
             from elevenlabs.client import ElevenLabs
@@ -655,6 +837,8 @@ class TTSStep(BaseStep):
                 tmp.write(audio_bytes)
                 tmp.close()
                 audio = AudioSegment.from_mp3(tmp.name)
+                seg_dur_ms = int((seg.end - seg.start) * 1000)
+                audio = self._fit_audio_to_segment(audio, seg_dur_ms, sync_mode)
                 result += audio
                 cursor_ms += len(audio)
             except Exception as e:
@@ -724,7 +908,31 @@ class TTSStep(BaseStep):
         v.addWidget(self._voice_id_lbl)
         v.addWidget(self._voice_edit)
 
-        self._on_backend_changed(0)
+        # ── Sync mode ──
+        v.addWidget(self._sep_label("⏱️  Audio Sync"))
+        sync_widget = QWidget()
+        sv = QHBoxLayout(sync_widget)
+        sv.setContentsMargins(0, 0, 0, 0)
+        sv.addWidget(QLabel("Sync mode:"))
+        self._sync_combo = QComboBox()
+        self._sync_combo.addItems(
+            [
+                "trim    — Cắt nếu dài quá (recommended)",
+                "pad     — Cắt nếu dài + thêm silence nếu ngắn",
+                "stretch — Tự động tăng/giảm tốc độ để khớp",
+                "none    — Không điều chỉnh",
+            ]
+        )
+        self._sync_combo.setCurrentIndex(0)
+        self._sync_combo.setToolTip(
+            "trim:    TTS dài hơn segment → cắt bớt (recommended)\n"
+            "pad:     cắt nếu dài + thêm silence nếu ngắn\n"
+            "stretch: kéo giãn/nén tốc độ đọc để khớp timestamp\n"
+            "none:    giữ nguyên, không sync"
+        )
+        sv.addWidget(self._sync_combo)
+        sv.addStretch()
+        v.addWidget(sync_widget)
 
         # ── Mix mode ──
         v.addWidget(self._sep_label("🎚️  Audio Mix Mode"))
@@ -754,6 +962,10 @@ class TTSStep(BaseStep):
         self._tts_vol_slider = self._vol_row(v, "TTS voice:", 100)
         self._bgm_vol_slider = self._vol_row(v, "Background music:", 30)
         self._orig_vol_slider = self._vol_row(v, "Original voice:", 10)
+
+        # Apply defaults after ALL widgets created
+        self._backend_combo.setCurrentIndex(0)  # FPT AI TTS
+        self._on_backend_changed(0)  # show FPT voice combo
 
         return w
 
@@ -866,4 +1078,9 @@ class TTSStep(BaseStep):
             "tts_vol": self._tts_vol_slider.value() / 100.0,
             "bgm_vol": self._bgm_vol_slider.value() / 100.0,
             "orig_vol": self._orig_vol_slider.value() / 100.0,
+            "sync_mode": (
+                self._sync_combo.currentText().split("—")[0].strip()
+                if self._sync_combo
+                else "stretch"
+            ),
         }

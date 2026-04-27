@@ -18,6 +18,7 @@ import time
 from dataclasses import dataclass
 
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QHBoxLayout,
     QLabel,
@@ -54,6 +55,140 @@ class TranslatedSegment:
     translated: str
 
 
+# ── SmartFixer — rule-based + context logic ───────────────────────────────────
+
+
+class SmartFixer:
+    """
+    Fix common translation errors without any API.
+
+    Problems it solves:
+    1. Pronoun-gender mismatch: "她是我爸爸" → "cô ấy là bố tôi" → "Đây là bố tôi"
+    2. Context-based pronoun: use surrounding lines to infer correct pronoun
+    3. Common literal errors in ZH→VI, EN→VI, JA→VI
+    """
+
+    # (pattern_in_translated, pattern_in_original) → replacement
+    # Order matters — more specific rules first
+    ZH_VI_RULES = [
+        # Female pronoun + male family member → "đây là"
+        (["cô ấy là bố", "bà ấy là bố", "cô ta là bố"], "爸爸", "Đây là bố"),
+        (["cô ấy là anh", "bà ấy là anh"], "哥哥", "Đây là anh"),
+        (["cô ấy là ông", "bà ấy là ông"], "爷爷", "Đây là ông"),
+        (["cô ấy là chú", "bà ấy là chú"], "叔叔", "Đây là chú"),
+        # Male pronoun + female family member
+        (["anh ấy là mẹ", "ông ấy là mẹ"], "妈妈", "Đây là mẹ"),
+        (["anh ấy là chị", "ông ấy là chị"], "姐姐", "Đây là chị"),
+        (["anh ấy là bà", "ông ấy là bà"], "奶奶", "Đây là bà"),
+        # Literal "this is my X" patterns
+        (["đây là của tôi bố"], "爸爸", "Đây là bố tôi"),
+        (["đây là của tôi mẹ"], "妈妈", "Đây là mẹ tôi"),
+    ]
+
+    # Common word-level fixes (translated → corrected)
+    WORD_FIXES_VI = {
+        "cô ấy là bố tôi": "Đây là bố tôi",
+        "cô ấy là anh tôi": "Đây là anh tôi",
+        "cô ấy là ông tôi": "Đây là ông tôi",
+        "bà ấy là bố tôi": "Đây là bố tôi",
+        "bà ấy là anh tôi": "Đây là anh tôi",
+        "anh ấy là mẹ tôi": "Đây là mẹ tôi",
+        "anh ấy là chị tôi": "Đây là chị tôi",
+        "ông ấy là mẹ tôi": "Đây là mẹ tôi",
+    }
+
+    def __init__(self, src_lang="zh", tgt_lang="vi"):
+        self.src_lang = src_lang.lower()
+        self.tgt_lang = tgt_lang.lower()
+
+    def fix(
+        self, original: str, translated: str, prev_segs=None, next_segs=None
+    ) -> str:
+        """Apply all fix strategies, return corrected translation."""
+        t = translated.strip()
+        if not t:
+            return translated
+
+        # 1. Direct word-level fix (fastest)
+        t = self._word_fix(t)
+
+        # 2. Rule-based: pronoun-gender mismatch
+        if self.src_lang in ("zh", "zh-cn", "zh-tw"):
+            t = self._zh_pronoun_fix(original, t)
+
+        # 3. Context inference: use neighbours to fix pronoun
+        if prev_segs or next_segs:
+            t = self._context_pronoun_fix(original, t, prev_segs, next_segs)
+
+        return t
+
+    def _word_fix(self, text: str) -> str:
+        lower = text.lower()
+        for wrong, correct in self.WORD_FIXES_VI.items():
+            if wrong in lower:
+                # Preserve original capitalisation style
+                return text[: len(text) - len(text.lstrip())] + correct
+        return text
+
+    def _zh_pronoun_fix(self, original: str, translated: str) -> str:
+        """Fix pronoun-gender mismatch using original Chinese."""
+        tl = translated.lower()
+        for patterns, zh_keyword, replacement in self.ZH_VI_RULES:
+            if zh_keyword in original:
+                for p in patterns:
+                    if p in tl:
+                        return (
+                            replacement
+                            + translated[translated.lower().index(p) + len(p) :]
+                        )
+        return translated
+
+    def _context_pronoun_fix(
+        self, original: str, translated: str, prev_segs, next_segs
+    ) -> str:
+        """
+        Use context to infer correct pronoun.
+        E.g. if surrounding lines establish "bố" as the subject,
+        and current line has wrong pronoun, fix it.
+        """
+        tl = translated.lower()
+
+        # Collect context clues from neighbour originals
+        all_neighbours = list(prev_segs or []) + list(next_segs or [])
+        neighbour_originals = " ".join(
+            s.original for s in all_neighbours if hasattr(s, "original")
+        )
+        neighbour_translated = " ".join(
+            s.translated for s in all_neighbours if hasattr(s, "translated")
+        )
+
+        # If context establishes father/male → fix "cô ấy" → right
+        if "爸爸" in neighbour_originals or "bố" in neighbour_translated:
+            if "cô ấy" in tl or "bà ấy" in tl:
+                fixed = (
+                    translated.replace("Cô ấy", "Ông ấy")
+                    .replace("cô ấy", "ông ấy")
+                    .replace("Bà ấy", "Ông ấy")
+                    .replace("bà ấy", "ông ấy")
+                )
+                if fixed != translated:
+                    return fixed
+
+        # If context establishes mother/female → fix "anh ấy" → right
+        if "妈妈" in neighbour_originals or "mẹ" in neighbour_translated:
+            if "anh ấy" in tl or "ông ấy" in tl:
+                fixed = (
+                    translated.replace("Anh ấy", "Cô ấy")
+                    .replace("anh ấy", "cô ấy")
+                    .replace("Ông ấy", "Cô ấy")
+                    .replace("ông ấy", "cô ấy")
+                )
+                if fixed != translated:
+                    return fixed
+
+        return translated
+
+
 class TranslateStep(BaseStep):
     STEP_ID = "step2_translate"
     LABEL = "② Translate"
@@ -73,6 +208,7 @@ class TranslateStep(BaseStep):
         self._ollama_opts = None
         self._google_opts = None
         self._ai_opts = None
+        self._rule_fix_chk = None
 
     # ── Main run ──────────────────────────────────────────────────────────────
 
@@ -86,8 +222,10 @@ class TranslateStep(BaseStep):
         do_verify = config.get("verify", False)
         verify_backend = config.get("verify_backend", "none")
         verify_model = config.get("verify_model", "llama3")
+        do_rule_fix = config.get("rule_fix", True)
         segments = transcript.segments
         total = len(segments)
+        src_lang = transcript.language
 
         log(f"🌏 Translating {total} segments → {target}")
         log(
@@ -105,16 +243,12 @@ class TranslateStep(BaseStep):
             raise CancelledError()
 
         if backend == "google":
-            out = self._translate_chunks(segments, target, chunk_size, log, cancel)
+            out = self._translate_chunks(
+                segments, target, chunk_size, log, cancel, src_lang=src_lang
+            )
         elif backend == "gemini":
             out = self._translate_gemini(
-                segments,
-                target,
-                api_key,
-                ctx_window,
-                log,
-                cancel,
-                src_lang=transcript.language,
+                segments, target, api_key, ctx_window, log, cancel, src_lang=src_lang
             )
         elif backend == "openai":
             out = self._translate_openai(
@@ -123,6 +257,24 @@ class TranslateStep(BaseStep):
         else:
             raise RuntimeError(f"Unknown backend: {backend}")
 
+        # ── Rule-based smart fix (always fast, no API needed) ──
+        if do_rule_fix:
+            fixer = SmartFixer(src_lang=src_lang, tgt_lang=target)
+            fixed_count = 0
+            for i, seg in enumerate(out):
+                fixed = fixer.fix(
+                    original=seg.original,
+                    translated=seg.translated,
+                    prev_segs=out[max(0, i - 3) : i],
+                    next_segs=out[i + 1 : min(len(out), i + 3)],
+                )
+                if fixed != seg.translated:
+                    out[i] = TranslatedSegment(seg.start, seg.end, seg.original, fixed)
+                    fixed_count += 1
+            if fixed_count:
+                log(f"🔧 Rule-fix: corrected {fixed_count} segments")
+
+        # ── AI verify pass ──
         if do_verify and verify_backend != "none":
             log(f"🔍 Running verify pass via {verify_backend}…")
             out = self._verify_pass(
@@ -135,11 +287,28 @@ class TranslateStep(BaseStep):
 
     # ── Google: Chunk mode ────────────────────────────────────────────────────
 
-    def _translate_chunks(self, segments, target, chunk_size, log, cancel):
+    def _translate_chunks(
+        self, segments, target, chunk_size, log, cancel, src_lang="auto"
+    ):
         try:
             from deep_translator import GoogleTranslator
         except ImportError:
             raise RuntimeError("Run: pip install deep-translator")
+
+        # Map Whisper lang code → Google Translate source code
+        LANG_MAP = {
+            "zh": "zh-TW",  # Traditional Chinese (most YouTube content)
+            "zh-cn": "zh-CN",
+            "zh-tw": "zh-TW",
+            "ja": "ja",
+            "ko": "ko",
+            "en": "en",
+            "vi": "vi",
+            "fr": "fr",
+            "de": "de",
+        }
+        google_src = LANG_MAP.get(src_lang.lower(), "auto")
+        log(f"   Source language: {src_lang} → Google source: {google_src}")
 
         chunks = [
             segments[i : i + chunk_size] for i in range(0, len(segments), chunk_size)
@@ -160,7 +329,7 @@ class TranslateStep(BaseStep):
 
             try:
                 translated_joined = GoogleTranslator(
-                    source="auto", target=target
+                    source=google_src, target=target
                 ).translate(joined)
                 parts = translated_joined.split(CHUNK_SEP)
 
@@ -169,11 +338,25 @@ class TranslateStep(BaseStep):
                         f"   ⚠️  Chunk {ci}: split mismatch "
                         f"({len(parts)} vs {len(chunk)}) — fallback"
                     )
-                    parts = self._google_individual(texts, target)
+                    parts = self._google_individual(texts, target, google_src)
+
+                # Validate — if translation looks same as input (not translated),
+                # retry with individual mode
+                untranslated = sum(
+                    1
+                    for orig, trans in zip(texts, parts)
+                    if orig.strip() and trans.strip() == orig.strip()
+                )
+                if untranslated > len(chunk) * 0.5:
+                    log(
+                        f"   ⚠️  Chunk {ci}: {untranslated}/{len(chunk)} "
+                        f"segments not translated — retrying individually"
+                    )
+                    parts = self._google_individual(texts, target, google_src)
 
             except Exception as e:
                 log(f"   ⚠️  Chunk {ci} error: {e} — fallback")
-                parts = self._google_individual(texts, target)
+                parts = self._google_individual(texts, target, google_src)
 
             for seg, trans in zip(chunk, parts):
                 out.append(
@@ -190,17 +373,21 @@ class TranslateStep(BaseStep):
 
         return out
 
-    def _google_individual(self, texts, target):
+    def _google_individual(self, texts, target, source="auto"):
         from deep_translator import GoogleTranslator
 
         results = []
         for txt in texts:
             try:
-                results.append(
-                    GoogleTranslator(source="auto", target=target).translate(
+                t = GoogleTranslator(source=source, target=target).translate(
+                    txt.strip() or " "
+                )
+                # If result same as input, try with auto
+                if t.strip() == txt.strip() and source != "auto":
+                    t = GoogleTranslator(source="auto", target=target).translate(
                         txt.strip() or " "
                     )
-                )
+                results.append(t)
                 time.sleep(0.1)
             except Exception:
                 results.append(txt)
@@ -600,30 +787,29 @@ class TranslateStep(BaseStep):
         self, segments, target, backend, api_key, verify_backend, verify_model, log
     ):
         """
-        Second pass — fix pronouns, names, grammar inconsistencies.
-        verify_backend: "ollama" | "gemini" | "openai" | "none"
+        Second pass — fix pronouns, names, logic errors.
+        Key insight: send BOTH original + translation so model can
+        detect contradictions like 她(female)=爸爸(male).
         """
         if verify_backend == "none":
             return segments
 
         lang_name = LANG_NAMES.get(target, target)
-        batch_size = 30
+        src_lang = "the source language"
+        batch_size = 15  # smaller batches = better accuracy for local models
         out = []
         log(f"🔍 Verify pass via {verify_backend} ({verify_model})…")
+        log("   Sending bilingual pairs (original + translation) for context")
 
         for bi in range(0, len(segments), batch_size):
             batch = segments[bi : bi + batch_size]
-            numbered = "\n".join(f"{j+1}. {s.translated}" for j, s in enumerate(batch))
-            prompt = (
-                f"You are a {lang_name} subtitle editor.\n"
-                f"Review these subtitles and fix ONLY:\n"
-                f"  - Wrong pronouns (e.g. 'cô ấy' vs 'anh ấy')\n"
-                f"  - Inconsistent character names\n"
-                f"  - Clearly broken grammar\n"
-                f"Keep the same meaning. Do NOT rephrase unnecessarily.\n"
-                f"Return ONLY a numbered list in {lang_name}.\n\n"
-                f"{numbered}"
+
+            # Build bilingual numbered list: original + translation side by side
+            bilingual = "\n".join(
+                f"{j+1}. [{s.original}] → {s.translated}" for j, s in enumerate(batch)
             )
+
+            prompt = self._build_verify_prompt(bilingual, lang_name, verify_backend)
 
             try:
                 if verify_backend == "ollama":
@@ -654,6 +840,7 @@ class TranslateStep(BaseStep):
                     continue
 
                 fixed_lines = self._parse_numbered_response(fixed_text, len(batch))
+
                 if len(fixed_lines) == len(batch):
                     for seg, fixed in zip(batch, fixed_lines):
                         out.append(
@@ -661,16 +848,61 @@ class TranslateStep(BaseStep):
                                 seg.start, seg.end, seg.original, fixed.strip()
                             )
                         )
-                    log(f"   ✅ Fixed batch [{bi+len(batch)}/{len(segments)}]")
+                    log(f"   ✅ Fixed [{bi+len(batch)}/{len(segments)}]")
                 else:
-                    log("   ⚠️  Parse mismatch — keeping originals")
+                    log(
+                        f"   ⚠️  Got {len(fixed_lines)}/{len(batch)} — keeping originals"
+                    )
                     out.extend(batch)
 
             except Exception as e:
-                log(f"   ⚠️  Verify batch failed: {e}")
+                log(f"   ⚠️  Verify error: {e}")
                 out.extend(batch)
 
         return out
+
+    def _build_verify_prompt(self, bilingual: str, lang_name: str, backend: str) -> str:
+        """
+        Build a bilingual verify prompt.
+        Shows [ORIGINAL] → translation so model can spot contradictions.
+        """
+        # Shorter prompt for local models (less VRAM)
+        if backend == "ollama":
+            return (
+                f"You are a subtitle editor fixing {lang_name} translations.\n\n"
+                f"FORMAT: [original_text] → current_translation\n"
+                f"Each line is a subtitle. The original may have errors "
+                f"(e.g. wrong pronoun: 她=she used for a male character).\n\n"
+                f"TASK:\n"
+                f"- Look at [original] to understand who/what is being described\n"
+                f"- Fix the translation if it contradicts the original\n"
+                f"- Common error: female pronoun (她/cô ấy) for male (爸爸/bố)\n"
+                f"  Fix: 'cô ấy là bố tôi' → 'Đây là bố tôi'\n"
+                f"- Keep meaning, fix ONLY clear errors\n"
+                f"- Return ONLY numbered list of {lang_name} translations\n\n"
+                f"Subtitles:\n{bilingual}\n\n"
+                f"Return numbered list (1. ... 2. ... etc):"
+            )
+        else:
+            # Longer, more detailed prompt for API models
+            return (
+                f"You are a professional {lang_name} subtitle editor.\n\n"
+                f"I will give you subtitles in format: [ORIGINAL] → current_translation\n"
+                f"The original text may contain errors (e.g. wrong pronouns like\n"
+                f"她=she used for a male character 爸爸=father).\n\n"
+                f"YOUR TASK:\n"
+                f"1. Read the [ORIGINAL] to understand the true meaning\n"
+                f"2. Check if the translation correctly reflects the original\n"
+                f"3. Fix ONLY logical errors, especially:\n"
+                f"   - Gender/pronoun mismatch: '她是我爸爸' should be 'Đây là bố tôi'\n"
+                f"     NOT 'Cô ấy là bố tôi' (contradicts itself)\n"
+                f"   - Inconsistent character names across lines\n"
+                f"   - Broken sentences that miss the original meaning\n"
+                f"4. Do NOT change correct translations\n"
+                f"5. Return ONLY a numbered list in {lang_name}\n\n"
+                f"Subtitles to review:\n{bilingual}\n\n"
+                f"Return numbered list only:"
+            )
 
     # ── Ollama (local, free) ──────────────────────────────────────────────────
 
@@ -792,6 +1024,21 @@ class TranslateStep(BaseStep):
         sep.setStyleSheet("background:#2d2d4e;margin:4px 0;")
         v.addWidget(sep)
 
+        # ── Smart fix ──
+        fix_lbl = QLabel("🔧 Smart Fix (rule-based, always free)")
+        fix_lbl.setStyleSheet("color:#a0a8ff;font-size:11px;font-weight:600;")
+        v.addWidget(fix_lbl)
+
+        self._rule_fix_chk = QCheckBox("Auto-fix pronoun/gender errors")
+        self._rule_fix_chk.setChecked(True)
+        self._rule_fix_chk.setToolTip(
+            "Fix common errors like:\n"
+            "  '她是我爸爸' → 'Đây là bố tôi' (not 'Cô ấy là bố tôi')\n"
+            "Uses rule-based logic + context from nearby lines.\n"
+            "No API needed, instant."
+        )
+        v.addWidget(self._rule_fix_chk)
+
         # ── Verify pass section ──
         verify_lbl = QLabel("🔍 Verify & Fix Pass")
         verify_lbl.setStyleSheet("color:#a0a8ff;font-size:11px;font-weight:600;")
@@ -824,20 +1071,27 @@ class TranslateStep(BaseStep):
         self._ollama_model_combo = QComboBox()
         self._ollama_model_combo.addItems(
             [
-                "llama3",
-                "llama3.1",
-                "mistral",
-                "gemma2",
-                "qwen2",
+                "qwen2   — 🇨🇳 Tiếng Trung → VI (recommended)",
+                "llama3  — 🇬🇧 Tiếng Anh → VI (best English)",
+                "llama3.1 — 🇬🇧 Tiếng Anh → VI (newer)",
+                "mistral — 💾 RAM thấp <8GB (nhẹ nhất, 4.1GB)",
+                "gemma2  — ⚖️  Cân bằng (Google, 5.4GB)",
             ]
         )
+        self._ollama_model_combo.setCurrentIndex(0)
         self._ollama_model_combo.setToolTip(
-            "Pull with: ollama pull llama3\n" "Install Ollama: ollama.com"
+            "Video tiếng Trung  →  qwen2\n"
+            "Video tiếng Anh    →  llama3\n"
+            "RAM thấp (<8GB)    →  mistral\n\n"
+            "Cài model:\n"
+            "  ollama pull qwen2\n"
+            "  ollama pull llama3\n"
+            "  ollama pull mistral"
         )
         ov.addWidget(self._ollama_model_combo)
         ov.addStretch()
 
-        hint = QLabel("ollama.com → install → ollama pull llama3")
+        hint = QLabel("Install: ollama.com  |  " "Pull: ollama pull qwen2")
         hint.setStyleSheet("color:#555;font-size:10px;")
         ov2 = QVBoxLayout(self._ollama_opts)
         ov2.setContentsMargins(0, 0, 0, 0)
@@ -846,8 +1100,11 @@ class TranslateStep(BaseStep):
         self._ollama_opts.setVisible(False)
         v.addWidget(self._ollama_opts)
 
-        # Default
-        self._on_backend_changed(0)
+        # Default: Google Translate, skip verify
+        self._backend_combo.setCurrentIndex(1)  # Google Translate
+        self._verify_combo.setCurrentIndex(0)  # None (skip)
+        self._rule_fix_chk.setChecked(True)
+        self._on_backend_changed(1)
         return w
 
     def _on_backend_changed(self, idx):
@@ -877,11 +1134,11 @@ class TranslateStep(BaseStep):
         verify_map = {0: "none", 1: "ollama", 2: "gemini", 3: "openai"}
         verify_backend = verify_map.get(v_idx, "none")
 
-        ollama_model = (
-            self._ollama_model_combo.currentText()
-            if self._ollama_model_combo
-            else "llama3"
-        )
+        ollama_model = "qwen2"
+        if self._ollama_model_combo:
+            # Extract model name — format: "qwen2   — description"
+            raw = self._ollama_model_combo.currentText()
+            ollama_model = raw.split("—")[0].strip().split()[0].strip()
 
         return {
             "backend": backend,
@@ -895,4 +1152,5 @@ class TranslateStep(BaseStep):
             "verify": verify_backend != "none",
             "verify_backend": verify_backend,
             "verify_model": ollama_model,
+            "rule_fix": self._rule_fix_chk.isChecked() if self._rule_fix_chk else True,
         }

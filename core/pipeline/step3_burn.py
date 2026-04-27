@@ -127,7 +127,7 @@ class BurnStep(BaseStep):
         r_mode.addWidget(QLabel("Mode:"))
         self._radio_soft = QRadioButton("Soft (track)")
         self._radio_hard = QRadioButton("Hard (burned)")
-        self._radio_soft.setChecked(True)
+        self._radio_hard.setChecked(True)  # default: Hard
         grp = QButtonGroup(w)
         grp.addButton(self._radio_soft)
         grp.addButton(self._radio_hard)

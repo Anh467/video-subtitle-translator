@@ -53,6 +53,18 @@ class Session:
         return self.folder / "step4_background.mp3"
 
     @property
+    def step4_drums(self):
+        return self.folder / "step4_drums.mp3"
+
+    @property
+    def step4_bass(self):
+        return self.folder / "step4_bass.mp3"
+
+    @property
+    def step4_other(self):
+        return self.folder / "step4_other.mp3"
+
+    @property
     def step5_tts(self):
         return self.folder / "step5_tts.mp3"
 
@@ -82,19 +94,6 @@ class Session:
         return self.step5_video.exists()
 
     # ── smart video chaining ──────────────────────────────────────────────────
-    def _save_meta(self):
-        (self.folder / "session.json").write_text(
-            json.dumps(
-                {
-                    "source_file": self.source_file,
-                    "folder": str(self.folder),
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-
     def latest_video(self) -> str:
         """
         Returns the best available video to use as input for the next step.
@@ -110,6 +109,8 @@ class Session:
     def final_video(self) -> str:
         """Returns the most processed video available."""
         return self.latest_video()
+
+    def _save_meta(self):
         (self.folder / "session.json").write_text(
             json.dumps(
                 {"source_file": self.source_file, "folder": str(self.folder)},
