@@ -5,8 +5,9 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from core.pipeline.base import BaseStep, CancelledError
 from PyQt6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QWidget
+
+from core.pipeline.base import BaseStep, CancelledError
 
 SUPPORTED_AUDIO = {".mp3", ".wav", ".m4a", ".flac", ".ogg", ".aac", ".wma"}
 SUPPORTED_VIDEO = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".flv", ".wmv"}
@@ -85,19 +86,6 @@ class TranscribeStep(BaseStep):
         if cancel.is_set():
             raise CancelledError()
 
-        # Load model
-        if self._model is None or self._model_size != model_size:
-            log(f"⏳ Loading Whisper model '{model_size}'…")
-            t1 = time.perf_counter()
-            import whisper
-
-            self._model = whisper.load_model(model_size)
-            self._model_size = model_size
-            log(f"✅ Model loaded (+{_fmt(time.perf_counter()-t1)})")
-
-        if cancel.is_set():
-            raise CancelledError()
-
         # Extract audio if video
         audio_path, tmp = file_path, None
         if Path(file_path).suffix.lower() in SUPPORTED_VIDEO:
@@ -124,6 +112,8 @@ class TranscribeStep(BaseStep):
                 ],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
             )
             if r.returncode != 0:
                 raise RuntimeError(f"ffmpeg error:\n{r.stderr}")
@@ -133,14 +123,46 @@ class TranscribeStep(BaseStep):
         if cancel.is_set():
             raise CancelledError()
 
+        # Run Whisper in a child process to avoid PyTorch+Qt thread crash
+        # (Fatal: _PyThreadState_Attach on Python 3.13 + Qt QRunnable)
+        import json
+        import subprocess
+        import sys
+        import tempfile
+
+        lang_arg = repr(language)
+        runner_code = (
+            f"import whisper, json, sys\n"
+            f"model = whisper.load_model({repr(model_size)})\n"
+            f"r = model.transcribe({repr(audio_path)}, language={lang_arg})\n"
+            f"print(json.dumps(r))\n"
+        )
+        tmp_script = tempfile.NamedTemporaryFile(
+            suffix=".py", delete=False, mode="w", encoding="utf-8"
+        )
+        tmp_script.write(runner_code)
+        tmp_script.close()
+
+        log("🎧 Transcribing…")
+        t1 = time.perf_counter()
         try:
-            log("🎧 Transcribing…")
-            t1 = time.perf_counter()
-            raw = self._model.transcribe(audio_path, language=language)
-            log(f"✅ Transcription done (+{_fmt(time.perf_counter()-t1)})")
+            r = subprocess.run(
+                [sys.executable, tmp_script.name],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
         finally:
+            os.unlink(tmp_script.name)
             if tmp and os.path.exists(tmp):
                 os.unlink(tmp)
+
+        if r.returncode != 0:
+            raise RuntimeError(f"Whisper subprocess error:\n{r.stderr[-2000:]}")
+        log(f"✅ Transcription done (+{_fmt(time.perf_counter()-t1)})")
+
+        raw = json.loads(r.stdout)
 
         segs = [
             Segment(round(s["start"], 2), round(s["end"], 2), s["text"].strip())

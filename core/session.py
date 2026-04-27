@@ -82,6 +82,19 @@ class Session:
         return self.step5_video.exists()
 
     # ── smart video chaining ──────────────────────────────────────────────────
+    def _save_meta(self):
+        (self.folder / "session.json").write_text(
+            json.dumps(
+                {
+                    "source_file": self.source_file,
+                    "folder": str(self.folder),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
     def latest_video(self) -> str:
         """
         Returns the best available video to use as input for the next step.

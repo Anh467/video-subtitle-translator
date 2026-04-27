@@ -1,8 +1,11 @@
 # ── Core ──────────────────────────────────────────────────────────────────────
 PyQt6
 openai-whisper
-deep-translator
 openai
+
+# ── Step 2 — Translation ──────────────────────────────────────────────────────
+deep-translator          # Google Translate (free, no key)
+google-genai             # Gemini Flash (free, needs key from aistudio.google.com)
 
 # ── Step 4 — Voice separation ─────────────────────────────────────────────────
 demucs
@@ -11,19 +14,20 @@ demucs
 gtts
 pydub
 elevenlabs
-
-# Fix pydub on Python 3.13 (pyaudioop was removed in 3.13)
-audioop-lts
-
-# Optional — Coqui TTS (heavier, ~1GB model, better quality)
-# pip install TTS
+audioop-lts              # Fix pydub on Python 3.13+
 
 # ── Utils ─────────────────────────────────────────────────────────────────────
 ffmpeg-python
 
-# ── Notes ─────────────────────────────────────────────────────────────────────
-# ffmpeg binary must be installed separately:
+# ── Install notes ─────────────────────────────────────────────────────────────
+# ffmpeg binary (required):
 #   Windows : winget install ffmpeg
 #   macOS   : brew install ffmpeg
 #
-# After installing, verify: ffmpeg -version
+# Gemini API key (free):
+#   → aistudio.google.com → Get API Key
+#   → 15 req/min, 1500 req/day FREE
+#
+# OpenAI API key:
+#   → platform.openai.com
+#   → ~$0.002 per 3-min video
