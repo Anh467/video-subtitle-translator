@@ -55,8 +55,10 @@ class Session:
                     done.append("③")
                 if (d / "step4_vocals.mp3").exists():
                     done.append("④")
-                if any(d.glob("step5_output.*")):
+                if (d / "step5_tts.mp3").exists():
                     done.append("⑤")
+                if any(d.glob("step6_output.*")) or any(d.glob("step5_output.*")):
+                    done.append("⑥")
 
                 size = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
                 sessions.append(
@@ -131,10 +133,28 @@ class Session:
         return self.folder / "step5_tts.mp3"
 
     @property
-    def step5_video(self):
+    def step5_tts_cache_dir(self):
+        # Backward compatibility alias.
+        return self.step5_tts_library_dir
+
+    @property
+    def step5_tts_library_dir(self):
+        # Shared persistent library for all sessions under the same base folder.
+        return self.folder.parent / "_tts_library"
+
+    @property
+    def step5_tts_session_dir(self):
+        # Optional per-session storage (kept for compatibility/debug if needed).
+        return self.folder / "step5_tts_cache"
+
+    @property
+    def step6_video(self):
+        for f in self.folder.glob("step6_output.*"):
+            return f
+        # Backward compatibility with older sessions
         for f in self.folder.glob("step5_output.*"):
             return f
-        return self.folder / f"step5_output{Path(self.source_file).suffix}"
+        return self.folder / f"step6_output{Path(self.source_file).suffix}"
 
     # ── completion checks ─────────────────────────────────────────────────────
     @property
@@ -155,7 +175,11 @@ class Session:
 
     @property
     def step5_done(self):
-        return self.step5_video.exists()
+        return self.step5_tts.exists()
+
+    @property
+    def step6_done(self):
+        return self.step6_video.exists()
 
     def done_steps(self) -> list[str]:
         """Return list of completed step IDs."""
@@ -170,12 +194,14 @@ class Session:
             steps.append("step4_separate")
         if self.step5_done:
             steps.append("step5_tts")
+        if self.step6_done:
+            steps.append("step6_add_voice")
         return steps
 
     # ── smart video chaining ──────────────────────────────────────────────────
     def latest_video(self) -> str:
-        if self.step5_video.exists():
-            return str(self.step5_video)
+        if self.step6_video.exists():
+            return str(self.step6_video)
         if self.step3_video.exists():
             return str(self.step3_video)
         return self.source_file

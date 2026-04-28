@@ -1,22 +1,22 @@
 """
-Step 5 — TTS + Audio Mix
+Step 5 — TTS generation only (single or multi backend).
 """
 
+import json
 import os
 import shutil
 import subprocess
 import tempfile
 import time
+from datetime import datetime
 from pathlib import Path
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
-    QButtonGroup,
     QComboBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QRadioButton,
     QSlider,
     QVBoxLayout,
     QWidget,
@@ -51,7 +51,7 @@ VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".flv", ".wmv"}
 
 class TTSStep(BaseStep):
     STEP_ID = "step5_tts"
-    LABEL = "⑤ Add Voice (TTS)"
+    LABEL = "⑤ Text-to-Speech"
     COLOR = "#5a1a6a"
     ENABLED_BY_DEFAULT = False
 
@@ -73,73 +73,107 @@ class TTSStep(BaseStep):
         lang = config.get("lang", "vi")
         api_key = config.get("api_key")
         voice_id = config.get("voice_id", "")
-        mix_mode = config.get("mix_mode", "bgm_only")
-        tts_vol = config.get("tts_vol", 1.0)
-        bgm_vol = config.get("bgm_vol", 0.3)
-        orig_vol = config.get("orig_vol", 0.1)
         sync_mode = config.get("sync_mode", "trim")
 
         segments = session.load_translated()
         if not segments:
             raise RuntimeError("No translated segments — run Step 2 first.")
 
-        log(f"🗣️  Backend: {backend} | Lang: {lang} | Mix: {mix_mode}")
-        log(
-            f"   TTS vol: {tts_vol:.0%} | BGM vol: {bgm_vol:.0%} | Orig vol: {orig_vol:.0%}"
-        )
+        backends = self._resolve_backends(backend)
+        log(f"🗣️  TTS Backends: {', '.join(backends)} | Lang: {lang}")
 
         if cancel.is_set():
             raise CancelledError()
 
-        tts_path = str(session.step5_tts)
-        log("🎙️  Generating TTS audio…")
-        self._generate_tts(
-            segments,
-            lang,
-            backend,
-            api_key,
-            voice_id,
-            tts_path,
-            log,
-            cancel,
-            sync_mode=sync_mode,
+        primary_output = ""
+        success = 0
+        errors = []
+
+        for idx, one_backend in enumerate(backends, 1):
+            if cancel.is_set():
+                raise CancelledError()
+
+            out_file = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False).name
+            log(f"🎙️  [{idx}/{len(backends)}] Generating with backend: {one_backend}…")
+            try:
+                self._generate_tts(
+                    segments,
+                    lang,
+                    one_backend,
+                    api_key,
+                    voice_id,
+                    out_file,
+                    log,
+                    cancel,
+                    sync_mode=sync_mode,
+                )
+                lib_audio, lib_manifest = self._save_tts_library(
+                    session,
+                    out_file,
+                    one_backend,
+                    voice_id,
+                    lang,
+                    segments,
+                )
+                log(f"✅ [{one_backend}] audio → {lib_audio.name}")
+                log(f"🕒 [{one_backend}] timeline → {lib_manifest.name}")
+                if not primary_output:
+                    shutil.copy2(out_file, str(session.step5_tts))
+                    primary_output = str(session.step5_tts)
+                success += 1
+            except Exception as e:
+                errors.append(f"{one_backend}: {e}")
+                log(f"❌ [{one_backend}] failed: {e}")
+            finally:
+                if os.path.exists(out_file):
+                    os.unlink(out_file)
+
+        if success == 0:
+            raise RuntimeError("All TTS backends failed:\n" + "\n".join(errors[:5]))
+
+        log(f"🏁 Step 5 done: {success}/{len(backends)} backend(s) generated")
+        return primary_output or str(session.step5_tts)
+
+    @staticmethod
+    def _resolve_backends(backend_key: str) -> list[str]:
+        if backend_key == "all":
+            return list(TTS_BACKENDS.values())
+        return [backend_key]
+
+    def _save_tts_library(self, session, tts_path, backend, voice_id, lang, segments):
+        library_dir = session.step5_tts_library_dir
+        library_dir.mkdir(parents=True, exist_ok=True)
+
+        voice = (voice_id or "default").strip().replace(" ", "_")
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        filename = f"{backend}_{voice}_{lang}_{ts}.mp3"
+        filename = "".join(c if c.isalnum() or c in "._-" else "_" for c in filename)
+        audio_target = library_dir / filename
+        manifest_target = library_dir / f"{Path(filename).stem}.json"
+
+        shutil.copy2(tts_path, audio_target)
+
+        manifest = {
+            "version": 1,
+            "created_at": datetime.now().isoformat(),
+            "backend": backend,
+            "voice_id": voice_id or "",
+            "lang": lang,
+            "audio_file": audio_target.name,
+            "segments": [
+                {
+                    "index": i,
+                    "start": float(seg.start),
+                    "end": float(seg.end),
+                    "text": getattr(seg, "translated", "") or "",
+                }
+                for i, seg in enumerate(segments)
+            ],
+        }
+        manifest_target.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
         )
-        log(f"✅ TTS audio → {Path(tts_path).name}")
-
-        if cancel.is_set():
-            raise CancelledError()
-
-        mixed_audio = self._mix_audio(
-            session=session,
-            tts_path=tts_path,
-            mix_mode=mix_mode,
-            tts_vol=tts_vol,
-            bgm_vol=bgm_vol,
-            orig_vol=orig_vol,
-            log=log,
-        )
-
-        if cancel.is_set():
-            raise CancelledError()
-
-        input_media = session.latest_video()
-        out_video = str(session.step5_video)
-        if input_media == str(session.step3_video):
-            log("🔗 Chaining: using Step 3 (subtitled) video as base")
-
-        if self._has_video_stream(input_media):
-            log("🎬 Muxing audio into video…")
-            self._mux(input_media, mixed_audio, out_video, log)
-        else:
-            log("⚠️  Input has no video stream — exporting final audio only")
-            if os.path.abspath(mixed_audio) != os.path.abspath(out_video):
-                shutil.copy2(mixed_audio, out_video)
-
-        if mixed_audio != tts_path and os.path.exists(mixed_audio):
-            os.unlink(mixed_audio)
-
-        log(f"✅ Final video → {Path(out_video).name}")
-        return out_video
+        return audio_target, manifest_target
 
     # ── Audio mixing ──────────────────────────────────────────────────────────
 
@@ -934,6 +968,7 @@ class TTSStep(BaseStep):
         r1 = QHBoxLayout()
         r1.addWidget(QLabel("Backend:"))
         self._backend_combo = QComboBox()
+        self._backend_combo.addItem("All backends (batch run)")
         self._backend_combo.addItems(TTS_BACKENDS.keys())
         self._backend_combo.currentIndexChanged.connect(self._on_backend_changed)
         r1.addWidget(self._backend_combo)
@@ -998,28 +1033,6 @@ class TTSStep(BaseStep):
         sl.addStretch()
         v.addWidget(sw)
 
-        # Mix mode
-        v.addWidget(self._sep_label("🎚️  Audio Mix Mode"))
-        mw = QWidget()
-        mv = QVBoxLayout(mw)
-        mv.setContentsMargins(0, 0, 0, 0)
-        mv.setSpacing(3)
-        self._mix_group = QButtonGroup(w)
-        self._mix_radios = {}
-        for label, key in MIX_MODES.items():
-            rb = QRadioButton(label)
-            self._mix_group.addButton(rb)
-            self._mix_radios[key] = rb
-            mv.addWidget(rb)
-        self._mix_radios["bgm_only"].setChecked(True)
-        v.addWidget(mw)
-
-        # Volume
-        v.addWidget(self._sep_label("🔊  Volume"))
-        self._tts_vol_slider = self._vol_row(v, "TTS voice:", 100)
-        self._bgm_vol_slider = self._vol_row(v, "Background music:", 30)
-        self._orig_vol_slider = self._vol_row(v, "Original voice:", 10)
-
         self._backend_combo.setCurrentIndex(0)
         self._on_backend_changed(0)
         return w
@@ -1047,9 +1060,15 @@ class TTSStep(BaseStep):
         return slider
 
     def _on_backend_changed(self, idx):
-        backend = (
-            list(TTS_BACKENDS.values())[idx] if idx < len(TTS_BACKENDS) else "gtts"
-        )
+        if idx == 0:
+            backend = "all"
+        else:
+            mapped_idx = idx - 1
+            backend = (
+                list(TTS_BACKENDS.values())[mapped_idx]
+                if mapped_idx < len(TTS_BACKENDS)
+                else "gtts"
+            )
         needs_key = backend in ("fpt", "zalo", "openai_tts", "elevenlabs")
         needs_combo = backend in ("fpt", "zalo")
         needs_el_id = backend == "elevenlabs"
@@ -1095,13 +1114,12 @@ class TTSStep(BaseStep):
             )
 
     def collect_config(self):
-        mix_mode = "bgm_only"
-        for key, rb in self._mix_radios.items():
-            if rb.isChecked():
-                mix_mode = key
-                break
         key_text = self._backend_combo.currentText() if self._backend_combo else ""
-        backend = TTS_BACKENDS.get(key_text, "gtts")
+        backend = (
+            "all"
+            if key_text == "All backends (batch run)"
+            else TTS_BACKENDS.get(key_text, "gtts")
+        )
         voice_id = ""
         if backend in ("fpt", "zalo") and self._voice_combo:
             voice_id = self._voice_combo.currentText().split(" — ")[0].strip()
@@ -1115,10 +1133,6 @@ class TTSStep(BaseStep):
             ),
             "api_key": self._api_edit.text().strip() or None,
             "voice_id": voice_id or None,
-            "mix_mode": mix_mode,
-            "tts_vol": self._tts_vol_slider.value() / 100.0,
-            "bgm_vol": self._bgm_vol_slider.value() / 100.0,
-            "orig_vol": self._orig_vol_slider.value() / 100.0,
             "sync_mode": (
                 self._sync_combo.currentText().split("—")[0].strip()
                 if self._sync_combo

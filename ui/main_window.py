@@ -31,6 +31,7 @@ from core.pipeline.step2_translate import TranslateStep
 from core.pipeline.step3_burn import BurnStep
 from core.pipeline.step4_separate import SeparateStep
 from core.pipeline.step5_tts import TTSStep
+from core.pipeline.step6_add_voice import AddVoiceStep
 from core.session import Session
 from ui.widgets.drop_zone import SUPPORTED, DropZone
 from ui.widgets.step_card import StepCard
@@ -379,6 +380,7 @@ class MainWindow(QMainWindow):
             BurnStep(),
             SeparateStep(),
             TTSStep(),
+            AddVoiceStep(),
         ]
         self._cards: list[StepCard] = []
         self._setup_ui()
@@ -399,7 +401,7 @@ class MainWindow(QMainWindow):
             "font-size:26px;font-weight:700;color:#a0a8ff;letter-spacing:2px;"
         )
         sub = QLabel(
-            "AI Video Pipeline  ·  Transcribe → Translate → Burn → Separate → Voice"
+            "AI Video Pipeline  ·  Transcribe → Translate → Burn → Separate → TTS → Add Voice"
         )
         sub.setStyleSheet("font-size:11px;color:#444;margin-left:12px;margin-top:8px;")
         title_row.addWidget(t)
@@ -759,7 +761,7 @@ class MainWindow(QMainWindow):
         self._log(
             "💡 You can run any step from here — completed steps will be skipped or overwritten."
         )
-        self._status_bar.showMessage(f"Session loaded — {len(done_steps)}/5 steps done")
+        self._status_bar.showMessage(f"Session loaded — {len(done_steps)}/6 steps done")
 
     def _step_output_path(self, step, session) -> str:
         """Get the output file path for a completed step."""
@@ -768,7 +770,8 @@ class MainWindow(QMainWindow):
             "step2_translate": "step2_srt",
             "step3_burn": "step3_video",
             "step4_separate": "step4_vocals",
-            "step5_tts": "step5_video",
+            "step5_tts": "step5_tts",
+            "step6_add_voice": "step6_video",
         }.get(step.STEP_ID, "")
         if attr:
             p = getattr(session, attr, None)

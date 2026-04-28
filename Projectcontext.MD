@@ -14,7 +14,8 @@ Video gốc (Trung/Anh/Nhật...)
   ② Translate     → dịch sang VI (Google/Gemini/OpenAI + SmartFixer + Ollama verify)
   ③ Burn Subtitle → burn sub vào video (ffmpeg soft/hard)
   ④ Separate Voice→ tách giọng/nhạc (Demucs)
-  ⑤ Add Voice TTS → TTS tiếng Việt + mix audio (FPT/Zalo/gTTS/OpenAI/ElevenLabs)
+    ⑤ Text-to-Speech → gọi API TTS, lưu audio + cache voices theo session
+    ⑥ Add Voice      → dùng audio đã lưu để mix/mux vào video (không gọi API)
 ```
 
 **Path trên máy user:** `D:\Nguyen-Anh-Viet\Tutorial\Python\audio-to-text\video-subtitle-translator\`
@@ -37,9 +38,10 @@ subsync/
 │       ├── step2_translate.py     ← Translate + SmartFixer + Ollama verify
 │       ├── step3_burn.py          ← ffmpeg burn subtitle
 │       ├── step4_separate.py      ← Demucs vocal separation
-│       └── step5_tts.py           ← TTS + audio mix
+│       ├── step5_tts.py           ← TTS only + cache voices
+│       └── step6_add_voice.py     ← Mix + mux using saved TTS
 └── ui/
-    ├── main_window.py             ← MainWindow: Run All queue, 5 step cards
+    ├── main_window.py             ← MainWindow: Run All queue, 6 step cards
     └── widgets/
         ├── step_card.py           ← StepCard widget
         └── drop_zone.py           ← Drag & drop zone
@@ -59,11 +61,12 @@ class Session:
     step2_json, step2_srt
     step3_video           # <stem>.mp4
     step4_vocals, step4_background
-    step5_tts, step5_video
+    step5_tts, step5_tts_cache_dir
+    step6_video
 
-    # Smart chaining — step3 và step5 có thể chain vào nhau bất kỳ thứ tự
+    # Smart chaining — step3 và step6 có thể chain vào nhau bất kỳ thứ tự
     def latest_video() -> str:
-        # step5_video > step3_video > source_file
+        # step6_video > step3_video > source_file
 ```
 
 ---
@@ -207,7 +210,7 @@ def _hard_cmd(input, srt, out, ...):  # ffmpeg -vf subtitles=... libx264
 
 ---
 
-## Step 5 — TTS + Audio Mix (step5_tts.py)
+## Step 5 — Text-to-Speech (step5_tts.py)
 
 ### TTS Backends
 
@@ -235,6 +238,28 @@ TTS_BACKENDS = {
 - Rate limit: delay 1s/request + retry 3 lần khi 429
 - Voices: 1=nữ Nam, 2=nam Nam, 3=nữ Bắc, 4=nam Bắc
 
+### Hành vi Step 5
+
+- Chỉ gọi API/chạy local TTS để tạo `step5_tts.mp3`
+- Không mix/mux video ở Step 5 nữa
+- Mỗi lần generate đều lưu thêm 1 file cache theo timestamp ở `step5_tts_cache/`
+- Dùng lại cho Step 6 để tránh gọi API nhiều lần
+
+### Default
+
+- Backend: FPT AI TTS
+- Voice: banmai
+- Sync: trim
+
+---
+
+## Step 6 — Add Voice (step6_add_voice.py)
+
+### Input
+
+- Ưu tiên `step5_tts.mp3`
+- Hoặc chỉ định thủ công 1 file mp3 từ cache trong session
+
 ### Mix modes
 
 ```python
@@ -249,17 +274,17 @@ MIX_MODES = {
 
 ```
 TTS(100%) + BGM(30%) → ffmpeg filter_complex amix → mixed.mp3
-mixed.mp3 + video(no audio) → ffmpeg mux → step5_output.mp4
+mixed.mp3 + video(no audio) → ffmpeg mux → step6_output.mp4
 ```
 
 ### Smart chaining
 
 ```python
-# Step 5 dùng latest_video() làm input
-# Nếu step3 đã chạy trước → step5 chain vào video có subtitle
+# Step 6 dùng latest_video() làm input
+# Nếu step3 đã chạy trước → step6 chain vào video có subtitle
 ```
 
-**Default:** FPT AI TTS, banmai, bgm_only
+**Default:** bgm_only
 
 ---
 
@@ -281,7 +306,7 @@ self._stop_queue: bool       # flag dừng sau step hiện tại
 # ▶▶ Run All Enabled Steps  → _run_all()
 # ⏹ Stop Queue              → _request_stop_queue() (finish current, skip rest)
 # ✕ Cancel Job              → _cancel() (kill current immediately)
-# Queue label: "Queue: ① Transcribe (5 left)"
+# Queue label: "Queue: ① Transcribe (6 left)"
 ```
 
 ### Step cards
@@ -293,8 +318,8 @@ self._stop_queue: bool       # flag dừng sau step hiện tại
 
 ### Video chaining
 
-- Step 3 và Step 5 đều dùng `session.latest_video()` làm input
-- Thứ tự chạy bất kỳ đều cho ra 1 video có cả sub + TTS
+- Step 3 và Step 6 đều dùng `session.latest_video()` làm input
+- Thứ tự chạy bất kỳ đều cho ra 1 video có cả sub + voice
 
 ---
 
@@ -319,6 +344,8 @@ self._stop_queue: bool       # flag dừng sau step hiện tại
 | Zalo 429 rate limit                                 | Retry 3 lần + delay 1s/request                                          |
 | Step 5 báo `'NoneType' object is not subscriptable` | Harden lỗi ffmpeg: không slice `stderr` khi `None`; log lỗi thật rõ hơn |
 | Step 5 input audio-only bị lỗi mux                  | Check stream bằng `ffprobe`; không có video thì export audio final      |
+| Step5 mux in-place lỗi `cannot edit existing files` | Mux qua file tạm rồi move về output đích                                |
+| Gọi lại add voice bị tốn API                        | Tách step 5 (TTS only) và step 6 (Add Voice only)                       |
 
 ---
 

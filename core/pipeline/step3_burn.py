@@ -113,8 +113,8 @@ class BurnStep(BaseStep):
         mode = config["mode"]
         input_video = session.latest_video()
 
-        if input_video == str(session.step5_video):
-            log("🔗 Chaining: using Step 5 output as base video")
+        if hasattr(session, "step6_video") and input_video == str(session.step6_video):
+            log("🔗 Chaining: using Step 6 output as base video")
         elif input_video != session.source_file:
             log("🔗 Chaining: using existing processed video as base")
 
