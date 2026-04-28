@@ -331,14 +331,14 @@ class BurnStep(BaseStep):
                     video_w=w,
                     video_h=h,
                     branding={
-                        "enabled": config.get("brand_enabled", False),
+                        "enabled": config.get("brand_enabled", True),
                         "name": config.get("brand_name", ""),
                         "avatar": config.get("brand_avatar", ""),
-                        "avatar_pct": config.get("brand_avatar_pct", 12.0),
+                        "avatar_pct": config.get("brand_avatar_pct", 9.0),
                         "opacity": config.get("brand_opacity", 30),
                         "pos": config.get("brand_pos", "random"),
                         "margin_pct": config.get("brand_margin_pct", 2.0),
-                        "name_pct": config.get("brand_name_pct", 2.4),
+                        "name_pct": config.get("brand_name_pct", 2.0),
                     },
                 )
             log(f"   $ {' '.join(cmd)}")
@@ -429,7 +429,7 @@ class BurnStep(BaseStep):
         # Channel branding overlay
         v.addWidget(self._sep_label("📌 Channel Branding"))
         self._brand_enable_chk = QCheckBox("Enable channel avatar + name")
-        self._brand_enable_chk.setChecked(False)
+        self._brand_enable_chk.setChecked(True)
         v.addWidget(self._brand_enable_chk)
 
         r_pf = QHBoxLayout()
@@ -469,7 +469,7 @@ class BurnStep(BaseStep):
         self._brand_avatar_pct_spin.setDecimals(1)
         self._brand_avatar_pct_spin.setSingleStep(0.5)
         self._brand_avatar_pct_spin.setRange(2.0, 40.0)
-        self._brand_avatar_pct_spin.setValue(12.0)
+        self._brand_avatar_pct_spin.setValue(9.0)
         self._brand_avatar_pct_spin.setFixedWidth(70)
         r_a.addWidget(self._brand_avatar_pct_spin)
         r_a.addWidget(QLabel("% of video width"))
@@ -491,7 +491,7 @@ class BurnStep(BaseStep):
         self._brand_name_pct_spin.setDecimals(1)
         self._brand_name_pct_spin.setSingleStep(0.5)
         self._brand_name_pct_spin.setRange(1.0, 10.0)
-        self._brand_name_pct_spin.setValue(2.4)
+        self._brand_name_pct_spin.setValue(2.0)
         self._brand_name_pct_spin.setFixedWidth(70)
         r_b.addWidget(self._brand_name_pct_spin)
         r_b.addWidget(QLabel("% of video height"))
@@ -542,7 +542,7 @@ class BurnStep(BaseStep):
             ),
             "bg_box": self._bg_box_chk.isChecked() if self._bg_box_chk else True,
             "brand_enabled": (
-                self._brand_enable_chk.isChecked() if self._brand_enable_chk else False
+                self._brand_enable_chk.isChecked() if self._brand_enable_chk else True
             ),
             "brand_name": (
                 self._brand_name_edit.text().strip() if self._brand_name_edit else ""
@@ -555,7 +555,7 @@ class BurnStep(BaseStep):
             "brand_avatar_pct": (
                 self._brand_avatar_pct_spin.value()
                 if self._brand_avatar_pct_spin
-                else 12.0
+                else 9.0
             ),
             "brand_opacity": (
                 self._brand_opacity_spin.value() if self._brand_opacity_spin else 30
@@ -574,7 +574,7 @@ class BurnStep(BaseStep):
                 else 2.0
             ),
             "brand_name_pct": (
-                self._brand_name_pct_spin.value() if self._brand_name_pct_spin else 2.4
+                self._brand_name_pct_spin.value() if self._brand_name_pct_spin else 2.0
             ),
         }
 
@@ -634,7 +634,7 @@ def _hard_cmd(
             f"BorderStyle=4,"  # opaque box
             f"BackColour=&H80000000,"  # 50% transparent black box
             f"Alignment={alignment},"
-            f"MarginV=20"
+            f"MarginV=6"
         )
         vf = f"subtitles='{escaped}':force_style='{force_style}'"
     else:
@@ -649,7 +649,7 @@ def _hard_cmd(
             f"{outline_str}"
             f"Shadow=1,"
             f"Alignment={alignment},"
-            f"MarginV=20"
+            f"MarginV=6"
         )
         vf = f"subtitles='{escaped}':force_style='{force_style}'"
 
