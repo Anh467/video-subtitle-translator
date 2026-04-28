@@ -30,6 +30,7 @@ from PyQt6.QtWidgets import (
 )
 
 from core.session import Session
+from ui.widgets.session_info_editor import SessionInfoEditor
 from ui.widgets.step_card import StepCard
 from ui.widgets.subtitle_editor import SubtitleEditor
 
@@ -405,12 +406,20 @@ class MultiSessionWindow(QMainWindow):
         self._session_panel.setMaximumWidth(500)
         top_split.addWidget(self._session_panel)
 
-        # Right: subtitle editor (Original | Translated editable)
+        # Right: session info editor (top) + subtitle editor (bottom)
+        right_split = QSplitter(Qt.Orientation.Vertical)
+
+        self._info_editor = SessionInfoEditor()
+        self._info_editor.setMaximumHeight(130)
+        right_split.addWidget(self._info_editor)
+
         self._subtitle_editor = SubtitleEditor()
-        self._preview_title = (
-            self._subtitle_editor._title_lbl
-        )  # alias for _on_session_clicked
-        top_split.addWidget(self._subtitle_editor)
+        self._preview_title = self._subtitle_editor._title_lbl
+        right_split.addWidget(self._subtitle_editor)
+
+        right_split.setStretchFactor(0, 0)
+        right_split.setStretchFactor(1, 1)
+        top_split.addWidget(right_split)
         top_split.setStretchFactor(0, 0)
         top_split.setStretchFactor(1, 1)
         root.addWidget(top_split, stretch=1)
@@ -552,19 +561,23 @@ class MultiSessionWindow(QMainWindow):
         return l
 
     def _on_session_clicked(self, sess_data: dict):
-        """Load session into subtitle editor + restore step card statuses."""
+        """Load session into info editor, subtitle editor + restore step card statuses."""
         folder = sess_data["folder"]
         try:
             session = Session.load(folder)
         except Exception as e:
             self._subtitle_editor.clear()
+            self._info_editor.clear()
             self._subtitle_editor.set_orig_placeholder(f"Cannot load session:\n{e}")
             return
 
-        # Load subtitle preview
+        # Load info editor
+        self._info_editor.load_session(session)
+
+        # Load subtitle preview + editor
         self._subtitle_editor.load_session(session)
 
-        # Restore step card statuses (same logic as MainWindow._load_session)
+        # Restore step card statuses
         done_steps = session.done_steps()
         for step, card in zip(self._steps, self._cards):
             card.reset()
@@ -584,15 +597,14 @@ class MultiSessionWindow(QMainWindow):
         self._start_queue(sessions)
 
     def _run_all_sessions(self):
-        # Select all then run
-        self._session_panel._select_all()
-        sessions = self._session_panel.get_selected_sessions()
-        if not sessions:
+        # Run ALL sessions regardless of checkbox state — do NOT call _select_all()
+        all_sessions = self._session_panel._sessions
+        if not all_sessions:
             QMessageBox.information(
                 self, "No sessions", "No sessions found in base folder."
             )
             return
-        self._start_queue(sessions)
+        self._start_queue(all_sessions)
 
     def _start_queue(self, sessions: list[dict]):
         if self._worker is not None:

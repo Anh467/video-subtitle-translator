@@ -35,6 +35,7 @@ from core.pipeline.step6_add_voice import AddVoiceStep
 from core.session import Session
 from ui.multi_session_window import MultiSessionWindow
 from ui.widgets.drop_zone import SUPPORTED, DropZone
+from ui.widgets.session_info_editor import SessionInfoEditor
 from ui.widgets.step_card import StepCard
 from ui.widgets.subtitle_editor import SubtitleEditor
 
@@ -482,6 +483,11 @@ class MainWindow(QMainWindow):
         sh.addWidget(btn_logs)
         root.addWidget(sf)
 
+        # Session info editor (title + description)
+        self._info_editor = SessionInfoEditor()
+        self._info_editor.setMaximumHeight(120)
+        root.addWidget(self._info_editor)
+
         # File input
         fi = QHBoxLayout()
         self._drop = DropZone(self._set_file)
@@ -801,6 +807,9 @@ class MainWindow(QMainWindow):
         # Load subtitle editor
         self._subtitle_editor.load_session(session)
 
+        # Load session info editor
+        self._info_editor.load_session(session)
+
         done_labels = [s.LABEL for s in self._steps if s.STEP_ID in done_steps]
         self._log(
             f"💡 Completed steps: {', '.join(done_labels) if done_labels else 'None'}"
@@ -841,6 +850,7 @@ class MainWindow(QMainWindow):
             return False
         self._session = Session(base, self._file)
         self._sess_name_lbl.setText(self._session.folder.name)
+        self._info_editor.load_session(self._session)
         self._log(f"📁 New session: {self._session.folder}")
         return True
 
@@ -876,6 +886,7 @@ class MainWindow(QMainWindow):
         self._drop.set_file(Path(path).name)
         self._sess_name_lbl.setText("—  (created on first Run)")
         self._subtitle_editor.clear()
+        self._info_editor.clear()
         for card in self._cards:
             card.reset()
         self._status_bar.showMessage(f"File: {Path(path).name}")
@@ -1061,11 +1072,11 @@ class MainWindow(QMainWindow):
             )
         if step.STEP_ID == "step2_translate" and isinstance(result, list):
             lines = []
-            for s in result:
+            for i, s in enumerate(result, 1):
                 lines += [
-                    f"[{s.start}s–{s.end}s]",
-                    f"  {s.original}",
-                    f"  → {s.translated}",
+                    str(i),
+                    f"[{s.start}s–{s.end}s] {s.original}",
+                    s.translated,
                     "",
                 ]
             self._subtitle_editor._trans_edit.setPlainText("\n".join(lines))

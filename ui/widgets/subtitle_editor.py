@@ -55,36 +55,44 @@ def _write_srt(segments: list[dict], path: str):
 
 def _parse_translated_block(text: str) -> list[dict]:
     """
-    Parse nội dung Translated panel về list of dicts.
+    Parse Translated panel (SRT-style) về list of dicts.
 
-    Format hiện tại trong panel:
-        [0.0s–1.28s]
-          original text
-          → translated text
+    Format:
+        1
+        [0.0s-1.28s] original text
+        translated text
 
-    Trả về list[{start, end, original, translated}]
-    Nếu parse fail trả về [] để caller xử lý.
+        2
+        [1.28s-2.84s] original text
+        translated text here
     """
     segments = []
-    # Match blocks: [start–end]\n  original\n  → translated
-    pattern = re.compile(
-        r"\[(\d+(?:\.\d+)?)s[–-](\d+(?:\.\d+)?)s\]\s*\n"  # [start–end]
-        r"[ \t]+(.*?)\s*\n"  # original (indented)
-        r"[ \t]+→\s*(.*?)(?=\n\s*\[|\Z)",  # → translated
-        re.DOTALL,
-    )
-    for m in pattern.finditer(text):
+    blocks = re.split(r"\n\s*\n", text.strip())
+    for block in blocks:
+        lines = [l for l in block.strip().splitlines() if l.strip()]
+        if len(lines) < 2:
+            continue
+        # Find timestamp line
+        ts_idx = None
+        for i, line in enumerate(lines):
+            if re.match(r"^\[[\d.]+s[–\-][\d.]+s\]", line.strip()):
+                ts_idx = i
+                break
+        if ts_idx is None:
+            continue
+        ts_line = lines[ts_idx].strip()
+        m = re.match(r"^\[([\d.]+)s[–\-]([\d.]+)s\]\s*(.*)", ts_line)
+        if not m:
+            continue
         start = float(m.group(1))
         end = float(m.group(2))
         original = m.group(3).strip()
-        translated = m.group(4).strip()
+        translated_lines = lines[ts_idx + 1 :]
+        translated = " ".join(l.strip() for l in translated_lines if l.strip())
+        if not translated:
+            continue
         segments.append(
-            {
-                "start": start,
-                "end": end,
-                "original": original,
-                "translated": translated,
-            }
+            {"start": start, "end": end, "original": original, "translated": translated}
         )
     return segments
 
@@ -137,11 +145,11 @@ class SubtitleEditor(QWidget):
         try:
             segs = session.load_translated()
             lines = []
-            for s in segs:
+            for i, s in enumerate(segs, 1):
                 lines += [
-                    f"[{s.start}s–{s.end}s]",
-                    f"  {s.original}",
-                    f"  → {s.translated}",
+                    str(i),
+                    f"[{s.start}s–{s.end}s] {s.original}",
+                    s.translated,
                     "",
                 ]
             self._trans_edit.setPlainText("\n".join(lines))

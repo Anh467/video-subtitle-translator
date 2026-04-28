@@ -4,6 +4,7 @@ Features:
 - Auto-save tất cả output sau mỗi step
 - Load lại session cũ để resume từ bất kỳ step nào
 - list_sessions() để hiển thị danh sách sessions có thể chọn
+- title + description: editable metadata per session
 """
 
 import json
@@ -17,6 +18,8 @@ class Session:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.folder = Path(base_dir) / f"{stem}_{ts}"
         self.source_file = str(source_file)
+        self.title: str = ""
+        self.description: str = ""
         self.folder.mkdir(parents=True, exist_ok=True)
         self._save_meta()
 
@@ -27,6 +30,8 @@ class Session:
         obj = object.__new__(cls)
         obj.folder = f
         obj.source_file = meta["source_file"]
+        obj.title = meta.get("title", "")
+        obj.description = meta.get("description", "")
         return obj
 
     @staticmethod
@@ -44,13 +49,11 @@ class Session:
                 continue
             try:
                 meta = json.loads(meta_path.read_text(encoding="utf-8"))
-                # Detect which steps are done
                 done = []
                 if (d / "step1_transcript.json").exists():
                     done.append("①")
                 if (d / "step2_translated.json").exists():
                     done.append("②")
-                # step3 video has dynamic extension
                 if any(d.glob("step3_output.*")):
                     done.append("③")
                 if (d / "step4_vocals.mp3").exists():
@@ -66,6 +69,8 @@ class Session:
                         "folder": str(d),
                         "name": d.name,
                         "source_file": meta.get("source_file", ""),
+                        "title": meta.get("title", ""),
+                        "description": meta.get("description", ""),
                         "done_steps": done,
                         "size_mb": round(size / 1024 / 1024, 1),
                         "mtime": d.stat().st_mtime,
@@ -83,6 +88,14 @@ class Session:
         p = Path(folder)
         if p.exists():
             shutil.rmtree(str(p))
+
+    # ── Info (title + description) ────────────────────────────────────────────
+
+    def save_info(self, title: str = "", description: str = ""):
+        """Save title + description into session.json (non-destructive update)."""
+        self.title = title.strip()
+        self.description = description.strip()
+        self._save_meta()
 
     # ── output paths ──────────────────────────────────────────────────────────
     @property
@@ -103,7 +116,6 @@ class Session:
 
     @property
     def step3_video(self):
-        # Try to find existing file first (any extension)
         for f in self.folder.glob("step3_output.*"):
             return f
         return self.folder / f"step3_output{Path(self.source_file).suffix}"
@@ -134,29 +146,24 @@ class Session:
 
     @property
     def step5_tts_cache_dir(self):
-        # Backward compatibility alias for old references.
         return self.step5_tts_assets_dir
 
     @property
     def step5_tts_assets_dir(self):
-        # Session-local TTS assets (audio + timing manifests).
         return self.folder / "step5_tts_assets"
 
     @property
     def step5_tts_library_dir(self):
-        # Compatibility alias (now points to session-local assets).
         return self.step5_tts_assets_dir
 
     @property
     def step5_tts_session_dir(self):
-        # Optional per-session storage (kept for compatibility/debug if needed).
         return self.folder / "step5_tts_cache"
 
     @property
     def step6_video(self):
         for f in self.folder.glob("step6_output.*"):
             return f
-        # Backward compatibility with older sessions
         for f in self.folder.glob("step5_output.*"):
             return f
         return self.folder / f"step6_output{Path(self.source_file).suffix}"
@@ -187,7 +194,6 @@ class Session:
         return self.step6_video.exists()
 
     def done_steps(self) -> list[str]:
-        """Return list of completed step IDs."""
         steps = []
         if self.step1_done:
             steps.append("step1_transcribe")
@@ -208,7 +214,6 @@ class Session:
         s3 = self.step3_video
         s6 = self.step6_video
         if s3.exists() and s6.exists():
-            # Pick the newer processed video so queue runs (3 -> 6) chain correctly.
             return str(s3 if s3.stat().st_mtime >= s6.stat().st_mtime else s6)
         if s6.exists():
             return str(s6)
@@ -226,6 +231,8 @@ class Session:
                     "source_file": self.source_file,
                     "folder": str(self.folder),
                     "created": datetime.now().isoformat(),
+                    "title": self.title,
+                    "description": self.description,
                 },
                 ensure_ascii=False,
                 indent=2,
