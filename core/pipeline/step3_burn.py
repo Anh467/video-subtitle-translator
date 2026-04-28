@@ -8,7 +8,6 @@ Improvements:
 
 import json
 import os
-import random
 import shutil
 import subprocess
 import tempfile
@@ -255,7 +254,7 @@ class BurnStep(BaseStep):
     def _browse_avatar(self):
         p, _ = QFileDialog.getOpenFileName(
             None,
-            "Choose channel avatar",
+            "Upload channel avatar",
             "",
             "Images (*.png *.jpg *.jpeg *.webp)",
         )
@@ -304,7 +303,7 @@ class BurnStep(BaseStep):
         log(f"   Video resolution: {w}x{h}")
 
         # Auto-scale font size: % of video height
-        font_pct = config.get("font_pct", 5)  # default 5% of height
+        font_pct = config.get("font_pct", 2.0)  # default 2% of height
         font_size = max(12, int(h * font_pct / 100))
         log(f"   Font size: {font_pct}% of {h}px = {font_size}px")
 
@@ -382,13 +381,13 @@ class BurnStep(BaseStep):
         self._font_pct_spin.setDecimals(1)
         self._font_pct_spin.setSingleStep(0.5)
         self._font_pct_spin.setRange(0.5, 15)
-        self._font_pct_spin.setValue(5)
+        self._font_pct_spin.setValue(2)
         self._font_pct_spin.setFixedWidth(60)
         self._font_pct_spin.setToolTip(
             "% chiều cao video\n"
-            "720p  → 5% = 36px\n"
-            "1080p → 5% = 54px\n"
-            "1920p → 5% = 96px\n"
+            "720p  → 2% = 14px\n"
+            "1080p → 2% = 21px\n"
+            "1920p → 2% = 38px\n"
             "Tự động scale theo độ phân giải video"
         )
         r_fs.addWidget(self._font_pct_spin)
@@ -454,9 +453,12 @@ class BurnStep(BaseStep):
         r_av = QHBoxLayout()
         r_av.addWidget(QLabel("Avatar image:"))
         self._brand_avatar_edit = QLineEdit()
-        self._brand_avatar_edit.setPlaceholderText("C:/.../avatar.png")
+        self._brand_avatar_edit.setPlaceholderText(
+            "Use Upload avatar... to select image"
+        )
+        self._brand_avatar_edit.setReadOnly(True)
         r_av.addWidget(self._brand_avatar_edit)
-        btn_browse_av = QPushButton("Browse…")
+        btn_browse_av = QPushButton("Upload avatar...")
         btn_browse_av.clicked.connect(self._browse_avatar)
         r_av.addWidget(btn_browse_av)
         v.addLayout(r_av)
@@ -530,7 +532,7 @@ class BurnStep(BaseStep):
                 if (self._radio_hard and self._radio_hard.isChecked())
                 else "soft"
             ),
-            "font_pct": self._font_pct_spin.value() if self._font_pct_spin else 5.0,
+            "font_pct": self._font_pct_spin.value() if self._font_pct_spin else 2.0,
             "font_color": (
                 self._color_combo.currentText() if self._color_combo else "white"
             ),
@@ -679,23 +681,56 @@ def _hard_cmd(
         0, int(min(video_w, video_h) * float(branding.get("margin_pct", 2.0)) / 100.0)
     )
     pos = branding.get("pos", "random")
-    if pos == "random":
-        pos = random.choice(["top_left", "top_right", "bottom_left", "bottom_right"])
     gap = max(6, int(name_size * 0.35))
     est_text_h = int(name_size * 1.4)
 
-    if pos == "top_right":
-        x_expr = f"W-overlay_w-{margin}"
-        y_avatar = margin
-    elif pos == "bottom_left":
-        x_expr = str(margin)
-        y_avatar = max(0, video_h - avatar_w - est_text_h - gap - margin)
-    elif pos == "bottom_right":
-        x_expr = f"W-overlay_w-{margin}"
-        y_avatar = max(0, video_h - avatar_w - est_text_h - gap - margin)
+    # Determine if we should use animated movement or fixed position
+    use_random_movement = pos == "random"
+
+    if use_random_movement:
+        # Use comma-free expressions (sin/cos) so FFmpeg parser stays stable.
+        # Movement is slow and continuous; text uses the same motion base as avatar.
+        x_span_overlay = max(0, video_w - avatar_w - 2 * margin)
+        y_span_overlay = max(0, video_h - avatar_w - est_text_h - gap - 2 * margin)
+        x_span_text = max(0, video_w - avatar_w - 2 * margin)
+        y_span_text = max(0, video_h - avatar_w - est_text_h - gap - 2 * margin)
+
+        x_avatar_overlay = f"{margin}+({x_span_overlay})*(0.5+0.5*sin(t/6))"
+        y_avatar_overlay = f"{margin}+({y_span_overlay})*(0.5+0.5*cos(t/7))"
+        x_avatar_text = f"{margin}+({x_span_text})*(0.5+0.5*sin(t/6))"
+        y_avatar_text = f"{margin}+({y_span_text})*(0.5+0.5*cos(t/7))"
+
+        y_text_name = f"({y_avatar_text})+{avatar_w}+{gap}"
     else:
-        x_expr = str(margin)
-        y_avatar = margin
+        # Fixed position (static)
+        if pos == "top_right":
+            x_avatar_overlay = f"W-overlay_w-{margin}"
+            y_avatar_overlay = margin
+            x_avatar_text = f"W-{avatar_w}-{margin}"
+            y_avatar_text = margin
+        elif pos == "bottom_left":
+            x_avatar_overlay = str(margin)
+            y_avatar_overlay = max(0, video_h - avatar_w - est_text_h - gap - margin)
+            x_avatar_text = str(margin)
+            y_avatar_text = max(0, video_h - avatar_w - est_text_h - gap - margin)
+        elif pos == "bottom_right":
+            x_avatar_overlay = f"W-overlay_w-{margin}"
+            y_avatar_overlay = max(0, video_h - avatar_w - est_text_h - gap - margin)
+            x_avatar_text = f"W-{avatar_w}-{margin}"
+            y_avatar_text = max(0, video_h - avatar_w - est_text_h - gap - margin)
+        else:  # top_left
+            x_avatar_overlay = str(margin)
+            y_avatar_overlay = margin
+            x_avatar_text = str(margin)
+            y_avatar_text = margin
+
+        y_text_name = f"{y_avatar_text}+{avatar_w}+{gap}"
+
+    # Tên được centered dựa vào avatar (không từ center screen)
+    # Tính x position để center text relative to avatar
+    text_width_approx = max(50, len(name) * name_size * 0.5)
+    # Center offset = (avatar_width - text_width) / 2
+    center_offset = (avatar_w - int(text_width_approx)) / 2
 
     filters = [f"[0:v]{vf}[sub]"]
     map_label = "sub"
@@ -704,16 +739,19 @@ def _hard_cmd(
         filters.append(
             f"[1:v]scale={avatar_w}:-1,format=rgba,colorchannelmixer=aa={opacity:.3f}[logo]"
         )
-        filters.append(f"[sub][logo]overlay=x={x_expr}:y={y_avatar}[vlogo]")
+        # Avatar với movement hoặc fixed position
+        filters.append(
+            f"[sub][logo]overlay=x={x_avatar_overlay}:y={y_avatar_overlay}[vlogo]"
+        )
         map_label = "vlogo"
 
     if name:
-        text_y = y_avatar + avatar_w + gap
+        # Tên nằm dưới avatar và CENTERED relative to avatar position
         filters.append(
             f"[{map_label}]drawtext=text='{name}':"
             f"fontcolor=white@{opacity:.3f}:fontsize={name_size}:"
             f"box=1:boxcolor=black@0.45:boxborderw=8:"
-            f"x={x_expr}:y={text_y}[vout]"
+            f"x=({x_avatar_text})+{center_offset}:y={y_text_name}[vout]"
         )
         map_label = "vout"
 

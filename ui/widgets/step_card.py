@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -78,11 +79,11 @@ class StepCard(QWidget):
         scroll.setMaximumHeight(180)
 
         config_w = self.step.build_config_widget()
+        config_w.adjustSize()
+        config_w.setMinimumWidth(config_w.sizeHint().width())
         config_w.setSizePolicy(
-            config_w.sizePolicy().horizontalPolicy(),
-            __import__(
-                "PyQt6.QtWidgets", fromlist=["QSizePolicy"]
-            ).QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Preferred,
         )
         scroll.setWidget(config_w)
         frame_v.addWidget(scroll, stretch=0)
@@ -112,6 +113,14 @@ class StepCard(QWidget):
         frame_v.addWidget(self._file_lbl)
 
         outer.addWidget(self._frame)
+
+        # Auto width: lock card width to the natural size of child components.
+        self.adjustSize()
+        card_width = self.sizeHint().width()
+        self.setMinimumWidth(card_width)
+        self.setMaximumWidth(card_width)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
+
         self._on_toggle()
 
     # ── Public API ────────────────────────────────────────────────────────────
