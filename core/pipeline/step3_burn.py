@@ -291,12 +291,12 @@ class BurnStep(BaseStep):
         translated = session.load_translated()
         out = str(session.step3_video)
         mode = config["mode"]
-        input_video = session.latest_video()
-
-        if hasattr(session, "step6_video") and input_video == str(session.step6_video):
-            log("🔗 Chaining: using Step 6 output as base video")
-        elif input_video != session.source_file:
-            log("🔗 Chaining: using existing processed video as base")
+        # Always burn from original source to avoid stacking subtitles from previous Step 3/6 outputs.
+        input_video = session.source_file
+        if getattr(session, "step3_done", False):
+            log(
+                "♻️  Rebuilding subtitles from original source (overwrite previous Step 3)"
+            )
 
         # Get actual video resolution for auto font size
         w, h = _get_video_size(input_video)

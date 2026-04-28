@@ -205,10 +205,15 @@ class Session:
 
     # ── smart video chaining ──────────────────────────────────────────────────
     def latest_video(self) -> str:
-        if self.step6_video.exists():
-            return str(self.step6_video)
-        if self.step3_video.exists():
-            return str(self.step3_video)
+        s3 = self.step3_video
+        s6 = self.step6_video
+        if s3.exists() and s6.exists():
+            # Pick the newer processed video so queue runs (3 -> 6) chain correctly.
+            return str(s3 if s3.stat().st_mtime >= s6.stat().st_mtime else s6)
+        if s6.exists():
+            return str(s6)
+        if s3.exists():
+            return str(s3)
         return self.source_file
 
     def final_video(self) -> str:
