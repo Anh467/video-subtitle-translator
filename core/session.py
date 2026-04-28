@@ -134,13 +134,18 @@ class Session:
 
     @property
     def step5_tts_cache_dir(self):
-        # Backward compatibility alias.
-        return self.step5_tts_library_dir
+        # Backward compatibility alias for old references.
+        return self.step5_tts_assets_dir
+
+    @property
+    def step5_tts_assets_dir(self):
+        # Session-local TTS assets (audio + timing manifests).
+        return self.folder / "step5_tts_assets"
 
     @property
     def step5_tts_library_dir(self):
-        # Shared persistent library for all sessions under the same base folder.
-        return self.folder.parent / "_tts_library"
+        # Compatibility alias (now points to session-local assets).
+        return self.step5_tts_assets_dir
 
     @property
     def step5_tts_session_dir(self):

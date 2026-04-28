@@ -29,6 +29,11 @@ from PyQt6.QtWidgets import (
 )
 
 from core.pipeline.base import BaseStep
+from core.pipeline.selection import (
+    ollama_model_from_combo_text,
+    translate_backend_from_index,
+    verify_backend_from_index,
+)
 
 LANGUAGES = {
     "Vietnamese": "vi",
@@ -1108,17 +1113,18 @@ class TranslateStep(BaseStep):
         return w
 
     def _on_backend_changed(self, idx):
-        is_google = idx == 1
-        needs_key = idx != 1
+        backend = translate_backend_from_index(idx)
+        is_google = backend == "google"
+        needs_key = backend != "google"
         self._api_lbl.setVisible(needs_key)
         self._api_edit.setVisible(needs_key)
         self._google_opts.setVisible(is_google)
         self._ai_opts.setVisible(not is_google)
-        if idx == 0:
+        if backend == "gemini":
             self._api_edit.setPlaceholderText(
                 "Gemini API key — free at aistudio.google.com"
             )
-        elif idx == 2:
+        elif backend == "openai":
             self._api_edit.setPlaceholderText("OpenAI API key — platform.openai.com")
 
     def _on_verify_changed(self, idx):
@@ -1127,18 +1133,16 @@ class TranslateStep(BaseStep):
 
     def collect_config(self):
         idx = self._backend_combo.currentIndex() if self._backend_combo else 0
-        backend_map = {0: "gemini", 1: "google", 2: "openai"}
-        backend = backend_map.get(idx, "gemini")
+        backend = translate_backend_from_index(idx)
 
         v_idx = self._verify_combo.currentIndex() if self._verify_combo else 0
-        verify_map = {0: "none", 1: "ollama", 2: "gemini", 3: "openai"}
-        verify_backend = verify_map.get(v_idx, "none")
+        verify_backend = verify_backend_from_index(v_idx)
 
         ollama_model = "qwen2"
         if self._ollama_model_combo:
-            # Extract model name — format: "qwen2   — description"
-            raw = self._ollama_model_combo.currentText()
-            ollama_model = raw.split("—")[0].strip().split()[0].strip()
+            ollama_model = ollama_model_from_combo_text(
+                self._ollama_model_combo.currentText()
+            )
 
         return {
             "backend": backend,

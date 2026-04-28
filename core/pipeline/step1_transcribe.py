@@ -261,6 +261,10 @@ class TranscribeStep(BaseStep):
         self._min_silence_spin.setSingleStep(0.1)
         self._min_silence_spin.setValue(0.5)
         self._min_silence_spin.setFixedWidth(65)
+        self._min_silence_spin.setFixedHeight(26)
+        self._min_silence_spin.setStyleSheet(
+            "QDoubleSpinBox::up-button,QDoubleSpinBox::down-button{width:14px;}"
+        )
         self._min_silence_spin.setToolTip(
             "Khoảng lặng tối thiểu (giây) để tách segment\n"
             "0.3s = tách nhiều hơn (chi tiết)\n"

@@ -1,404 +1,181 @@
-# SubSync — Project Context Document
+# SubSync Project Context
 
-> Paste toàn bộ file này vào đầu conversation mới để AI hiểu đủ context.
+## Overview
 
----
+SubSync is a PyQt6 desktop pipeline for subtitle and voice-over production.
 
-## Tổng quan
+Current processing flow:
 
-**SubSync** là desktop app (PyQt6 + Python 3.11) pipeline xử lý video:
+1. Step 1 `Transcribe`: speech-to-text with timestamps.
+2. Step 2 `Translate`: translated subtitle segments.
+3. Step 3 `Burn Subtitle`: subtitle mux/burn into video.
+4. Step 4 `Separate Voice`: split vocals/background.
+5. Step 5 `Text-to-Speech`: generate TTS assets only.
+6. Step 6 `Add Voice`: compose/mix/mux audio into final video.
 
-```
-Video gốc (Trung/Anh/Nhật...)
-  ① Whisper       → transcript + timestamps (subprocess để tránh PyTorch+Qt crash)
-  ② Translate     → dịch sang VI (Google/Gemini/OpenAI + SmartFixer + Ollama verify)
-  ③ Burn Subtitle → burn sub vào video (ffmpeg soft/hard)
-  ④ Separate Voice→ tách giọng/nhạc (Demucs)
-    ⑤ Text-to-Speech → gọi API TTS, lưu audio + cache voices theo session
-    ⑥ Add Voice      → dùng audio đã lưu để mix/mux vào video (không gọi API)
-```
+Main design rule: Step 5 does API calls and stores reusable assets; Step 6 does composition and final video output.
 
-**Path trên máy user:** `D:\Nguyen-Anh-Viet\Tutorial\Python\audio-to-text\video-subtitle-translator\`
+## Repository Structure
 
-**Python:** 3.13 (có lỗi PyTorch, fix bằng subprocess cho Whisper)
+- `main.py`: app entry point.
+- `core/session.py`: session paths, state, chaining.
+- `core/api_keys.py`: API key manager for `.subsync_keys`.
+- `core/pipeline/base.py`: step abstractions and worker.
+- `core/pipeline/selection.py`: shared backend/model/API-key mapping helpers.
+- `core/pipeline/tts_assets.py`: shared Step 5 asset resolve/compose helpers.
+- `core/pipeline/step1_transcribe.py`
+- `core/pipeline/step2_translate.py`
+- `core/pipeline/step3_burn.py`
+- `core/pipeline/step4_separate.py`
+- `core/pipeline/step5_tts.py`
+- `core/pipeline/step6_add_voice.py`
+- `ui/main_window.py`: orchestration, queue, session manager, key loading.
 
----
+## Session Model
 
-## Cấu trúc project
+Each run creates a session folder:
 
-```
-subsync/
-├── main.py                        ← QApplication entry point
-├── requirements.txt
-├── core/
-│   ├── session.py                 ← Session folder per run + latest_video() chaining
-│   └── pipeline/
-│       ├── base.py                ← BaseStep, StepWorker(QRunnable), CancelledError, _fmt()
-│       ├── step1_transcribe.py    ← Whisper qua subprocess (fix Python 3.13 crash)
-│       ├── step2_translate.py     ← Translate + SmartFixer + Ollama verify
-│       ├── step3_burn.py          ← ffmpeg burn subtitle
-│       ├── step4_separate.py      ← Demucs vocal separation
-│       ├── step5_tts.py           ← TTS only + cache voices
-│       └── step6_add_voice.py     ← Mix + mux using saved TTS
-└── ui/
-    ├── main_window.py             ← MainWindow: Run All queue, 6 step cards
-    └── widgets/
-        ├── step_card.py           ← StepCard widget
-        └── drop_zone.py           ← Drag & drop zone
-```
+- `<base_dir>/<source_stem>_<timestamp>/`
 
----
+Important outputs:
 
-## core/session.py
+- `step1_transcript.json`, `step1_transcript.txt`
+- `step2_translated.json`, `step2_translated.srt`
+- `step3_output.*`
+- `step4_vocals.mp3`, `step4_background.mp3`
+- `step5_tts.mp3`
+- `step5_tts_assets/` (new TTS assets)
+- `step6_output.*`
 
-```python
-class Session:
-    folder: Path          # <base_dir>/<stem>_<YYYYMMDD_HHMMSS>/
-    source_file: str
+Video chaining from `Session.latest_video()`:
 
-    # Output paths
-    step1_json, step1_txt
-    step2_json, step2_srt
-    step3_video           # <stem>.mp4
-    step4_vocals, step4_background
-    step5_tts, step5_tts_cache_dir
-    step6_video
-
-    # Smart chaining — step3 và step6 có thể chain vào nhau bất kỳ thứ tự
-    def latest_video() -> str:
-        # step6_video > step3_video > source_file
-```
-
----
-
-## core/pipeline/base.py
-
-```python
-class BaseStep(ABC):
-    STEP_ID: str
-    LABEL: str
-    COLOR: str
-    ENABLED_BY_DEFAULT: bool
-
-    def run(self, session, config, log, cancel): ...
-    def build_config_widget(self, parent=None): ...
-    def collect_config(self) -> dict: ...
-    def make_worker(self, session, config) -> StepWorker: ...
-
-class StepWorker(QRunnable):
-    signals: WorkerSignals  # progress(str), finished(object), error(str), cancelled()
-    # setAutoDelete(False) để tránh Qt xóa trước khi signal xử lý xong
-
-class CancelledError(Exception): pass
-
-def _fmt(s: float) -> str: ...  # "1.23s" hoặc "1m 23.4s"
-```
-
----
-
-## Step 1 — Transcribe (step1_transcribe.py)
-
-**Key design:** Whisper chạy trong **child subprocess** (không phải Qt thread) để tránh `Fatal: _PyThreadState_Attach` trên Python 3.13 + PyTorch.
-
-```python
-LANGUAGES = {
-    "Auto detect": None, "Vietnamese": "vi", "English": "en",
-    "Japanese": "ja", "Korean": "ko", "Chinese": "zh",  # "zh" không phải "zh-CN"
-    ...
-}
-WHISPER_MODELS = ["tiny","base","small","medium","large"]
-
-# Normalize language trước khi truyền vào Whisper
-if language:
-    language = language.split("-")[0].lower()  # "zh-CN" → "zh"
-
-# Runner script tạm + subprocess.run()
-runner_code = f"""
-import whisper, json, sys
-model = whisper.load_model({repr(model_size)})
-r = model.transcribe({repr(audio_path)}, language={lang_arg})
-print(json.dumps(r))
-"""
-r = subprocess.run([sys.executable, tmp_script.name],
-    capture_output=True, text=True, encoding="utf-8", errors="replace")
-raw = json.loads(r.stdout)
-
-# Output
-@dataclass class Segment: start, end, text
-@dataclass class TranscriptResult: text, segments, language, source_file
-```
-
----
-
-## Step 2 — Translate (step2_translate.py)
-
-### Backends
-
-- **Google** (free): chunk mode — gộp 15 segs/request với `|||` separator
-- **Gemini** (free): batch 20 segs + context window ±5 + character summary
-  - SDK: `google.genai` (mới), model: `gemini-2.0-flash`
-  - Auto-retry 429 với wait time từ error message
-  - Delay 4s giữa batches
-- **OpenAI** (trả phí): batch 20 segs + context window
-
-### SmartFixer (rule-based, free, no API)
-
-```python
-class SmartFixer:
-    # Fix pronoun-gender mismatch: "她是我爸爸" → "Đây là bố tôi"
-    # 3 tầng: word-level fix → ZH pronoun rules → context inference từ neighbours
-    def fix(self, original, translated, prev_segs, next_segs) -> str
-```
-
-### Verify pass (optional)
-
-- **Ollama** (local, free): prompt bilingual `[original] → translation` để model thấy contradiction
-- **Gemini / OpenAI**
-- Batch size 15 cho local models
-- `_build_verify_prompt()` riêng cho ollama (ngắn) vs API (chi tiết)
-
-### Ollama models trong dropdown
-
-```
-qwen2   — 🇨🇳 Tiếng Trung → VI (recommended, 4.4GB)
-llama3  — 🇬🇧 Tiếng Anh → VI (best English, 4.7GB)
-llama3.1 — 🇬🇧 Tiếng Anh → VI (newer)
-mistral — 💾 RAM thấp <8GB (4.1GB)
-gemma2  — ⚖️ Cân bằng (5.4GB)
-```
-
-`collect_config` parse model name: `raw.split("—")[0].strip().split()[0]`
-
-### Dataclass
-
-```python
-@dataclass class TranslatedSegment: start, end, original, translated
-```
-
-### Default UI
-
-- Backend: Google Translate (index 1)
-- Verify: None (index 0)
-- Rule fix: ON
-
----
-
-## Step 3 — Burn Subtitles (step3_burn.py)
-
-```python
-# Input: session.latest_video() — chain với step5 nếu đã chạy trước
-# Soft: mux SRT track (nhỏ, bật/tắt được)
-# Hard: burn pixels qua libx264 (mọi player đọc được)
-# Font size, color, outline, alignment (ASS format)
-
-def _soft_cmd(input, srt, out): ...   # ffmpeg -c copy -c:s mov_text
-def _hard_cmd(input, srt, out, ...):  # ffmpeg -vf subtitles=... libx264
-```
-
-**Default:** Hard (burned)
-
----
-
-## Step 4 — Separate Voice (step4_separate.py)
-
-```python
-# Demucs (Meta, local): htdemucs / htdemucs_ft / mdx_extra
-# Fix UnicodeEncodeError: copy file sang ASCII temp name trước khi chạy
-# PYTHONUTF8=1 + encoding="utf-8" env cho subprocess
-# Output: step4_vocals.mp3 + step4_background.mp3
-```
-
----
-
-## Step 5 — Text-to-Speech (step5_tts.py)
-
-### TTS Backends
-
-```python
-TTS_BACKENDS = {
-    "FPT AI TTS (free ⭐ VI)": "fpt",
-    "Zalo AI TTS (free VI)":   "zalo",
-    "gTTS (Google, free)":     "gtts",
-    "OpenAI TTS (natural)":    "openai_tts",
-    "ElevenLabs (best+emotion)":"elevenlabs",
-}
-```
-
-**FPT AI:**
-
-- POST `https://api.fpt.ai/hmi/tts/v5`
-- Async polling: response có `async` URL → poll đến khi ready
-- Voices: banmai, leminh, lannhi, minhquang, giahuy, linhsan, myan, ngoclam
-- Free: 1M ký tự/tháng
-
-**Zalo AI:**
-
-- POST `https://api.zalo.ai/v1/tts/synthesize`
-- Trả về WAV (RIFF header) không phải MP3 → dùng `from_wav()`
-- Rate limit: delay 1s/request + retry 3 lần khi 429
-- Voices: 1=nữ Nam, 2=nam Nam, 3=nữ Bắc, 4=nam Bắc
-
-### Hành vi Step 5
-
-- Chỉ gọi API/chạy local TTS để tạo `step5_tts.mp3`
-- Không mix/mux video ở Step 5 nữa
-- Mỗi lần generate đều lưu thêm 1 file cache theo timestamp ở `step5_tts_cache/`
-- Dùng lại cho Step 6 để tránh gọi API nhiều lần
-
-### Default
-
-- Backend: FPT AI TTS
-- Voice: banmai
-- Sync: trim
-
----
-
-## Step 6 — Add Voice (step6_add_voice.py)
-
-### Input
-
-- Ưu tiên `step5_tts.mp3`
-- Hoặc chỉ định thủ công 1 file mp3 từ cache trong session
-
-### Mix modes
-
-```python
-MIX_MODES = {
-    "TTS only (replace original)":          "replace",
-    "TTS + Background music (Step 4)":      "bgm_only",   # ← default
-    "TTS + BGM + Original voice (low vol)": "full_mix",
-}
-```
-
-### Audio mix flow
-
-```
-TTS(100%) + BGM(30%) → ffmpeg filter_complex amix → mixed.mp3
-mixed.mp3 + video(no audio) → ffmpeg mux → step6_output.mp4
-```
-
-### Smart chaining
-
-```python
-# Step 6 dùng latest_video() làm input
-# Nếu step3 đã chạy trước → step6 chain vào video có subtitle
-```
-
-**Default:** bgm_only
-
----
-
-## ui/main_window.py
-
-### Layout
-
-```
-Title → Session bar → File input → Horizontal scroll cards → Run All row → Log/Preview
-```
-
-### Run All queue
-
-```python
-self._queue: list = []       # list of enabled steps
-self._stop_queue: bool       # flag dừng sau step hiện tại
-
-# Buttons:
-# ▶▶ Run All Enabled Steps  → _run_all()
-# ⏹ Stop Queue              → _request_stop_queue() (finish current, skip rest)
-# ✕ Cancel Job              → _cancel() (kill current immediately)
-# Queue label: "Queue: ① Transcribe (6 left)"
-```
-
-### Step cards
-
-- Checkbox enable/disable
-- QScrollArea maxHeight=180, AlignTop
-- Run button với step color
-- Status: Waiting/Running/Done/Error/Cancelled
-
-### Video chaining
-
-- Step 3 và Step 6 đều dùng `session.latest_video()` làm input
-- Thứ tự chạy bất kỳ đều cho ra 1 video có cả sub + voice
-
----
-
-## Các lỗi đã fix
-
-| Lỗi                                                 | Fix                                                                     |
-| --------------------------------------------------- | ----------------------------------------------------------------------- |
-| `No module named 'core.pipeline'`                   | Tạo `__init__.py` trong mọi folder                                      |
-| `Fatal: _PyThreadState_Attach` (Python 3.13)        | Chạy Whisper trong subprocess                                           |
-| `UnicodeDecodeError cp1258`                         | `encoding="utf-8", errors="replace"` cho mọi subprocess                 |
-| `google.generativeai` deprecated                    | Dùng `google.genai`, `genai.Client()`                                   |
-| Gemini 404 NOT_FOUND                                | Model name `gemini-2.0-flash` không có prefix `models/`                 |
-| Gemini 429 rate limit                               | Auto-retry với wait time, delay 4s/batch                                |
-| Gemini dịch sang tiếng Trung                        | Prompt explicit: `"Translate ZH INTO Vietnamese"` + few-shot examples   |
-| `session is not defined` trong `_translate_gemini`  | Truyền `src_lang=transcript.language` từ `run()`                        |
-| `pyaudioop` Python 3.13                             | `pip install audioop-lts`                                               |
-| Demucs Unicode crash                                | Copy file sang ASCII temp name                                          |
-| UI tắt sau 1 job                                    | `_on_cancelled` gọi `_run_next()` thay vì `_set_busy(False)`            |
-| `setAutoDelete(False)`                              | Tránh Qt xóa worker trước khi signal xử lý xong                         |
-| Whisper `Unsupported language: zh-cn`               | Normalize: `language.split("-")[0].lower()`                             |
-| Zalo trả WAV không phải MP3                         | Detect RIFF header → `from_wav()`                                       |
-| Zalo 429 rate limit                                 | Retry 3 lần + delay 1s/request                                          |
-| Step 5 báo `'NoneType' object is not subscriptable` | Harden lỗi ffmpeg: không slice `stderr` khi `None`; log lỗi thật rõ hơn |
-| Step 5 input audio-only bị lỗi mux                  | Check stream bằng `ffprobe`; không có video thì export audio final      |
-| Step5 mux in-place lỗi `cannot edit existing files` | Mux qua file tạm rồi move về output đích                                |
-| Gọi lại add voice bị tốn API                        | Tách step 5 (TTS only) và step 6 (Add Voice only)                       |
-
----
-
-## Packages
-
-```
-# requirements.txt
-PyQt6
-openai-whisper
-openai
-deep-translator
-google-genai          # Gemini (KHÔNG dùng google-generativeai)
-demucs
-gtts
-pydub
-elevenlabs
-audioop-lts           # Fix pydub Python 3.13
-ffmpeg-python
-requests
-```
-
-**System:** `ffmpeg` (winget install ffmpeg), `Ollama` (ollama.com)
-
----
+- Prefer step6 output, then step3 output, else source video.
 
 ## API Keys
 
-| Service    | Env var              | Link                |
-| ---------- | -------------------- | ------------------- |
-| Gemini     | `GEMINI_API_KEY`     | aistudio.google.com |
-| OpenAI     | `OPENAI_API_KEY`     | platform.openai.com |
-| FPT AI     | `FPT_API_KEY`        | fpt.ai/tts          |
-| Zalo AI    | `ZALO_API_KEY`       | zalo.ai/developers  |
-| ElevenLabs | `ELEVENLABS_API_KEY` | elevenlabs.io       |
+Keys are stored in one file:
 
----
+- `<base_dir>/.subsync_keys`
 
-## Ollama setup (Windows)
+Managed by `core/api_keys.py`:
 
-```powershell
-# Cài vào ổ D (set trước khi cài)
-[System.Environment]::SetEnvironmentVariable("OLLAMA_MODELS","D:\Ollama\models","Machine")
+- `ApiKeyManager.load(base_dir)`
+- `ApiKeyManager.save(base_dir)`
+- known keys: Gemini, OpenAI, FPT, Zalo, ElevenLabs.
 
-# Pull models
-ollama pull qwen2    # tiếng Trung → VI
-ollama pull llama3   # tiếng Anh → VI
-```
+UI behavior in `ui/main_window.py`:
 
----
+- Choosing base folder triggers `_load_api_keys(base_dir)`.
+- Keys are auto-loaded and auto-filled into step config UI.
+- API keys dialog writes back to `.subsync_keys` and refreshes autofill.
+- Autofill now uses normalized candidate mapping from `core/pipeline/selection.py`
+  to avoid wrong key assignment when switching backend/model.
 
-## Pending / Known issues
+Model/API selection consistency rules:
 
-- User đang dùng Python 3.13 (không phải 3.11 như khuyến nghị)
-- Zalo TTS vẫn còn rate limit 429 dù đã có retry
-- FPT AI có thể fail nhiều segment khi quota/rate-limit/chất lượng text đầu vào; app hiện vẫn fallback silence cho segment lỗi
-- Ollama đã cài, models đang pull vào D:\Ollama\models
+- Translate backend index -> backend key via `translate_backend_from_index()`.
+- Verify backend index -> backend key via `verify_backend_from_index()`.
+- Ollama combo text -> model id via `ollama_model_from_combo_text()`.
+- TTS backend label -> backend key via `tts_backend_from_label()`.
+- API key candidate list is centralized with:
+  - `translate_key_candidates()`
+  - `tts_key_candidates()`
+
+## Step 5 (TTS) Current Logic
+
+File: `core/pipeline/step5_tts.py`
+
+Responsibilities:
+
+- Read translated segments.
+- Call one backend or batch all backends.
+- Generate raw segment outputs and asset manifests.
+- Generate final merged track (`step5_tts.mp3`) only as quick fallback.
+- Persist detailed TTS assets for Step 6.
+
+Persisted assets per backend-run:
+
+- `<asset_prefix>.mp3`: merged track for that request.
+- `<asset_prefix>.json`: manifest.
+- `<asset_prefix>_segments/seg_XXXX.mp3`: per-segment audio files from API/local TTS.
+
+Manifest contains:
+
+- metadata: backend, voice, language, created time.
+- `audio_file`: merged track file name.
+- `segment_dir`: per-segment folder name.
+- `segments[]`: index/start/end/text and `clip_file` per segment.
+
+Important:
+
+- Step 5 does NOT apply sync trim/pad/stretch.
+- Segment files are stored as raw API/local TTS outputs.
+
+Backends:
+
+- FPT
+- Zalo
+- gTTS
+- OpenAI TTS
+- ElevenLabs
+
+## Step 6 (Add Voice) Current Logic
+
+Files:
+
+- `core/pipeline/step6_add_voice.py`
+- `core/pipeline/tts_assets.py`
+
+Responsibilities:
+
+- Select TTS source(s) from session assets.
+- Compose timeline-aligned voice track from manifest(s).
+- Mix with background/original audio based on mode.
+- Mux into final video output.
+
+Source modes:
+
+- all session manifests
+- latest manifest only
+- single audio file
+- custom manifest/audio list
+
+Refactor status:
+
+- Manifest collection, source loading, and timeline composition are extracted to
+  `core/pipeline/tts_assets.py`.
+- `step6_add_voice.py` now focuses on orchestration (resolve -> compose -> mix -> mux).
+
+Composition behavior:
+
+- Prefer per-segment files from `segment_dir` + `clip_file`.
+- Fallback to slicing merged `audio_file` by segment timestamps.
+- Apply sync strategy during compose (`trim`/`pad`/`stretch`/`none`).
+- If multiple sources exist, overlay with gain normalization.
+- Missing segment audio inserts silence for timing safety.
+
+Mix modes:
+
+- replace: TTS only
+- bgm_only: TTS + Step 4 background
+- full_mix: TTS + BGM + low-volume original audio
+
+## Logic/Consistency Notes
+
+- Step responsibilities are separated correctly:
+  - Step 5 = generation/storage.
+  - Step 6 = composition/finalization.
+- Storage is session-local (`step5_tts_assets`) to avoid cross-session mismatch.
+- Backward compatibility remains for old `step5_tts_cache` sessions in Step 6 fallback.
+- Step 6 can still work if only `step5_tts.mp3` exists (legacy/single mode).
+
+## Maintenance Guidelines
+
+- Keep Step 5 free of mux/mix logic.
+- Keep Step 6 free of TTS API calls.
+- Keep backend/model/API-key mapping inside `core/pipeline/selection.py`.
+- When adding new TTS backend, ensure:
+  1. per-segment export list is returned,
+  2. manifest includes valid `clip_file` entries,
+  3. Step 6 can consume without backend-specific branching.
+- If key handling changes, update both `core/api_keys.py` and autofill logic in `ui/main_window.py`.

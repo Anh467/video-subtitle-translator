@@ -634,33 +634,59 @@ class MainWindow(QMainWindow):
 
     def _autofill_api_keys(self, mgr):
         """Push loaded keys into step config widgets."""
+        from core.pipeline.selection import (
+            translate_key_candidates,
+            tts_backend_from_label,
+            tts_key_candidates,
+        )
+
         service_keys = mgr.to_dict_by_service()
-        for step, card in zip(self._steps, self._cards):
+        for step, _card in zip(self._steps, self._cards):
             # Step 2 translate
-            if hasattr(step, "_api_edit") and step._api_edit:
-                for service, key in service_keys.items():
-                    if service in ("gemini", "openai") and key:
-                        # Only fill if field is empty
-                        if not step._api_edit.text().strip():
+            if (
+                getattr(step, "STEP_ID", "") == "step2_translate"
+                and hasattr(step, "_api_edit")
+                and step._api_edit
+            ):
+                if not step._api_edit.text().strip() and hasattr(
+                    step, "_backend_combo"
+                ):
+                    backend_text = (
+                        step._backend_combo.currentText().lower()
+                        if step._backend_combo
+                        else ""
+                    )
+                    backend_key = (
+                        "gemini"
+                        if "gemini" in backend_text
+                        else "openai" if "openai" in backend_text else "google"
+                    )
+                    candidates = translate_key_candidates(backend_key)
+
+                    for service in candidates:
+                        key = service_keys.get(service, "")
+                        if key:
                             step._api_edit.setText(key)
                             break
+
             # Step 5 TTS
             if (
-                hasattr(step, "_api_edit")
+                getattr(step, "STEP_ID", "") == "step5_tts"
+                and hasattr(step, "_api_edit")
                 and step._api_edit
                 and hasattr(step, "_backend_combo")
             ):
-                if step._backend_combo:
-                    backend_text = step._backend_combo.currentText().lower()
-                    for service, key in service_keys.items():
-                        if service in backend_text or service in (
-                            "fpt",
-                            "zalo",
-                            "elevenlabs",
-                            "openai_tts",
-                        ):
-                            if not step._api_edit.text().strip() and key:
-                                step._api_edit.setText(key)
+                if not step._api_edit.text().strip() and step._backend_combo:
+                    backend_key = tts_backend_from_label(
+                        step._backend_combo.currentText()
+                    )
+                    candidates = tts_key_candidates(backend_key)
+
+                    for service in candidates:
+                        key = service_keys.get(service, "")
+                        if key:
+                            step._api_edit.setText(key)
+                            break
 
     def _open_api_keys_dialog(self):
         """Open dialog to manage API keys."""
@@ -681,8 +707,16 @@ class MainWindow(QMainWindow):
         d = QFileDialog.getExistingDirectory(self, "Choose base folder for sessions")
         if d:
             self._sess_dir_edit.setText(d)
+            self._set_steps_base_dir(d)
             self._load_api_keys(d)
             self._status_bar.showMessage(f"Base folder: {d}")
+
+    def _set_steps_base_dir(self, base_dir: str):
+        """Pass base directory to steps that keep shared assets/config."""
+        for step in self._steps:
+            setter = getattr(step, "set_base_dir", None)
+            if callable(setter):
+                setter(base_dir)
 
     def _open_session_picker(self):
         base = self._sess_dir_edit.text().strip()
@@ -691,6 +725,7 @@ class MainWindow(QMainWindow):
                 self, "No folder", "Choose a session base folder first."
             )
             return
+        self._set_steps_base_dir(base)
         dlg = SessionPickerDialog(base, parent=self)
         result = dlg.exec()
 

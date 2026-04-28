@@ -1,14 +1,16 @@
-"""
-Step 6 — Add voice to video from saved Step 5 TTS audio.
-"""
+"""Step 6 — compose saved TTS assets and mux into final video."""
 
-import json
 import os
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 
+from core.pipeline.tts_assets import (
+    compose_timeline_audio,
+    resolve_manifests,
+    resolve_single_tts_path,
+)
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QButtonGroup,
@@ -43,17 +45,19 @@ class AddVoiceStep(BaseStep):
         self._tts_path_edit = None
         self._mix_group = self._mix_radios = None
         self._tts_vol_slider = self._bgm_vol_slider = self._orig_vol_slider = None
+        self._sync_combo = None
 
     def run(self, session, config, log, cancel):
         source_mode = config.get("source_mode", "all_cache")
         tts_source = (config.get("tts_path") or "").strip()
+        sync_mode = config.get("sync_mode", "trim")
         mix_mode = config.get("mix_mode", "bgm_only")
         tts_vol = config.get("tts_vol", 1.0)
         bgm_vol = config.get("bgm_vol", 0.3)
         orig_vol = config.get("orig_vol", 0.1)
 
         tts_path, temp_files = self._resolve_tts_source(
-            session, source_mode, tts_source, log
+            session, source_mode, tts_source, sync_mode, log
         )
         if not tts_path:
             raise RuntimeError(
@@ -103,170 +107,27 @@ class AddVoiceStep(BaseStep):
         log(f"✅ Final output → {Path(out_video).name}")
         return out_video
 
-    def _resolve_tts_source(self, session, source_mode: str, tts_source: str, log):
+    def _resolve_tts_source(
+        self, session, source_mode: str, tts_source: str, sync_mode: str, log
+    ):
         temp_files = []
 
         if source_mode == "single":
-            path = self._resolve_single_tts_path(session, tts_source)
+            path = resolve_single_tts_path(session, tts_source)
             return path, temp_files
 
-        manifests = self._resolve_manifests(session, source_mode, tts_source)
+        manifests = resolve_manifests(session, source_mode, tts_source)
         if not manifests:
-            path = self._resolve_single_tts_path(session, tts_source)
+            path = resolve_single_tts_path(session, tts_source)
             return path, temp_files
 
         segments = session.load_translated()
-        composed_path = self._compose_timeline_audio(session, manifests, segments, log)
+        composed_path = compose_timeline_audio(
+            manifests, segments, log, sync_mode=sync_mode
+        )
         if composed_path:
             temp_files.append(composed_path)
         return composed_path, temp_files
-
-    def _resolve_single_tts_path(self, session, tts_source: str) -> str:
-        if tts_source and Path(tts_source).exists():
-            return tts_source
-
-        if Path(session.step5_tts).exists():
-            return str(session.step5_tts)
-
-        library_dir = session.step5_tts_library_dir
-        if library_dir.exists():
-            files = sorted(library_dir.glob("*.mp3"), key=lambda p: p.stat().st_mtime)
-            if files:
-                return str(files[-1])
-
-        # Fallback for old sessions.
-        cache_dir = session.step5_tts_session_dir
-        if cache_dir.exists():
-            files = sorted(cache_dir.glob("*.mp3"), key=lambda p: p.stat().st_mtime)
-            if files:
-                return str(files[-1])
-        return ""
-
-    def _resolve_manifests(self, session, source_mode: str, tts_source: str):
-        manifests = []
-        library_dir = session.step5_tts_library_dir
-        if library_dir.exists():
-            manifests.extend(library_dir.glob("*.json"))
-        # Fallback for old session cache layout.
-        old_cache_dir = session.step5_tts_session_dir
-        if old_cache_dir.exists():
-            manifests.extend(old_cache_dir.glob("*.json"))
-
-        if not manifests:
-            return []
-
-        manifests = sorted(manifests, key=lambda p: p.stat().st_mtime)
-
-        if source_mode == "latest":
-            return manifests[-1:] if manifests else []
-
-        if source_mode == "custom":
-            result = []
-            for line in tts_source.replace(";", "\n").splitlines():
-                raw = line.strip()
-                if not raw:
-                    continue
-                p = Path(raw)
-                if p.exists() and p.suffix.lower() == ".json":
-                    result.append(p)
-                elif p.exists() and p.suffix.lower() == ".mp3":
-                    mp3_stem = p.stem
-                    candidate = p.with_name(f"{mp3_stem}.json")
-                    if candidate.exists():
-                        result.append(candidate)
-            return result
-
-        return manifests
-
-    def _compose_timeline_audio(self, session, manifests, segments, log):
-        import math
-
-        try:
-            from pydub import AudioSegment
-        except ImportError as e:
-            raise RuntimeError("Run: pip install pydub audioop-lts") from e
-
-        loaded = []
-        for mf in manifests:
-            try:
-                data = json.loads(mf.read_text(encoding="utf-8"))
-                audio_name = data.get("audio_file", "")
-                audio_path = mf.with_name(audio_name) if audio_name else None
-                if not audio_path or not audio_path.exists():
-                    continue
-                loaded.append(
-                    {
-                        "manifest": data,
-                        "audio": AudioSegment.from_mp3(str(audio_path)),
-                        "name": mf.stem,
-                    }
-                )
-            except Exception:
-                continue
-
-        if not loaded:
-            return ""
-
-        log(f"🧩 Timeline compose from {len(loaded)} Step 5 source(s)")
-
-        result = AudioSegment.silent(duration=0)
-        cursor_ms = 0
-        chosen = 0
-        silent = 0
-        mixed = 0
-
-        for idx, seg in enumerate(segments):
-            start_ms = int(seg.start * 1000)
-            end_ms = int(seg.end * 1000)
-            seg_ms = max(0, end_ms - start_ms)
-
-            if start_ms > cursor_ms:
-                result += AudioSegment.silent(duration=start_ms - cursor_ms)
-                cursor_ms = start_ms
-
-            parts = []
-            for src in loaded:
-                audio = src["audio"]
-                if start_ms >= len(audio):
-                    continue
-                slice_end = min(end_ms, len(audio))
-                part = audio[start_ms:slice_end]
-                if len(part) < max(80, int(seg_ms * 0.25)):
-                    continue
-                if len(part) > seg_ms > 0:
-                    part = part[:seg_ms]
-                parts.append(part)
-
-            if not parts:
-                result += AudioSegment.silent(duration=seg_ms)
-                cursor_ms = max(cursor_ms + seg_ms, end_ms)
-                silent += 1
-                continue
-
-            if len(parts) == 1:
-                clip = parts[0]
-            else:
-                # Normalize level before overlay to avoid clipping when combining many APIs.
-                gain_down = min(12.0, 20.0 * math.log10(len(parts)))
-                clip = parts[0].apply_gain(-gain_down)
-                for part in parts[1:]:
-                    clip = clip.overlay(part.apply_gain(-gain_down))
-                mixed += 1
-
-            result += clip
-            cursor_ms = max(cursor_ms + len(clip), end_ms)
-            chosen += 1
-
-            if (idx + 1) % 10 == 0 or idx + 1 == len(segments):
-                log(f"   [{idx+1}/{len(segments)}] compose")
-
-        out = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
-        out.close()
-        result.export(out.name, format="mp3")
-        log(
-            f"✅ Composed voice track: {chosen} segments, {mixed} mixed segments, {silent} silence fallback"
-        )
-        return out.name
 
     def _mix_audio(self, session, tts_path, mix_mode, tts_vol, bgm_vol, orig_vol, log):
         has_bgm = session.step4_done and Path(session.step4_background).exists()
@@ -487,7 +348,7 @@ class AddVoiceStep(BaseStep):
         self._source_mode_combo = QComboBox()
         self._source_mode_combo.addItems(
             [
-                "All Step 5 library manifests",
+                "All Step 5 session assets",
                 "Latest Step 5 manifest only",
                 "Single audio file (legacy)",
                 "Custom manifest/audio list",
@@ -504,9 +365,34 @@ class AddVoiceStep(BaseStep):
         )
         self._tts_path_edit = QLineEdit()
         self._tts_path_edit.setPlaceholderText(
-            "C:/.../_tts_library/fpt_xxx.json ; C:/.../step5_tts.mp3"
+            "C:/.../session_name/step5_tts_assets/fpt_xxx.json ; C:/.../step5_tts.mp3"
         )
         v.addWidget(self._tts_path_edit)
+
+        v.addWidget(self._sep_label("⏱️  Audio Sync"))
+        sw = QWidget()
+        sl = QHBoxLayout(sw)
+        sl.setContentsMargins(0, 0, 0, 0)
+        sl.addWidget(QLabel("Sync mode:"))
+        self._sync_combo = QComboBox()
+        self._sync_combo.addItems(
+            [
+                "trim    — Speed up nếu dài quá (recommended)",
+                "pad     — Speed up nếu dài + silence nếu ngắn",
+                "stretch — Tự động tăng/giảm tốc độ để khớp",
+                "none    — Không điều chỉnh",
+            ]
+        )
+        self._sync_combo.setCurrentIndex(0)
+        self._sync_combo.setToolTip(
+            "trim:    TTS dài → tăng tốc vừa đủ, không cắt chữ (recommended)\n"
+            "pad:     speed up nếu dài + thêm silence nếu ngắn\n"
+            "stretch: kéo giãn/nén tốc độ đọc để khớp timestamp\n"
+            "none:    giữ nguyên, không sync"
+        )
+        sl.addWidget(self._sync_combo)
+        sl.addStretch()
+        v.addWidget(sw)
 
         v.addWidget(self._sep_label("🎚️  Audio Mix Mode"))
         mw = QWidget()
@@ -556,7 +442,7 @@ class AddVoiceStep(BaseStep):
             self._source_mode_combo.currentText() if self._source_mode_combo else ""
         )
         source_mode = {
-            "All Step 5 library manifests": "all_cache",
+            "All Step 5 session assets": "all_cache",
             "Latest Step 5 manifest only": "latest",
             "Single audio file (legacy)": "single",
             "Custom manifest/audio list": "custom",
@@ -571,6 +457,11 @@ class AddVoiceStep(BaseStep):
         return {
             "source_mode": source_mode,
             "tts_path": self._tts_path_edit.text().strip() or None,
+            "sync_mode": (
+                self._sync_combo.currentText().split("—")[0].strip()
+                if self._sync_combo
+                else "trim"
+            ),
             "mix_mode": mix_mode,
             "tts_vol": self._tts_vol_slider.value() / 100.0,
             "bgm_vol": self._bgm_vol_slider.value() / 100.0,
