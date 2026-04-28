@@ -33,8 +33,10 @@ from core.pipeline.step4_separate import SeparateStep
 from core.pipeline.step5_tts import TTSStep
 from core.pipeline.step6_add_voice import AddVoiceStep
 from core.session import Session
+from ui.multi_session_window import MultiSessionWindow
 from ui.widgets.drop_zone import SUPPORTED, DropZone
 from ui.widgets.step_card import StepCard
+from ui.widgets.subtitle_editor import SubtitleEditor
 
 STYLESHEET = """
 QMainWindow,QWidget{background:#1a1a2e;color:#e0e0e0;
@@ -383,6 +385,7 @@ class MainWindow(QMainWindow):
             AddVoiceStep(),
         ]
         self._cards: list[StepCard] = []
+        self._multi_window: MultiSessionWindow | None = None
         self._setup_ui()
 
     # ── UI ────────────────────────────────────────────────────────────────────
@@ -407,6 +410,17 @@ class MainWindow(QMainWindow):
         title_row.addWidget(t)
         title_row.addWidget(sub)
         title_row.addStretch()
+
+        # Multi-session button
+        self._btn_multi = QPushButton("⚡  Multi-Session")
+        self._btn_multi.setStyleSheet(
+            "QPushButton{background:#1a2a3a;color:#c084fc;border:1px solid #4a3a6a;"
+            "font-weight:bold;border-radius:6px;padding:6px 14px;font-size:12px;}"
+            "QPushButton:hover{background:#2a2a5a;border-color:#c084fc;}"
+        )
+        self._btn_multi.clicked.connect(self._open_multi_session)
+        title_row.addWidget(self._btn_multi)
+
         root.addLayout(title_row)
 
         # Session bar
@@ -569,21 +583,38 @@ class MainWindow(QMainWindow):
         self._log_edit.setMaximumHeight(130)
         self._log_edit.setPlaceholderText("Pipeline log…")
         vsplit.addWidget(self._wrap("Log", self._log_edit))
-        hsplit = QSplitter(Qt.Orientation.Horizontal)
-        self._orig_edit = QTextEdit()
-        self._orig_edit.setReadOnly(True)
-        self._orig_edit.setPlaceholderText("Original transcript…")
-        hsplit.addWidget(self._wrap("Original", self._orig_edit))
-        self._trans_edit = QTextEdit()
-        self._trans_edit.setReadOnly(True)
-        self._trans_edit.setPlaceholderText("Translated subtitles…")
-        hsplit.addWidget(self._wrap("Translated", self._trans_edit))
-        vsplit.addWidget(hsplit)
+
+        # Subtitle editor (Original read-only + Translated editable + Save)
+        self._subtitle_editor = SubtitleEditor()
+        self._subtitle_editor.set_orig_placeholder("Original transcript…")
+        self._subtitle_editor.set_trans_placeholder("Translated subtitles…")
+        vsplit.addWidget(self._subtitle_editor)
         root.addWidget(vsplit, stretch=1)
 
         self._status_bar = QStatusBar()
         self.setStatusBar(self._status_bar)
         self._status_bar.showMessage("Ready — choose session folder then drop a video")
+
+    # ── Multi-session ─────────────────────────────────────────────────────────
+
+    def _open_multi_session(self):
+        base = self._sess_dir_edit.text().strip()
+        if not base:
+            QMessageBox.warning(
+                self, "No folder", "Choose a session base folder first."
+            )
+            return
+        if self._multi_window is None:
+            self._multi_window = MultiSessionWindow(
+                steps=self._steps,
+                base_dir=base,
+                parent=self,
+            )
+        else:
+            self._multi_window.update_base_dir(base)
+        self._multi_window.show()
+        self._multi_window.raise_()
+        self._multi_window.activateWindow()
 
     # ── Session management ────────────────────────────────────────────────────
 
@@ -712,6 +743,8 @@ class MainWindow(QMainWindow):
             self._set_steps_base_dir(d)
             self._load_api_keys(d)
             self._status_bar.showMessage(f"Base folder: {d}")
+            if self._multi_window is not None:
+                self._multi_window.update_base_dir(d)
 
     def _set_steps_base_dir(self, base_dir: str):
         """Pass base directory to steps that keep shared assets/config."""
@@ -759,37 +792,14 @@ class MainWindow(QMainWindow):
         for step, card in zip(self._steps, self._cards):
             card.reset()
             if step.STEP_ID in done_steps:
-                # Determine output path for the done step
                 out_path = self._step_output_path(step, session)
                 card.set_status("✅ Done (saved)", "loaded", out_path)
                 self._log(
                     f"  ✅ {step.LABEL} — already done → {Path(out_path).name if out_path else ''}"
                 )
 
-        # Restore previews if step1/2 done
-        if session.step1_done:
-            try:
-                tr = session.load_transcript()
-                self._orig_edit.setPlainText(
-                    "\n".join(f"[{s.start}s–{s.end}s]  {s.text}" for s in tr.segments)
-                )
-            except Exception:
-                pass
-
-        if session.step2_done:
-            try:
-                segs = session.load_translated()
-                lines = []
-                for s in segs:
-                    lines += [
-                        f"[{s.start}s–{s.end}s]",
-                        f"  {s.original}",
-                        f"  → {s.translated}",
-                        "",
-                    ]
-                self._trans_edit.setPlainText("\n".join(lines))
-            except Exception:
-                pass
+        # Load subtitle editor
+        self._subtitle_editor.load_session(session)
 
         done_labels = [s.LABEL for s in self._steps if s.STEP_ID in done_steps]
         self._log(
@@ -865,8 +875,7 @@ class MainWindow(QMainWindow):
         self._file_edit.setText(path)
         self._drop.set_file(Path(path).name)
         self._sess_name_lbl.setText("—  (created on first Run)")
-        self._orig_edit.clear()
-        self._trans_edit.clear()
+        self._subtitle_editor.clear()
         for card in self._cards:
             card.reset()
         self._status_bar.showMessage(f"File: {Path(path).name}")
@@ -1046,7 +1055,8 @@ class MainWindow(QMainWindow):
 
     def _update_previews(self, step, result):
         if step.STEP_ID == "step1_transcribe" and hasattr(result, "segments"):
-            self._orig_edit.setPlainText(
+            self._subtitle_editor.set_orig_placeholder("")
+            self._subtitle_editor._orig_edit.setPlainText(
                 "\n".join(f"[{s.start}s–{s.end}s]  {s.text}" for s in result.segments)
             )
         if step.STEP_ID == "step2_translate" and isinstance(result, list):
@@ -1058,7 +1068,10 @@ class MainWindow(QMainWindow):
                     f"  → {s.translated}",
                     "",
                 ]
-            self._trans_edit.setPlainText("\n".join(lines))
+            self._subtitle_editor._trans_edit.setPlainText("\n".join(lines))
+            self._subtitle_editor._dirty = False
+            if self._session:
+                self._subtitle_editor.set_session_for_save(self._session)
 
     def _done(self, step, result):
         card = self._card_for(step)

@@ -10,10 +10,17 @@ Context-aware modes (Gemini/OpenAI):
   - Gửi N segment trước/sau làm context
   - Tự extract character summary từ 20 segment đầu
   - Optional: verify pass để fix đại từ/tên không nhất quán
+
+Optimization (concurrent mode):
+  - Gemini: 2 concurrent workers + adaptive retry thay vì sleep(4) cứng
+  - OpenAI: 5 concurrent workers (rate limit cao hơn nhiều)
+  - Google: đã có 3 workers từ trước, giữ nguyên
 """
 
+import concurrent.futures
 import os
 import re
+import threading
 import time
 from dataclasses import dataclass
 
@@ -64,33 +71,18 @@ class TranslatedSegment:
 
 
 class SmartFixer:
-    """
-    Fix common translation errors without any API.
-
-    Problems it solves:
-    1. Pronoun-gender mismatch: "她是我爸爸" → "cô ấy là bố tôi" → "Đây là bố tôi"
-    2. Context-based pronoun: use surrounding lines to infer correct pronoun
-    3. Common literal errors in ZH→VI, EN→VI, JA→VI
-    """
-
-    # (pattern_in_translated, pattern_in_original) → replacement
-    # Order matters — more specific rules first
     ZH_VI_RULES = [
-        # Female pronoun + male family member → "đây là"
         (["cô ấy là bố", "bà ấy là bố", "cô ta là bố"], "爸爸", "Đây là bố"),
         (["cô ấy là anh", "bà ấy là anh"], "哥哥", "Đây là anh"),
         (["cô ấy là ông", "bà ấy là ông"], "爷爷", "Đây là ông"),
         (["cô ấy là chú", "bà ấy là chú"], "叔叔", "Đây là chú"),
-        # Male pronoun + female family member
         (["anh ấy là mẹ", "ông ấy là mẹ"], "妈妈", "Đây là mẹ"),
         (["anh ấy là chị", "ông ấy là chị"], "姐姐", "Đây là chị"),
         (["anh ấy là bà", "ông ấy là bà"], "奶奶", "Đây là bà"),
-        # Literal "this is my X" patterns
         (["đây là của tôi bố"], "爸爸", "Đây là bố tôi"),
         (["đây là của tôi mẹ"], "妈妈", "Đây là mẹ tôi"),
     ]
 
-    # Common word-level fixes (translated → corrected)
     WORD_FIXES_VI = {
         "cô ấy là bố tôi": "Đây là bố tôi",
         "cô ấy là anh tôi": "Đây là anh tôi",
@@ -106,37 +98,25 @@ class SmartFixer:
         self.src_lang = src_lang.lower()
         self.tgt_lang = tgt_lang.lower()
 
-    def fix(
-        self, original: str, translated: str, prev_segs=None, next_segs=None
-    ) -> str:
-        """Apply all fix strategies, return corrected translation."""
+    def fix(self, original, translated, prev_segs=None, next_segs=None):
         t = translated.strip()
         if not t:
             return translated
-
-        # 1. Direct word-level fix (fastest)
         t = self._word_fix(t)
-
-        # 2. Rule-based: pronoun-gender mismatch
         if self.src_lang in ("zh", "zh-cn", "zh-tw"):
             t = self._zh_pronoun_fix(original, t)
-
-        # 3. Context inference: use neighbours to fix pronoun
         if prev_segs or next_segs:
             t = self._context_pronoun_fix(original, t, prev_segs, next_segs)
-
         return t
 
-    def _word_fix(self, text: str) -> str:
+    def _word_fix(self, text):
         lower = text.lower()
         for wrong, correct in self.WORD_FIXES_VI.items():
             if wrong in lower:
-                # Preserve original capitalisation style
                 return text[: len(text) - len(text.lstrip())] + correct
         return text
 
-    def _zh_pronoun_fix(self, original: str, translated: str) -> str:
-        """Fix pronoun-gender mismatch using original Chinese."""
+    def _zh_pronoun_fix(self, original, translated):
         tl = translated.lower()
         for patterns, zh_keyword, replacement in self.ZH_VI_RULES:
             if zh_keyword in original:
@@ -148,17 +128,8 @@ class SmartFixer:
                         )
         return translated
 
-    def _context_pronoun_fix(
-        self, original: str, translated: str, prev_segs, next_segs
-    ) -> str:
-        """
-        Use context to infer correct pronoun.
-        E.g. if surrounding lines establish "bố" as the subject,
-        and current line has wrong pronoun, fix it.
-        """
+    def _context_pronoun_fix(self, original, translated, prev_segs, next_segs):
         tl = translated.lower()
-
-        # Collect context clues from neighbour originals
         all_neighbours = list(prev_segs or []) + list(next_segs or [])
         neighbour_originals = " ".join(
             s.original for s in all_neighbours if hasattr(s, "original")
@@ -166,8 +137,6 @@ class SmartFixer:
         neighbour_translated = " ".join(
             s.translated for s in all_neighbours if hasattr(s, "translated")
         )
-
-        # If context establishes father/male → fix "cô ấy" → right
         if "爸爸" in neighbour_originals or "bố" in neighbour_translated:
             if "cô ấy" in tl or "bà ấy" in tl:
                 fixed = (
@@ -178,8 +147,6 @@ class SmartFixer:
                 )
                 if fixed != translated:
                     return fixed
-
-        # If context establishes mother/female → fix "anh ấy" → right
         if "妈妈" in neighbour_originals or "mẹ" in neighbour_translated:
             if "anh ấy" in tl or "ông ấy" in tl:
                 fixed = (
@@ -190,7 +157,6 @@ class SmartFixer:
                 )
                 if fixed != translated:
                     return fixed
-
         return translated
 
 
@@ -262,7 +228,7 @@ class TranslateStep(BaseStep):
         else:
             raise RuntimeError(f"Unknown backend: {backend}")
 
-        # ── Rule-based smart fix (always fast, no API needed) ──
+        # ── Rule-based smart fix ──
         if do_rule_fix:
             fixer = SmartFixer(src_lang=src_lang, tgt_lang=target)
             fixed_count = 0
@@ -290,7 +256,7 @@ class TranslateStep(BaseStep):
         session.save_translated(out)
         return out
 
-    # ── Google: Chunk mode ────────────────────────────────────────────────────
+    # ── Google: Chunk mode (already parallel, unchanged) ──────────────────────
 
     def _translate_chunks(
         self, segments, target, chunk_size, log, cancel, src_lang="auto"
@@ -299,7 +265,6 @@ class TranslateStep(BaseStep):
             from deep_translator import GoogleTranslator
         except ImportError:
             raise RuntimeError("Run: pip install deep-translator")
-        import concurrent.futures
 
         LANG_MAP = {
             "zh": "zh-TW",
@@ -362,7 +327,6 @@ class TranslateStep(BaseStep):
                 segs_done = min(done[0] * chunk_size, total)
                 log(f"   [{segs_done}/{total}] translated")
 
-        # Assemble in order
         out = []
         for chunk, parts in results:
             for seg, trans in zip(chunk, parts):
@@ -385,7 +349,6 @@ class TranslateStep(BaseStep):
                 t = GoogleTranslator(source=source, target=target).translate(
                     txt.strip() or " "
                 )
-                # If result same as input, try with auto
                 if t.strip() == txt.strip() and source != "auto":
                     t = GoogleTranslator(source="auto", target=target).translate(
                         txt.strip() or " "
@@ -396,53 +359,20 @@ class TranslateStep(BaseStep):
                 results.append(txt)
         return results
 
-    # ── Gemini: Context-aware (FREE) ──────────────────────────────────────────
-
-    def _gemini_client(self, api_key):
-        """Return Gemini client using new google.genai SDK."""
-        try:
-            from google import genai
-            from google.genai import types
-
-            client = genai.Client(api_key=api_key)
-            return client, types
-        except ImportError:
-            raise RuntimeError(
-                "Run: pip install google-genai\n"
-                "Get free API key: aistudio.google.com"
-            )
-
-    def _gemini_generate(self, client, types, prompt, retries=3, log=None):
-        """Generate content with auto-retry on 429 rate limit."""
-        import time as _time
-
-        _log = log or (lambda m: print(m))
-        for attempt in range(retries):
-            try:
-                response = client.models.generate_content(
-                    model="gemini-2.0-flash",
-                    contents=prompt,
-                )
-                return response.text
-            except Exception as e:
-                err = str(e)
-                if "429" in err or "RESOURCE_EXHAUSTED" in err:
-                    import re as _re
-
-                    m = _re.search(r"retryDelay.*?(\d+)s", err)
-                    wait = int(m.group(1)) + 5 if m else 65
-                    if attempt < retries - 1:
-                        _log(
-                            f"   ⏳ Rate limited — waiting {wait}s… (attempt {attempt+1}/{retries})"
-                        )
-                        _time.sleep(wait)
-                        continue
-                raise
-        raise RuntimeError("Gemini: max retries exceeded")
+    # ── Gemini: Concurrent (optimized) ───────────────────────────────────────
 
     def _translate_gemini(
         self, segments, target, api_key, ctx_window, log, cancel, src_lang="unknown"
     ):
+        """
+        Concurrent Gemini translation với adaptive rate limiting.
+
+        Thay vì sleep(4) cứng sequential, gửi tất cả batches qua
+        ThreadPoolExecutor với semaphore kiểm soát concurrent requests:
+          - 2 workers (free tier: 15 RPM → ~7.5 RPM actual, safe)
+          - Retry với exponential backoff khi gặp 429
+          - Kết quả reassemble theo đúng thứ tự ban đầu
+        """
         key = api_key or os.environ.get("GEMINI_API_KEY", "")
         if not key:
             raise RuntimeError(
@@ -456,16 +386,13 @@ class TranslateStep(BaseStep):
         total = len(segments)
         log(f"   Source lang: {src_lang} → Target: {lang_name} ({target})")
 
-        # Extract context summary
         preview = " ".join(s.text for s in segments[:20])
         summary = self._extract_summary_gemini(
             client, types, preview, lang_name, src_lang
         )
         log(f"   📖 Context: {summary[:100]}…")
 
-        # Few-shot examples
         examples = self._build_examples(src_lang, target)
-
         system_ctx = (
             f"You are a subtitle translator.\n"
             f"Translate {src_lang.upper()} subtitles into {lang_name}.\n\n"
@@ -478,61 +405,97 @@ class TranslateStep(BaseStep):
         )
 
         batch_size = 20
-        out = []
-
+        batches = []
         for bi in range(0, total, batch_size):
-            if cancel.is_set():
-                from core.pipeline.base import CancelledError
-
-                raise CancelledError()
-
             batch = segments[bi : bi + batch_size]
             ctx_before = segments[max(0, bi - ctx_window) : bi]
             ctx_after = segments[
                 bi + len(batch) : min(total, bi + len(batch) + ctx_window)
             ]
+            batches.append((bi, batch, ctx_before, ctx_after))
+
+        log(
+            f"   ⚡ Concurrent Gemini: {len(batches)} batches | 2 workers "
+            f"(free tier safe — ~{len(batches) * batch_size // max(len(batches), 1)} segs/batch)"
+        )
+
+        # Semaphore: 2 concurrent để tránh 429 burst trên free tier
+        # Gemini free = 15 RPM → với 2 workers mỗi req ~3-5s = ~12-15 RPM, an toàn
+        sem = threading.Semaphore(2)
+        results: dict[int, list[str]] = {}
+        errors: dict[int, str] = {}
+
+        def translate_batch(args):
+            bi, batch, ctx_before, ctx_after = args
+            if cancel.is_set():
+                return
 
             prompt = self._build_batch_prompt(
                 batch, ctx_before, ctx_after, lang_name, system_ctx
             )
 
-            try:
-                text = self._gemini_generate(client, types, prompt, log=log)
-                parts = self._parse_numbered_response(text, len(batch))
-
-                if len(parts) != len(batch):
-                    log(
-                        f"   ⚠️  Batch {bi//batch_size+1}: "
-                        f"got {len(parts)}/{len(batch)} — fallback individual"
-                    )
-                    parts = self._gemini_individual(
-                        client, types, batch, system_ctx, log
-                    )
-
-            except Exception as e:
-                err = str(e)
-                if "429" in err or "RESOURCE_EXHAUSTED" in err:
-                    # Extract wait time and retry once more
-                    import re as _re
-
-                    m = _re.search(r"retryDelay.*?(\d+)s", err)
-                    wait = int(m.group(1)) + 5 if m else 65
-                    log(f"   ⏳ Rate limited — waiting {wait}s then retrying…")
-                    time.sleep(wait)
+            with sem:
+                for attempt in range(4):
+                    if cancel.is_set():
+                        return
                     try:
                         text = self._gemini_generate(client, types, prompt, log=log)
                         parts = self._parse_numbered_response(text, len(batch))
+
                         if len(parts) != len(batch):
+                            log(
+                                f"   ⚠️  Batch {bi//batch_size+1}: "
+                                f"got {len(parts)}/{len(batch)} — fallback individual"
+                            )
                             parts = self._gemini_individual(
                                 client, types, batch, system_ctx, log
                             )
-                    except Exception as e2:
-                        log(f"   ❌ Retry failed: {e2} — keeping originals")
-                        parts = [s.text for s in batch]
-                else:
-                    log(f"   ⚠️  Batch error: {e}")
-                    parts = [s.text for s in batch]
 
+                        results[bi] = parts
+                        return
+
+                    except Exception as e:
+                        err = str(e)
+                        if "429" in err or "RESOURCE_EXHAUSTED" in err:
+                            m = re.search(r"retryDelay.*?(\d+)s", err)
+                            wait = int(m.group(1)) + 2 if m else (30 * (attempt + 1))
+                            wait = min(wait, 90)
+                            if attempt < 3:
+                                log(
+                                    f"   ⏳ Batch {bi//batch_size+1} rate-limited — "
+                                    f"retry in {wait}s ({attempt+1}/4)"
+                                )
+                                time.sleep(wait)
+                                continue
+                        log(f"   ⚠️  Batch {bi//batch_size+1} error: {e}")
+                        errors[bi] = str(e)
+                        results[bi] = [s.text for s in batch]
+                        return
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            futures = {executor.submit(translate_batch, args): args for args in batches}
+            for fut in concurrent.futures.as_completed(futures):
+                if cancel.is_set():
+                    from core.pipeline.base import CancelledError
+
+                    raise CancelledError()
+                bi = futures[fut][0]
+                segs_done = min(bi + batch_size, total)
+                log(f"   [{segs_done}/{total}] translated")
+                try:
+                    fut.result()
+                except Exception as e:
+                    log(f"   ⚠️  Batch future error: {e}")
+
+        if errors:
+            log(
+                f"   ⚠️  {len(errors)}/{len(batches)} batches had errors (kept originals)"
+            )
+
+        # Reassemble in original segment order
+        out = []
+        for bi, batch, _, _ in batches:
+            parts = results.get(bi, [s.text for s in batch])
             for seg, trans in zip(batch, parts):
                 out.append(
                     TranslatedSegment(
@@ -542,11 +505,177 @@ class TranslateStep(BaseStep):
                         trans.strip() or seg.text.strip(),
                     )
                 )
-
-            log(f"   [{min(bi + batch_size, total)}/{total}] translated")
-            time.sleep(4)  # gemini-2.0-flash free: 15 req/min = 1 req/4s
-
         return out
+
+    # ── OpenAI: Concurrent (optimized) ───────────────────────────────────────
+
+    def _translate_openai(self, segments, target, api_key, ctx_window, log, cancel):
+        """
+        Concurrent OpenAI translation.
+
+        GPT-4o-mini rate limit: tier 1 = 500 RPM, tier 2+ = 5000 RPM.
+        5 workers × batch_size=20 = 100 segs in-flight → ~25 RPM, rất an toàn.
+        Không cần sleep giữa các batch.
+        """
+        try:
+            from openai import OpenAI
+        except ImportError:
+            raise RuntimeError("Run: pip install openai")
+
+        key = api_key or os.environ.get("OPENAI_API_KEY", "")
+        if not key:
+            raise RuntimeError("Set OPENAI_API_KEY env var or enter key in UI.")
+
+        client = OpenAI(api_key=key)
+        lang_name = LANG_NAMES.get(target, target)
+        total = len(segments)
+
+        preview = " ".join(s.text for s in segments[:20])
+        summary = self._extract_summary_openai(client, preview, lang_name)
+        log(f"   📖 Context: {summary[:100]}…")
+
+        system_prompt = (
+            f"You are a professional subtitle translator.\n"
+            f"Translate subtitles to {lang_name}.\n\n"
+            f"CONTENT CONTEXT:\n{summary}\n\n"
+            f"RULES:\n"
+            f"- Keep tone consistent\n"
+            f"- Use correct pronouns based on context\n"
+            f"- Return ONLY the translated line\n"
+            f"- Keep [music], [laughter] etc. as-is\n"
+            f"- Do NOT translate proper nouns/names"
+        )
+
+        batch_size = 20
+        batches = []
+        for bi in range(0, total, batch_size):
+            batch = segments[bi : bi + batch_size]
+            ctx_before = segments[max(0, bi - ctx_window) : bi]
+            ctx_after = segments[
+                bi + len(batch) : min(total, bi + len(batch) + ctx_window)
+            ]
+            batches.append((bi, batch, ctx_before, ctx_after))
+
+        log(f"   ⚡ Concurrent OpenAI: {len(batches)} batches | 5 workers")
+
+        results: dict[int, list[str]] = {}
+
+        def translate_batch(args):
+            bi, batch, ctx_before, ctx_after = args
+            if cancel.is_set():
+                return
+
+            user_msg = self._build_batch_prompt(
+                batch, ctx_before, ctx_after, lang_name, ""
+            )
+
+            for attempt in range(3):
+                if cancel.is_set():
+                    return
+                try:
+                    r = client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_msg},
+                        ],
+                        temperature=0.2,
+                        max_tokens=1000,
+                    )
+                    text = r.choices[0].message.content.strip()
+                    parts = self._parse_numbered_response(text, len(batch))
+
+                    if len(parts) != len(batch):
+                        log(
+                            f"   ⚠️  Batch {bi//batch_size+1} parse mismatch — fallback individual"
+                        )
+                        parts = self._openai_individual(
+                            batch, system_prompt, client, log
+                        )
+
+                    results[bi] = parts
+                    return
+
+                except Exception as e:
+                    err = str(e)
+                    if "429" in err or "rate_limit" in err.lower():
+                        wait = min(20 * (attempt + 1), 60)
+                        log(
+                            f"   ⏳ Batch {bi//batch_size+1} rate-limited — wait {wait}s"
+                        )
+                        time.sleep(wait)
+                        continue
+                    log(f"   ⚠️  Batch {bi//batch_size+1} error: {e}")
+                    results[bi] = [s.text for s in batch]
+                    return
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            futures = {executor.submit(translate_batch, args): args for args in batches}
+            for fut in concurrent.futures.as_completed(futures):
+                if cancel.is_set():
+                    from core.pipeline.base import CancelledError
+
+                    raise CancelledError()
+                bi = futures[fut][0]
+                segs_done = min(bi + batch_size, total)
+                log(f"   [{segs_done}/{total}] translated")
+                try:
+                    fut.result()
+                except Exception as e:
+                    log(f"   ⚠️  Batch future error: {e}")
+
+        # Reassemble in order
+        out = []
+        for bi, batch, _, _ in batches:
+            parts = results.get(bi, [s.text for s in batch])
+            for seg, trans in zip(batch, parts):
+                out.append(
+                    TranslatedSegment(
+                        seg.start,
+                        seg.end,
+                        seg.text.strip(),
+                        trans.strip() or seg.text.strip(),
+                    )
+                )
+        return out
+
+    # ── Gemini helpers ────────────────────────────────────────────────────────
+
+    def _gemini_client(self, api_key):
+        try:
+            from google import genai
+            from google.genai import types
+
+            client = genai.Client(api_key=api_key)
+            return client, types
+        except ImportError:
+            raise RuntimeError(
+                "Run: pip install google-genai\n"
+                "Get free API key: aistudio.google.com"
+            )
+
+    def _gemini_generate(self, client, types, prompt, retries=3, log=None):
+        _log = log or (lambda m: print(m))
+        for attempt in range(retries):
+            try:
+                response = client.models.generate_content(
+                    model="gemini-2.0-flash",
+                    contents=prompt,
+                )
+                return response.text
+            except Exception as e:
+                err = str(e)
+                if "429" in err or "RESOURCE_EXHAUSTED" in err:
+                    m = re.search(r"retryDelay.*?(\d+)s", err)
+                    wait = int(m.group(1)) + 5 if m else 65
+                    if attempt < retries - 1:
+                        _log(
+                            f"   ⏳ Rate limited — waiting {wait}s… (attempt {attempt+1}/{retries})"
+                        )
+                        time.sleep(wait)
+                        continue
+                raise
+        raise RuntimeError("Gemini: max retries exceeded")
 
     def _build_batch_prompt(self, batch, ctx_before, ctx_after, lang_name, system_ctx):
         lines = [system_ctx, ""] if system_ctx else []
@@ -569,12 +698,10 @@ class TranslateStep(BaseStep):
         return "\n".join(lines)
 
     def _parse_numbered_response(self, text, expected):
-        """Parse '1. translation\n2. translation...' response."""
         lines = re.findall(r"^\d+\.\s*(.+)$", text, re.MULTILINE)
         return lines if len(lines) == expected else []
 
     def _gemini_individual(self, client, types, batch, system_ctx, log):
-        """Fallback: translate one by one."""
         results = []
         for seg in batch:
             try:
@@ -590,8 +717,7 @@ class TranslateStep(BaseStep):
                 results.append(seg.text)
         return results
 
-    def _build_examples(self, src_lang: str, target: str) -> str:
-        """Return few-shot translation examples for common language pairs."""
+    def _build_examples(self, src_lang, target):
         examples_map = {
             ("zh", "vi"): [
                 ("我的家", "Nhà của tôi"),
@@ -603,21 +729,14 @@ class TranslateStep(BaseStep):
                 ("我的家", "Nhà của tôi"),
                 ("她是我爸爸", "Cô ấy là bố tôi"),
             ],
-            ("ja", "vi"): [
-                ("私の家", "Nhà của tôi"),
-                ("ありがとう", "Cảm ơn bạn"),
-            ],
+            ("ja", "vi"): [("私の家", "Nhà của tôi"), ("ありがとう", "Cảm ơn bạn")],
             ("en", "vi"): [
                 ("My name is Anna", "Tên tôi là Anna"),
                 ("How are you?", "Bạn có khỏe không?"),
             ],
-            ("ko", "vi"): [
-                ("안녕하세요", "Xin chào"),
-                ("감사합니다", "Cảm ơn bạn"),
-            ],
+            ("ko", "vi"): [("안녕하세요", "Xin chào"), ("감사합니다", "Cảm ơn bạn")],
         }
         key = (src_lang.lower(), target.lower())
-        # Try exact match, then partial src match
         exs = examples_map.get(key, [])
         if not exs:
             for (s, t), v in examples_map.items():
@@ -627,7 +746,6 @@ class TranslateStep(BaseStep):
         if not exs:
             lang_name = LANG_NAMES.get(target, target)
             return f"Input: [original text] → Output: [{lang_name} translation]"
-
         lang_name = LANG_NAMES.get(target, target)
         lines = []
         for orig, trans in exs:
@@ -649,98 +767,9 @@ class TranslateStep(BaseStep):
             )
             return self._gemini_generate(client, types, prompt).strip()
         except Exception:
-            return (
-                f"Subtitle content in {src_lang}. "
-                f"Translate all text to {lang_name}."
-            )
+            return f"Subtitle content in {src_lang}. Translate all text to {lang_name}."
 
-    # ── OpenAI: Context-aware ─────────────────────────────────────────────────
-
-    def _translate_openai(self, segments, target, api_key, ctx_window, log, cancel):
-        try:
-            from openai import OpenAI
-        except ImportError:
-            raise RuntimeError("Run: pip install openai")
-
-        key = api_key or os.environ.get("OPENAI_API_KEY", "")
-        if not key:
-            raise RuntimeError("Set OPENAI_API_KEY env var or enter key in UI.")
-
-        client = OpenAI(api_key=key)
-        lang_name = LANG_NAMES.get(target, target)
-        total = len(segments)
-
-        # Context summary
-        preview = " ".join(s.text for s in segments[:20])
-        summary = self._extract_summary_openai(client, preview, lang_name)
-        log(f"   📖 Context: {summary[:100]}…")
-
-        system_prompt = (
-            f"You are a professional subtitle translator.\n"
-            f"Translate subtitles to {lang_name}.\n\n"
-            f"CONTENT CONTEXT:\n{summary}\n\n"
-            f"RULES:\n"
-            f"- Keep tone consistent\n"
-            f"- Use correct pronouns based on context\n"
-            f"- Return ONLY the translated line\n"
-            f"- Keep [music], [laughter] etc. as-is\n"
-            f"- Do NOT translate proper nouns/names"
-        )
-
-        # Batch mode: 20 segments per request (faster + cheaper)
-        batch_size = 20
-        out = []
-
-        for bi in range(0, total, batch_size):
-            if cancel.is_set():
-                from core.pipeline.base import CancelledError
-
-                raise CancelledError()
-
-            batch = segments[bi : bi + batch_size]
-            ctx_before = segments[max(0, bi - ctx_window) : bi]
-            ctx_after = segments[
-                bi + len(batch) : min(total, bi + len(batch) + ctx_window)
-            ]
-
-            user_msg = self._build_batch_prompt(
-                batch, ctx_before, ctx_after, lang_name, ""
-            )
-
-            try:
-                r = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_msg},
-                    ],
-                    temperature=0.2,
-                    max_tokens=1000,
-                )
-                text = r.choices[0].message.content.strip()
-                parts = self._parse_numbered_response(text, len(batch))
-
-                if len(parts) != len(batch):
-                    log("   ⚠️  Batch parse mismatch — fallback individual")
-                    parts = self._openai_individual(batch, system_prompt, client, log)
-
-            except Exception as e:
-                log(f"   ⚠️  Batch error: {e}")
-                parts = [s.text for s in batch]
-
-            for seg, trans in zip(batch, parts):
-                out.append(
-                    TranslatedSegment(
-                        seg.start,
-                        seg.end,
-                        seg.text.strip(),
-                        trans.strip() or seg.text.strip(),
-                    )
-                )
-
-            log(f"   [{min(bi + batch_size, total)}/{total}] translated")
-
-        return out
+    # ── OpenAI helpers ────────────────────────────────────────────────────────
 
     def _openai_individual(self, batch, system_prompt, client, log):
         results = []
@@ -789,29 +818,20 @@ class TranslateStep(BaseStep):
     def _verify_pass(
         self, segments, target, backend, api_key, verify_backend, verify_model, log
     ):
-        """
-        Second pass — fix pronouns, names, logic errors.
-        Key insight: send BOTH original + translation so model can
-        detect contradictions like 她(female)=爸爸(male).
-        """
         if verify_backend == "none":
             return segments
 
         lang_name = LANG_NAMES.get(target, target)
-        src_lang = "the source language"
-        batch_size = 15  # smaller batches = better accuracy for local models
+        batch_size = 15
         out = []
         log(f"🔍 Verify pass via {verify_backend} ({verify_model})…")
         log("   Sending bilingual pairs (original + translation) for context")
 
         for bi in range(0, len(segments), batch_size):
             batch = segments[bi : bi + batch_size]
-
-            # Build bilingual numbered list: original + translation side by side
             bilingual = "\n".join(
                 f"{j+1}. [{s.original}] → {s.translated}" for j, s in enumerate(batch)
             )
-
             prompt = self._build_verify_prompt(bilingual, lang_name, verify_backend)
 
             try:
@@ -843,7 +863,6 @@ class TranslateStep(BaseStep):
                     continue
 
                 fixed_lines = self._parse_numbered_response(fixed_text, len(batch))
-
                 if len(fixed_lines) == len(batch):
                     for seg, fixed in zip(batch, fixed_lines):
                         out.append(
@@ -864,12 +883,7 @@ class TranslateStep(BaseStep):
 
         return out
 
-    def _build_verify_prompt(self, bilingual: str, lang_name: str, backend: str) -> str:
-        """
-        Build a bilingual verify prompt.
-        Shows [ORIGINAL] → translation so model can spot contradictions.
-        """
-        # Shorter prompt for local models (less VRAM)
+    def _build_verify_prompt(self, bilingual, lang_name, backend):
         if backend == "ollama":
             return (
                 f"You are a subtitle editor fixing {lang_name} translations.\n\n"
@@ -887,7 +901,6 @@ class TranslateStep(BaseStep):
                 f"Return numbered list (1. ... 2. ... etc):"
             )
         else:
-            # Longer, more detailed prompt for API models
             return (
                 f"You are a professional {lang_name} subtitle editor.\n\n"
                 f"I will give you subtitles in format: [ORIGINAL] → current_translation\n"
@@ -907,21 +920,13 @@ class TranslateStep(BaseStep):
                 f"Return numbered list only:"
             )
 
-    # ── Ollama (local, free) ──────────────────────────────────────────────────
+    # ── Ollama ────────────────────────────────────────────────────────────────
 
     def _ollama_generate(self, prompt, model="llama3", log=None):
-        """
-        Call local Ollama API.
-        Install: https://ollama.com
-        Pull model: ollama pull llama3
-                    ollama pull mistral
-                    ollama pull gemma2
-        """
         import json as _json
         import urllib.request
 
         _log = log or (lambda m: None)
-
         payload = _json.dumps(
             {
                 "model": model,
@@ -957,7 +962,6 @@ class TranslateStep(BaseStep):
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(6)
 
-        # ── Translation backend ──
         r1 = QHBoxLayout()
         r1.addWidget(QLabel("Backend:"))
         self._backend_combo = QComboBox()
@@ -973,7 +977,6 @@ class TranslateStep(BaseStep):
         r1.addStretch()
         v.addLayout(r1)
 
-        # Target lang
         r2 = QHBoxLayout()
         r2.addWidget(QLabel("Target lang:"))
         self._lang_combo = QComboBox()
@@ -983,7 +986,6 @@ class TranslateStep(BaseStep):
         r2.addStretch()
         v.addLayout(r2)
 
-        # API key
         self._api_lbl = QLabel("API Key:")
         self._api_edit = QLineEdit()
         self._api_edit.setPlaceholderText("Gemini: aistudio.google.com")
@@ -991,7 +993,6 @@ class TranslateStep(BaseStep):
         v.addWidget(self._api_lbl)
         v.addWidget(self._api_edit)
 
-        # Google chunk opts
         self._google_opts = QWidget()
         go = QHBoxLayout(self._google_opts)
         go.setContentsMargins(0, 0, 0, 0)
@@ -1007,7 +1008,6 @@ class TranslateStep(BaseStep):
         self._google_opts.setVisible(False)
         v.addWidget(self._google_opts)
 
-        # AI context opts (Gemini / OpenAI)
         self._ai_opts = QWidget()
         ao = QHBoxLayout(self._ai_opts)
         ao.setContentsMargins(0, 0, 0, 0)
@@ -1021,13 +1021,11 @@ class TranslateStep(BaseStep):
         ao.addStretch()
         v.addWidget(self._ai_opts)
 
-        # ── Separator ──
         sep = QWidget()
         sep.setFixedHeight(1)
         sep.setStyleSheet("background:#2d2d4e;margin:4px 0;")
         v.addWidget(sep)
 
-        # ── Smart fix ──
         fix_lbl = QLabel("🔧 Smart Fix (rule-based, always free)")
         fix_lbl.setStyleSheet("color:#a0a8ff;font-size:11px;font-weight:600;")
         v.addWidget(fix_lbl)
@@ -1042,7 +1040,6 @@ class TranslateStep(BaseStep):
         )
         v.addWidget(self._rule_fix_chk)
 
-        # ── Verify pass section ──
         verify_lbl = QLabel("🔍 Verify & Fix Pass")
         verify_lbl.setStyleSheet("color:#a0a8ff;font-size:11px;font-weight:600;")
         v.addWidget(verify_lbl)
@@ -1066,7 +1063,6 @@ class TranslateStep(BaseStep):
         rv.addStretch()
         v.addLayout(rv)
 
-        # Ollama model opts
         self._ollama_opts = QWidget()
         ov2 = QVBoxLayout(self._ollama_opts)
         ov2.setContentsMargins(0, 0, 0, 0)
@@ -1086,15 +1082,6 @@ class TranslateStep(BaseStep):
             ]
         )
         self._ollama_model_combo.setCurrentIndex(0)
-        self._ollama_model_combo.setToolTip(
-            "Video tiếng Trung  →  qwen2\n"
-            "Video tiếng Anh    →  llama3\n"
-            "RAM thấp (<8GB)    →  mistral\n\n"
-            "Cài model:\n"
-            "  ollama pull qwen2\n"
-            "  ollama pull llama3\n"
-            "  ollama pull mistral"
-        )
         ov.addWidget(self._ollama_model_combo)
         ov.addStretch()
         ov2.addLayout(ov)
@@ -1105,9 +1092,8 @@ class TranslateStep(BaseStep):
         self._ollama_opts.setVisible(False)
         v.addWidget(self._ollama_opts)
 
-        # Default: Google Translate, skip verify
-        self._backend_combo.setCurrentIndex(1)  # Google Translate
-        self._verify_combo.setCurrentIndex(0)  # None (skip)
+        self._backend_combo.setCurrentIndex(1)
+        self._verify_combo.setCurrentIndex(0)
         self._rule_fix_chk.setChecked(True)
         self._on_backend_changed(1)
         return w
@@ -1128,7 +1114,6 @@ class TranslateStep(BaseStep):
             self._api_edit.setPlaceholderText("OpenAI API key — platform.openai.com")
 
     def _on_verify_changed(self, idx):
-        # 0=None, 1=Ollama, 2=Gemini, 3=OpenAI
         self._ollama_opts.setVisible(idx == 1)
 
     def collect_config(self):
