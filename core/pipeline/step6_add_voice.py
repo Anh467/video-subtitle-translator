@@ -410,9 +410,9 @@ class AddVoiceStep(BaseStep):
         v.addWidget(mw)
 
         v.addWidget(self._sep_label("🔊  Volume"))
-        self._tts_vol_slider = self._vol_row(v, "TTS voice:", 100)
-        self._bgm_vol_slider = self._vol_row(v, "Background music:", 30)
-        self._orig_vol_slider = self._vol_row(v, "Original voice:", 10)
+        self._tts_vol_slider = self._vol_row(v, "TTS voice:", 124)
+        self._bgm_vol_slider = self._vol_row(v, "Background music:", 145)
+        self._orig_vol_slider = self._vol_row(v, "Original voice:", 31)
         return w
 
     def _sep_label(self, text):

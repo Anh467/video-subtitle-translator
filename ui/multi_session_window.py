@@ -191,7 +191,7 @@ class SessionListPanel(QWidget):
         h.setSpacing(6)
 
         chk = QCheckBox()
-        chk.setChecked(True)
+        chk.setChecked(False)
         chk.setFixedWidth(20)
         h.addWidget(chk)
 
@@ -255,7 +255,7 @@ class SessionListPanel(QWidget):
             if self._sessions[idx]["folder"] != folder:
                 continue
             old_w = self._list.itemWidget(item)
-            was_checked = True
+            was_checked = False
             if old_w:
                 chk = old_w.findChild(QCheckBox)
                 if chk:

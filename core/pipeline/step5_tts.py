@@ -781,8 +781,8 @@ class TTSStep(BaseStep):
         v.addWidget(self._voice_id_lbl)
         v.addWidget(self._voice_edit)
 
-        self._backend_combo.setCurrentIndex(0)
-        self._on_backend_changed(0)
+        self._backend_combo.setCurrentIndex(1)  # Default: FPT AI TTS
+        self._on_backend_changed(1)
         return w
 
     def _sep_label(self, text):
