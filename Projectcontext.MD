@@ -300,23 +300,25 @@ self._stop_queue: bool       # flag dừng sau step hiện tại
 
 ## Các lỗi đã fix
 
-| Lỗi                                                | Fix                                                                   |
-| -------------------------------------------------- | --------------------------------------------------------------------- |
-| `No module named 'core.pipeline'`                  | Tạo `__init__.py` trong mọi folder                                    |
-| `Fatal: _PyThreadState_Attach` (Python 3.13)       | Chạy Whisper trong subprocess                                         |
-| `UnicodeDecodeError cp1258`                        | `encoding="utf-8", errors="replace"` cho mọi subprocess               |
-| `google.generativeai` deprecated                   | Dùng `google.genai`, `genai.Client()`                                 |
-| Gemini 404 NOT_FOUND                               | Model name `gemini-2.0-flash` không có prefix `models/`               |
-| Gemini 429 rate limit                              | Auto-retry với wait time, delay 4s/batch                              |
-| Gemini dịch sang tiếng Trung                       | Prompt explicit: `"Translate ZH INTO Vietnamese"` + few-shot examples |
-| `session is not defined` trong `_translate_gemini` | Truyền `src_lang=transcript.language` từ `run()`                      |
-| `pyaudioop` Python 3.13                            | `pip install audioop-lts`                                             |
-| Demucs Unicode crash                               | Copy file sang ASCII temp name                                        |
-| UI tắt sau 1 job                                   | `_on_cancelled` gọi `_run_next()` thay vì `_set_busy(False)`          |
-| `setAutoDelete(False)`                             | Tránh Qt xóa worker trước khi signal xử lý xong                       |
-| Whisper `Unsupported language: zh-cn`              | Normalize: `language.split("-")[0].lower()`                           |
-| Zalo trả WAV không phải MP3                        | Detect RIFF header → `from_wav()`                                     |
-| Zalo 429 rate limit                                | Retry 3 lần + delay 1s/request                                        |
+| Lỗi                                                 | Fix                                                                     |
+| --------------------------------------------------- | ----------------------------------------------------------------------- |
+| `No module named 'core.pipeline'`                   | Tạo `__init__.py` trong mọi folder                                      |
+| `Fatal: _PyThreadState_Attach` (Python 3.13)        | Chạy Whisper trong subprocess                                           |
+| `UnicodeDecodeError cp1258`                         | `encoding="utf-8", errors="replace"` cho mọi subprocess                 |
+| `google.generativeai` deprecated                    | Dùng `google.genai`, `genai.Client()`                                   |
+| Gemini 404 NOT_FOUND                                | Model name `gemini-2.0-flash` không có prefix `models/`                 |
+| Gemini 429 rate limit                               | Auto-retry với wait time, delay 4s/batch                                |
+| Gemini dịch sang tiếng Trung                        | Prompt explicit: `"Translate ZH INTO Vietnamese"` + few-shot examples   |
+| `session is not defined` trong `_translate_gemini`  | Truyền `src_lang=transcript.language` từ `run()`                        |
+| `pyaudioop` Python 3.13                             | `pip install audioop-lts`                                               |
+| Demucs Unicode crash                                | Copy file sang ASCII temp name                                          |
+| UI tắt sau 1 job                                    | `_on_cancelled` gọi `_run_next()` thay vì `_set_busy(False)`            |
+| `setAutoDelete(False)`                              | Tránh Qt xóa worker trước khi signal xử lý xong                         |
+| Whisper `Unsupported language: zh-cn`               | Normalize: `language.split("-")[0].lower()`                             |
+| Zalo trả WAV không phải MP3                         | Detect RIFF header → `from_wav()`                                       |
+| Zalo 429 rate limit                                 | Retry 3 lần + delay 1s/request                                          |
+| Step 5 báo `'NoneType' object is not subscriptable` | Harden lỗi ffmpeg: không slice `stderr` khi `None`; log lỗi thật rõ hơn |
+| Step 5 input audio-only bị lỗi mux                  | Check stream bằng `ffprobe`; không có video thì export audio final      |
 
 ---
 
@@ -371,5 +373,5 @@ ollama pull llama3   # tiếng Anh → VI
 
 - User đang dùng Python 3.13 (không phải 3.11 như khuyến nghị)
 - Zalo TTS vẫn còn rate limit 429 dù đã có retry
-- FPT AI chưa test thực tế (user chưa lấy key)
+- FPT AI có thể fail nhiều segment khi quota/rate-limit/chất lượng text đầu vào; app hiện vẫn fallback silence cho segment lỗi
 - Ollama đã cài, models đang pull vào D:\Ollama\models

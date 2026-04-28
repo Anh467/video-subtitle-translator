@@ -3,6 +3,7 @@ Step 5 — TTS + Audio Mix
 """
 
 import os
+import shutil
 import subprocess
 import tempfile
 import time
@@ -45,6 +46,7 @@ MIX_MODES = {
     "TTS + Background music (Step 4)": "bgm_only",
     "TTS + BGM + Original voice (low vol)": "full_mix",
 }
+VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".flv", ".wmv"}
 
 
 class TTSStep(BaseStep):
@@ -66,8 +68,9 @@ class TTSStep(BaseStep):
     # ── Run ───────────────────────────────────────────────────────────────────
 
     def run(self, session, config, log, cancel):
-        backend = config["backend"]
-        lang = config["lang"]
+        config = config or {}
+        backend = config.get("backend", "gtts")
+        lang = config.get("lang", "vi")
         api_key = config.get("api_key")
         voice_id = config.get("voice_id", "")
         mix_mode = config.get("mix_mode", "bgm_only")
@@ -119,12 +122,18 @@ class TTSStep(BaseStep):
         if cancel.is_set():
             raise CancelledError()
 
-        input_video = session.latest_video()
+        input_media = session.latest_video()
         out_video = str(session.step5_video)
-        if input_video == str(session.step3_video):
+        if input_media == str(session.step3_video):
             log("🔗 Chaining: using Step 3 (subtitled) video as base")
-        log("🎬 Muxing audio into video…")
-        self._mux(input_video, mixed_audio, out_video, log)
+
+        if self._has_video_stream(input_media):
+            log("🎬 Muxing audio into video…")
+            self._mux(input_media, mixed_audio, out_video, log)
+        else:
+            log("⚠️  Input has no video stream — exporting final audio only")
+            if os.path.abspath(mixed_audio) != os.path.abspath(out_video):
+                shutil.copy2(mixed_audio, out_video)
 
         if mixed_audio != tts_path and os.path.exists(mixed_audio):
             os.unlink(mixed_audio)
@@ -223,9 +232,11 @@ class TTSStep(BaseStep):
             ]
         )
         log(f"   Mixing {len(tracks)} audio tracks…")
-        r = subprocess.run(cmd, capture_output=True, text=True)
+        r = self._run_cmd(cmd)
         if r.returncode != 0:
-            raise RuntimeError(f"ffmpeg mix failed:\n{r.stderr[-1500:]}")
+            raise RuntimeError(
+                f"ffmpeg mix failed (code {self._code(r.returncode)}):\n{self._tail_output(r)}"
+            )
         return out.name
 
     def _apply_volume(self, audio_path, volume):
@@ -249,6 +260,20 @@ class TTSStep(BaseStep):
         return out.name if r.returncode == 0 else audio_path
 
     def _mux(self, video_path, audio_path, out_path, log):
+        in_place = os.path.abspath(video_path) == os.path.abspath(out_path)
+        actual_out = out_path
+        if in_place:
+            fd, tmp_path = tempfile.mkstemp(
+                prefix="step5_mux_",
+                suffix=Path(out_path).suffix or ".mp4",
+                dir=str(Path(out_path).parent),
+            )
+            os.close(fd)
+            actual_out = tmp_path
+            log(
+                "⚠️  Output trùng input video — using temp output to avoid in-place edit"
+            )
+
         cmd = [
             "ffmpeg",
             "-y",
@@ -263,11 +288,73 @@ class TTSStep(BaseStep):
             "-map",
             "1:a:0",
             "-shortest",
-            out_path,
+            actual_out,
         ]
-        r = subprocess.run(cmd, capture_output=True, text=True)
+        r = self._run_cmd(cmd)
         if r.returncode != 0:
-            raise RuntimeError(f"ffmpeg mux failed:\n{r.stderr[-1500:]}")
+            if in_place and os.path.exists(actual_out):
+                os.unlink(actual_out)
+            raise RuntimeError(
+                f"ffmpeg mux failed (code {self._code(r.returncode)}):\n{self._tail_output(r)}"
+            )
+
+        if in_place:
+            shutil.move(actual_out, out_path)
+
+    def _has_video_stream(self, media_path: str) -> bool:
+        cmd = [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=codec_type",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            media_path,
+        ]
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True)
+            return r.returncode == 0 and (r.stdout or "").strip().lower() == "video"
+        except FileNotFoundError:
+            # Fallback when ffprobe is unavailable: inspect ffmpeg probe output.
+            probe = self._run_cmd(["ffmpeg", "-hide_banner", "-i", media_path])
+            txt = self._tail_output(probe, max_chars=4000).lower()
+            if "video:" in txt:
+                return True
+            if "audio:" in txt:
+                return False
+            # Last resort by extension when probe output is unavailable.
+            return Path(media_path).suffix.lower() in VIDEO_EXTS
+
+    @staticmethod
+    def _run_cmd(cmd):
+        try:
+            return subprocess.run(cmd, capture_output=True)
+        except FileNotFoundError as e:
+            tool = cmd[0] if cmd else "command"
+            raise RuntimeError(f"{tool} not found in PATH") from e
+
+    @staticmethod
+    def _code(code: int) -> int:
+        # Windows sometimes reports unsigned 32-bit exit codes.
+        return code - (1 << 32) if code > 0x7FFFFFFF else code
+
+    @staticmethod
+    def _tail_output(proc: subprocess.CompletedProcess, max_chars: int = 1500) -> str:
+        stderr = proc.stderr
+        stdout = proc.stdout
+
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", errors="replace")
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", errors="replace")
+
+        text = (stderr or stdout or "").strip()
+        if not text:
+            return "No ffmpeg error text available."
+        return text[-max_chars:]
 
     # ── TTS dispatch ──────────────────────────────────────────────────────────
 
@@ -471,20 +558,43 @@ class TTSStep(BaseStep):
             txt = seg.translated.strip()
             if not txt:
                 return None
-            resp = _req.post(
-                "https://api.fpt.ai/hmi/tts/v5",
-                headers={
-                    "api_key": key,
-                    "voice": voice,
-                    "speed": "0",
-                    "Cache-Control": "no-cache",
-                    "Content-Type": "application/x-www-form-urlencoded",
-                },
-                data=txt.encode("utf-8"),
-                timeout=15,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+            data = None
+            for post_attempt in range(5):
+                resp = _req.post(
+                    "https://api.fpt.ai/hmi/tts/v5",
+                    headers={
+                        "api_key": key,
+                        "voice": voice,
+                        "speed": "0",
+                        "Cache-Control": "no-cache",
+                        "Content-Type": "application/x-www-form-urlencoded",
+                    },
+                    data=txt.encode("utf-8"),
+                    timeout=15,
+                )
+
+                if resp.status_code == 429:
+                    retry_after = resp.headers.get("Retry-After", "")
+                    if retry_after.isdigit():
+                        wait = max(1, int(retry_after))
+                    else:
+                        wait = min(2**post_attempt, 16)
+                    if post_attempt < 4:
+                        log(
+                            f"   ⏳ Seg {idx+1}/{total} hit 429, retry in {wait}s "
+                            f"({post_attempt+1}/5)"
+                        )
+                        time.sleep(wait)
+                        continue
+                    raise RuntimeError("FPT 429 Too Many Requests (retries exhausted)")
+
+                resp.raise_for_status()
+                data = resp.json()
+                break
+
+            if data is None:
+                raise RuntimeError("FPT request failed: no response payload")
+
             if data.get("error", 0) != 0:
                 raise RuntimeError(
                     f"FPT error {data.get('error')}: {data.get('message')}"
@@ -523,7 +633,7 @@ class TTSStep(BaseStep):
                 fetch_one,
                 log,
                 cancel,
-                max_workers=3,  # FPT rate limit safe
+                max_workers=1,  # Avoid aggressive burst causing 429 on free tier
                 label="FPT TTS",
             )
 
