@@ -1,23 +1,19 @@
-"""
-MainWindow — orchestrates the pipeline.
-
-All business logic lives in core/pipeline/step*.py
-MainWindow only:
-  1. Shows StepCards in a scrollable row
-  2. Manages session
-  3. Routes worker signals to UI
-"""
+"""MainWindow — orchestrates the pipeline with session management."""
 
 import os
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QThreadPool
 from PyQt6.QtWidgets import (
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QProgressBar,
@@ -40,77 +36,327 @@ from ui.widgets.drop_zone import SUPPORTED, DropZone
 from ui.widgets.step_card import StepCard
 
 STYLESHEET = """
-QMainWindow,QWidget{
-    background:#1a1a2e;color:#e0e0e0;
-    font-family:'SF Pro Display','Segoe UI',Arial,sans-serif;font-size:13px;
-}
-QPushButton{
-    background:#2d2d4e;color:#e0e0e0;border:1px solid #3d3d6e;
-    border-radius:6px;padding:5px 12px;
-}
+QMainWindow,QWidget{background:#1a1a2e;color:#e0e0e0;
+font-family:'SF Pro Display','Segoe UI',Arial,sans-serif;font-size:13px;}
+QPushButton{background:#2d2d4e;color:#e0e0e0;border:1px solid #3d3d6e;
+border-radius:6px;padding:5px 12px;}
 QPushButton:hover{background:#3d3d6e;border-color:#6c63ff;}
 QPushButton:disabled{color:#444;background:#1e1e38;border-color:#252540;}
-QPushButton#cancel_btn{
-    background:#3a1a1a;color:#ff7070;border:1px solid #6e2d2d;
-    font-weight:bold;padding:7px 14px;
-}
+QPushButton#cancel_btn{background:#3a1a1a;color:#ff7070;border:1px solid #6e2d2d;
+font-weight:bold;padding:7px 14px;}
 QPushButton#cancel_btn:hover{background:#5a2020;}
-QLineEdit{
-    background:#16213e;border:1px solid #2d2d4e;
-    border-radius:5px;padding:5px 10px;color:#e0e0e0;
-}
+QLineEdit{background:#16213e;border:1px solid #2d2d4e;border-radius:5px;
+padding:5px 10px;color:#e0e0e0;}
 QLineEdit:focus{border-color:#6c63ff;}
 QLineEdit:read-only{color:#aaa;background:#111828;}
-QComboBox{
-    background:#16213e;border:1px solid #2d2d4e;
-    border-radius:5px;padding:4px 10px;color:#e0e0e0;
-}
+QComboBox{background:#16213e;border:1px solid #2d2d4e;border-radius:5px;
+padding:4px 10px;color:#e0e0e0;}
 QComboBox:hover{border-color:#6c63ff;}
-QComboBox QAbstractItemView{
-    background:#16213e;border:1px solid #6c63ff;
-    color:#e0e0e0;selection-background-color:#6c63ff;
-}
+QComboBox QAbstractItemView{background:#16213e;border:1px solid #6c63ff;
+color:#e0e0e0;selection-background-color:#6c63ff;}
 QComboBox::drop-down{border:none;}
-QTextEdit{
-    background:#0f0f23;border:1px solid #2d2d4e;border-radius:6px;
-    padding:8px;color:#d0d0d0;
-    font-family:'SF Mono','Consolas',monospace;font-size:12px;
-}
-QProgressBar{
-    border:1px solid #2d2d4e;border-radius:4px;background:#16213e;
-    text-align:center;color:white;height:16px;
-}
+QTextEdit{background:#0f0f23;border:1px solid #2d2d4e;border-radius:6px;
+padding:8px;color:#d0d0d0;font-family:'SF Mono','Consolas',monospace;font-size:12px;}
+QProgressBar{border:1px solid #2d2d4e;border-radius:4px;background:#16213e;
+text-align:center;color:white;height:16px;}
 QProgressBar::chunk{background:#6c63ff;border-radius:3px;}
 QStatusBar{background:#0f0f23;border-top:1px solid #2d2d4e;color:#666;}
 QSplitter::handle{background:#2d2d4e;}
 QScrollArea{border:none;background:transparent;}
 QCheckBox{spacing:6px;}
-QCheckBox::indicator{
-    width:14px;height:14px;border:1px solid #3d3d6e;
-    border-radius:3px;background:#16213e;
-}
+QCheckBox::indicator{width:14px;height:14px;border:1px solid #3d3d6e;
+border-radius:3px;background:#16213e;}
 QCheckBox::indicator:checked{background:#6c63ff;border-color:#6c63ff;}
 QRadioButton{spacing:6px;}
-QRadioButton::indicator{
-    width:14px;height:14px;border-radius:7px;
-    border:1px solid #3d3d6e;background:#16213e;
-}
+QRadioButton::indicator{width:14px;height:14px;border-radius:7px;
+border:1px solid #3d3d6e;background:#16213e;}
 QRadioButton::indicator:checked{background:#6c63ff;border-color:#6c63ff;}
-QSpinBox{
-    background:#16213e;border:1px solid #2d2d4e;
-    border-radius:5px;padding:4px 6px;color:#e0e0e0;min-width:70px;
-}
+QSpinBox{background:#16213e;border:1px solid #2d2d4e;border-radius:5px;
+padding:4px 6px;color:#e0e0e0;min-width:70px;}
 QSpinBox:focus{border-color:#6c63ff;}
-QSpinBox::up-button,QSpinBox::down-button{
-    width:18px;background:#2d2d4e;border:none;border-radius:3px;}
+QSpinBox::up-button,QSpinBox::down-button{width:18px;background:#2d2d4e;
+border:none;border-radius:3px;}
 QSpinBox::up-button:hover,QSpinBox::down-button:hover{background:#3d3d6e;}
 QFrame#session_bar{background:#111828;border:1px solid #2d2d4e;border-radius:6px;}
-QSlider::groove:horizontal{
-    height:4px;background:#2d2d4e;border-radius:2px;}
-QSlider::handle:horizontal{
-    width:14px;height:14px;margin:-5px 0;
-    background:#6c63ff;border-radius:7px;}
+QSlider::groove:horizontal{height:4px;background:#2d2d4e;border-radius:2px;}
+QSlider::handle:horizontal{width:14px;height:14px;margin:-5px 0;
+background:#6c63ff;border-radius:7px;}
+QListWidget{background:#111828;border:1px solid #2d2d4e;border-radius:6px;
+color:#e0e0e0;outline:none;}
+QListWidget::item{padding:8px 12px;border-bottom:1px solid #1e1e38;}
+QListWidget::item:selected{background:#2d2d4e;border-left:3px solid #6c63ff;}
+QListWidget::item:hover{background:#1e1e38;}
+QDoubleSpinBox{background:#16213e;border:1px solid #2d2d4e;border-radius:5px;
+padding:4px 6px;color:#e0e0e0;min-width:70px;}
+QDoubleSpinBox:focus{border-color:#6c63ff;}
 """
+
+
+# ── API Keys Dialog ───────────────────────────────────────────────────────────
+
+
+class ApiKeysDialog(QDialog):
+    """Dialog để nhập và quản lý API keys — auto-save vào .subsync_keys"""
+
+    def __init__(self, base_dir: str = "", parent=None):
+        super().__init__(parent)
+        self.base_dir = base_dir
+        self.setWindowTitle("🔑  API Keys Manager")
+        self.setMinimumSize(540, 480)
+        self.setStyleSheet(parent.styleSheet() if parent else "")
+        self._edits: dict = {}
+        self._setup_ui()
+        self._load()
+
+    def _setup_ui(self):
+        from core.api_keys import ENV_FILE, KNOWN_KEYS
+
+        v = QVBoxLayout(self)
+        v.setSpacing(10)
+
+        # Header
+        hdr = QLabel("API Keys — lưu vào file .subsync_keys trong session folder")
+        hdr.setStyleSheet("color:#a0a8ff;font-size:12px;")
+        v.addWidget(hdr)
+
+        if self.base_dir:
+            path_lbl = QLabel(f"📁 {self.base_dir}/{ENV_FILE}")
+            path_lbl.setStyleSheet("color:#555;font-size:10px;font-family:monospace;")
+            v.addWidget(path_lbl)
+
+        # Key fields
+        for env_key, meta in KNOWN_KEYS.items():
+            row = QHBoxLayout()
+            lbl = QLabel(f"{meta['label']}:")
+            lbl.setFixedWidth(160)
+            lbl.setStyleSheet("color:#a0c0ff;font-size:12px;")
+            row.addWidget(lbl)
+            edit = QLineEdit()
+            edit.setPlaceholderText(f"{env_key}=...")
+            edit.setEchoMode(QLineEdit.EchoMode.Password)
+            row.addWidget(edit)
+
+            # Toggle show/hide
+            btn_show = QPushButton("👁")
+            btn_show.setFixedWidth(32)
+            btn_show.setCheckable(True)
+            btn_show.setStyleSheet("QPushButton{padding:2px;}")
+            btn_show.toggled.connect(
+                lambda checked, e=edit: e.setEchoMode(
+                    QLineEdit.EchoMode.Normal
+                    if checked
+                    else QLineEdit.EchoMode.Password
+                )
+            )
+            row.addWidget(btn_show)
+            v.addLayout(row)
+            self._edits[env_key] = edit
+
+        # Info
+        info = QLabel(
+            "💡 Keys được lưu vào file <b>.subsync_keys</b> trong session folder.<br>"
+            "App tự động load khi bạn chọn folder.<br>"
+            "<b>Không share file này!</b> Thêm vào <code>.gitignore</code> nếu dùng git."
+        )
+        info.setStyleSheet("color:#666;font-size:11px;padding:8px;")
+        info.setWordWrap(True)
+        v.addWidget(info)
+
+        v.addStretch()
+
+        # Buttons
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        btns.accepted.connect(self._save)
+        btns.rejected.connect(self.reject)
+        v.addWidget(btns)
+
+    def _load(self):
+        from core.api_keys import get_manager
+
+        mgr = get_manager()
+        for env_key, edit in self._edits.items():
+            v = mgr.get(env_key, "")
+            if v:
+                edit.setText(v)
+
+    def _save(self):
+        from core.api_keys import get_manager
+
+        mgr = get_manager()
+        for env_key, edit in self._edits.items():
+            v = edit.text().strip()
+            mgr.set(env_key, v)
+        self.accept()
+
+
+# ── Session Picker Dialog ─────────────────────────────────────────────────────
+
+
+class SessionPickerDialog(QDialog):
+    """Dialog hiển thị danh sách sessions, cho phép chọn hoặc clear."""
+
+    def __init__(self, base_dir: str, parent=None):
+        super().__init__(parent)
+        self.base_dir = base_dir
+        self.selected_folder = None
+        self.setWindowTitle("📁  Session Manager")
+        self.setMinimumSize(700, 480)
+        self.setStyleSheet(parent.styleSheet() if parent else "")
+        self._setup_ui()
+        self._load_sessions()
+
+    def _setup_ui(self):
+        v = QVBoxLayout(self)
+        v.setSpacing(10)
+
+        # Header
+        hdr = QLabel("Select a previous session to resume, or start a new one.")
+        hdr.setStyleSheet("color:#a0a8ff;font-size:12px;")
+        v.addWidget(hdr)
+
+        # Session list
+        self._list = QListWidget()
+        self._list.itemDoubleClicked.connect(self._accept)
+        v.addWidget(self._list, stretch=1)
+
+        # Info label
+        self._info_lbl = QLabel("")
+        self._info_lbl.setStyleSheet(
+            "color:#888;font-size:11px;font-family:'Consolas','SF Mono',monospace;"
+        )
+        self._info_lbl.setWordWrap(True)
+        v.addWidget(self._info_lbl)
+        self._list.currentItemChanged.connect(self._on_select)
+
+        # Buttons
+        btn_row = QHBoxLayout()
+
+        self._btn_resume = QPushButton("▶  Resume Selected")
+        self._btn_resume.setStyleSheet(
+            "QPushButton{background:#1a4a2a;color:#5dca8e;border:1px solid #2a6a3a;"
+            "font-weight:bold;border-radius:6px;padding:8px 18px;}"
+            "QPushButton:hover{background:#2a6a3a;}"
+            "QPushButton:disabled{color:#444;background:#1e1e38;}"
+        )
+        self._btn_resume.setEnabled(False)
+        self._btn_resume.clicked.connect(self._accept)
+        btn_row.addWidget(self._btn_resume)
+
+        btn_new = QPushButton("✨  New Session")
+        btn_new.setStyleSheet(
+            "QPushButton{background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+            "stop:0 #6c63ff,stop:1 #a855f7);color:white;font-weight:bold;"
+            "border:none;border-radius:6px;padding:8px 18px;}"
+            "QPushButton:hover{background:#5a52d5;}"
+        )
+        btn_new.clicked.connect(self.reject)
+        btn_row.addWidget(btn_new)
+
+        btn_row.addStretch()
+
+        self._btn_clear = QPushButton("🗑️  Clear Session")
+        self._btn_clear.setStyleSheet(
+            "QPushButton{background:#3a1a1a;color:#ff7070;border:1px solid #6e2d2d;"
+            "border-radius:6px;padding:8px 14px;}"
+            "QPushButton:hover{background:#5a2020;}"
+            "QPushButton:disabled{color:#444;background:#1e1e38;}"
+        )
+        self._btn_clear.setEnabled(False)
+        self._btn_clear.clicked.connect(self._clear_selected)
+        btn_row.addWidget(self._btn_clear)
+
+        self._btn_clear_all = QPushButton("🗑️  Clear All")
+        self._btn_clear_all.setStyleSheet(
+            "QPushButton{background:#3a1a1a;color:#ff7070;border:1px solid #6e2d2d;"
+            "border-radius:6px;padding:8px 14px;}"
+            "QPushButton:hover{background:#5a2020;}"
+        )
+        self._btn_clear_all.clicked.connect(self._clear_all)
+        btn_row.addWidget(self._btn_clear_all)
+
+        v.addLayout(btn_row)
+
+    def _load_sessions(self):
+        self._sessions = Session.list_sessions(self.base_dir)
+        self._list.clear()
+        if not self._sessions:
+            item = QListWidgetItem("  (No previous sessions found)")
+            item.setFlags(Qt.ItemFlag.NoItemFlags)
+            self._list.addItem(item)
+            return
+
+        for s in self._sessions:
+            from datetime import datetime
+
+            dt = datetime.fromtimestamp(s["mtime"]).strftime("%Y-%m-%d %H:%M")
+            done = " ".join(s["done_steps"]) if s["done_steps"] else "—"
+            src = Path(s["source_file"]).name if s["source_file"] else "unknown"
+            text = f"  {s['name']}\n  📄 {src}  |  ✅ {done}  |  💾 {s['size_mb']} MB  |  🕐 {dt}"
+            item = QListWidgetItem(text)
+            item.setData(Qt.ItemDataRole.UserRole, s)
+            self._list.addItem(item)
+
+    def _on_select(self, item):
+        if item is None:
+            return
+        s = item.data(Qt.ItemDataRole.UserRole)
+        if s is None:
+            self._info_lbl.setText("")
+            self._btn_resume.setEnabled(False)
+            self._btn_clear.setEnabled(False)
+            return
+        self._btn_resume.setEnabled(True)
+        self._btn_clear.setEnabled(True)
+        done = s["done_steps"]
+        src = s["source_file"]
+        info = f"📁 {s['folder']}\n📄 Source: {src}\n✅ Completed: {' '.join(done) if done else 'None'}"
+        if not Path(src).exists():
+            info += "\n⚠️  Source file no longer exists at original path"
+        self._info_lbl.setText(info)
+
+    def _accept(self):
+        item = self._list.currentItem()
+        if item is None:
+            return
+        s = item.data(Qt.ItemDataRole.UserRole)
+        if s:
+            self.selected_folder = s["folder"]
+            self.accept()
+
+    def _clear_selected(self):
+        item = self._list.currentItem()
+        if item is None:
+            return
+        s = item.data(Qt.ItemDataRole.UserRole)
+        if s is None:
+            return
+        reply = QMessageBox.question(
+            self,
+            "Clear Session",
+            f"Delete all files in:\n{s['name']}?\n\nThis cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            Session.clear_session(s["folder"])
+            self._load_sessions()
+
+    def _clear_all(self):
+        reply = QMessageBox.question(
+            self,
+            "Clear All Sessions",
+            f"Delete ALL sessions in:\n{self.base_dir}?\n\nThis cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            for s in self._sessions:
+                Session.clear_session(s["folder"])
+            self._load_sessions()
+
+
+# ── MainWindow ────────────────────────────────────────────────────────────────
 
 
 class MainWindow(QMainWindow):
@@ -124,10 +370,9 @@ class MainWindow(QMainWindow):
         self._session = None
         self._worker = None
         self._pool = QThreadPool.globalInstance()
-        self._queue: list = []  # list of steps to run sequentially
+        self._queue: list = []
         self._stop_queue = False
 
-        # Instantiate all steps — easy to add more here
         self._steps = [
             TranscribeStep(),
             TranslateStep(),
@@ -136,7 +381,6 @@ class MainWindow(QMainWindow):
             TTSStep(),
         ]
         self._cards: list[StepCard] = []
-
         self._setup_ui()
 
     # ── UI ────────────────────────────────────────────────────────────────────
@@ -179,17 +423,47 @@ class MainWindow(QMainWindow):
         btn_base.setFixedWidth(76)
         btn_base.clicked.connect(self._pick_base_dir)
         sh.addWidget(btn_base)
-        sh.addSpacing(16)
+
+        # Session picker button
+        self._btn_sessions = QPushButton("📁  Sessions")
+        self._btn_sessions.setStyleSheet(
+            "QPushButton{background:#1a3a5a;color:#60aaff;border:1px solid #2a5a8a;"
+            "font-weight:bold;border-radius:6px;padding:5px 12px;}"
+            "QPushButton:hover{background:#2a5a8a;}"
+        )
+        self._btn_sessions.clicked.connect(self._open_session_picker)
+        sh.addWidget(self._btn_sessions)
+
+        sh.addSpacing(12)
         sh.addWidget(self._lbl("Session:", bold=True))
         self._sess_name_lbl = QLabel("—")
         self._sess_name_lbl.setStyleSheet(
             "color:#ffaa55;font-size:11px;font-family:'SF Mono','Consolas',monospace;"
         )
         sh.addWidget(self._sess_name_lbl)
+
         btn_open = QPushButton("Open folder")
         btn_open.setFixedWidth(90)
         btn_open.clicked.connect(self._open_session_folder)
         sh.addWidget(btn_open)
+
+        btn_keys = QPushButton("🔑  API Keys")
+        btn_keys.setStyleSheet(
+            "QPushButton{background:#1a3a1a;color:#5dca8e;border:1px solid #2a6a2a;"
+            "font-weight:bold;border-radius:6px;padding:5px 12px;}"
+            "QPushButton:hover{background:#2a5a2a;}"
+        )
+        btn_keys.clicked.connect(self._open_api_keys_dialog)
+        sh.addWidget(btn_keys)
+
+        btn_logs = QPushButton("📋  Logs")
+        btn_logs.setStyleSheet(
+            "QPushButton{background:#1a2a3a;color:#60c8ff;border:1px solid #2a4a6a;"
+            "font-weight:bold;border-radius:6px;padding:5px 12px;}"
+            "QPushButton:hover{background:#2a4a6a;}"
+        )
+        btn_logs.clicked.connect(self._open_logs_folder)
+        sh.addWidget(btn_logs)
         root.addWidget(sf)
 
         # File input
@@ -205,21 +479,17 @@ class MainWindow(QMainWindow):
         fi.addWidget(btn_browse)
         root.addLayout(fi)
 
-        # ── Step cards in horizontal scrollable area ──
+        # Step cards
         cards_container = QWidget()
         cards_h = QHBoxLayout(cards_container)
         cards_h.setSpacing(12)
         cards_h.setContentsMargins(4, 4, 4, 4)
-
         for step in self._steps:
             card = StepCard(step)
-            card.on_run = lambda s=step, c=None: self._run_step(s)
-            # store card ref by step id
+            card.on_run = lambda s=step: self._run_step(s)
             self._cards.append(card)
             cards_h.addWidget(card)
-
         cards_h.addStretch()
-
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(cards_container)
@@ -234,7 +504,7 @@ class MainWindow(QMainWindow):
         )
         root.addWidget(scroll)
 
-        # ── Run All / Stop Queue / Cancel / progress ──
+        # Run All / Stop / Cancel
         ctrl = QFrame()
         ctrl.setStyleSheet(
             "QFrame{background:#111828;border:1px solid #2d2d4e;border-radius:8px;}"
@@ -246,25 +516,20 @@ class MainWindow(QMainWindow):
         self._btn_run_all = QPushButton("▶▶  Run All Enabled Steps")
         self._btn_run_all.setObjectName("run_all_btn")
         self._btn_run_all.setStyleSheet(
-            "QPushButton#run_all_btn{"
-            "background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
-            "stop:0 #6c63ff,stop:1 #a855f7);"
-            "color:white;font-weight:bold;font-size:14px;"
+            "QPushButton#run_all_btn{background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+            "stop:0 #6c63ff,stop:1 #a855f7);color:white;font-weight:bold;font-size:14px;"
             "border:none;border-radius:7px;padding:9px 24px;}"
-            "QPushButton#run_all_btn:hover{"
-            "background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
+            "QPushButton#run_all_btn:hover{background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
             "stop:0 #5a52d5,stop:1 #9333ea);}"
-            "QPushButton#run_all_btn:disabled{"
-            "background:#2a2a4a;color:#555;}"
+            "QPushButton#run_all_btn:disabled{background:#2a2a4a;color:#555;}"
         )
         self._btn_run_all.clicked.connect(self._run_all)
         ctrl_h.addWidget(self._btn_run_all)
 
         self._btn_stop = QPushButton("⏹  Stop Queue")
         self._btn_stop.setStyleSheet(
-            "QPushButton{background:#2a1a0a;color:#ffaa55;"
-            "border:1px solid #6e4a1a;font-weight:bold;"
-            "border-radius:6px;padding:8px 16px;}"
+            "QPushButton{background:#2a1a0a;color:#ffaa55;border:1px solid #6e4a1a;"
+            "font-weight:bold;border-radius:6px;padding:8px 16px;}"
             "QPushButton:hover{background:#4a2a0a;border-color:#ffaa55;}"
             "QPushButton:disabled{color:#554422;border-color:#3a2a1a;}"
         )
@@ -279,13 +544,11 @@ class MainWindow(QMainWindow):
         ctrl_h.addWidget(self._btn_cancel)
 
         ctrl_h.addSpacing(8)
-
         self._progress = QProgressBar()
         self._progress.setRange(0, 0)
         self._progress.setVisible(False)
         self._progress.setFixedWidth(180)
         ctrl_h.addWidget(self._progress)
-
         self._prog_lbl = QLabel("")
         self._prog_lbl.setStyleSheet("color:#888;font-size:11px;")
         self._queue_lbl = QLabel("")
@@ -302,7 +565,6 @@ class MainWindow(QMainWindow):
         self._log_edit.setMaximumHeight(130)
         self._log_edit.setPlaceholderText("Pipeline log…")
         vsplit.addWidget(self._wrap("Log", self._log_edit))
-
         hsplit = QSplitter(Qt.Orientation.Horizontal)
         self._orig_edit = QTextEdit()
         self._orig_edit.setReadOnly(True)
@@ -313,189 +575,209 @@ class MainWindow(QMainWindow):
         self._trans_edit.setPlaceholderText("Translated subtitles…")
         hsplit.addWidget(self._wrap("Translated", self._trans_edit))
         vsplit.addWidget(hsplit)
-
         root.addWidget(vsplit, stretch=1)
 
         self._status_bar = QStatusBar()
         self.setStatusBar(self._status_bar)
         self._status_bar.showMessage("Ready — choose session folder then drop a video")
 
-    # ── Helpers ───────────────────────────────────────────────────────────────
+    # ── Session management ────────────────────────────────────────────────────
 
-    def _lbl(self, text, color="#a0a8ff", size=11, bold=False):
-        l = QLabel(text)
-        l.setStyleSheet(
-            f"color:{color};font-size:{size}px;"
-            f"font-weight:{'600' if bold else '400'};"
-        )
-        return l
+    def _open_logs_folder(self):
+        import subprocess
+        import sys
 
-    def _wrap(self, label, widget):
-        c = QWidget()
-        v = QVBoxLayout(c)
-        v.setContentsMargins(0, 0, 0, 0)
-        v.setSpacing(3)
-        v.addWidget(self._lbl(label, bold=True))
-        v.addWidget(widget)
-        return c
+        from core.log_file import FileLogger
 
-    def _card_for(self, step) -> StepCard:
-        return self._cards[self._steps.index(step)]
+        logger = FileLogger.get()
+        if logger.log_path and logger.log_path.parent.exists():
+            p = str(logger.log_path.parent)
+            if sys.platform == "darwin":
+                subprocess.run(["open", p])
+            elif sys.platform == "win32":
+                os.startfile(p)
+            else:
+                subprocess.run(["xdg-open", p])
+        else:
+            base = self._sess_dir_edit.text().strip()
+            if base:
+                self._load_api_keys(base)
+                self._open_logs_folder()
+            else:
+                QMessageBox.information(
+                    self,
+                    "No logs",
+                    "Choose a session folder first to enable file logging.",
+                )
 
-    def _log(self, msg):
-        self._log_edit.append(msg)
-        self._prog_lbl.setText(msg.strip()[:90])
-        self._status_bar.showMessage(msg.strip()[:120])
+    def _load_api_keys(self, base_dir: str):
+        """Auto-load API keys from <base_dir>/.subsync_keys"""
+        from pathlib import Path as _Path
 
-    def _set_busy(self, busy: bool):
-        self._btn_cancel.setVisible(busy)
-        self._progress.setVisible(busy)
-        if not busy:
-            self._prog_lbl.setText("")
-            self._btn_cancel.setEnabled(True)
-            self._btn_cancel.setText("✕  Cancel Job")
+        from core.api_keys import ENV_FILE, get_manager, load_keys
+        from core.log_file import FileLogger
 
-    def _set_queue_running(self, running: bool):
-        self._btn_run_all.setEnabled(not running)
-        self._btn_stop.setVisible(running)
-        self._btn_stop.setEnabled(running)
-        self._btn_stop.setText("⏹  Stop Queue")
+        # Init file logger
+        FileLogger.get().init(base_dir)
+        self._log(f"📋 Log file: {FileLogger.get().log_path}")
+        load_keys(base_dir)
+        keys_file = _Path(base_dir) / ENV_FILE
+        mgr = get_manager()
+        loaded = {k: v for k, v in mgr.get_all().items() if v}
+        if keys_file.exists() and loaded:
+            self._log(f"🔑 Loaded {len(loaded)} API keys from {keys_file.name}")
+            self._autofill_api_keys(mgr)
+        else:
+            self._log(f"💡 Tip: Create {ENV_FILE} in this folder to auto-load API keys")
 
-    # ── Run All ───────────────────────────────────────────────────────────────
+    def _autofill_api_keys(self, mgr):
+        """Push loaded keys into step config widgets."""
+        service_keys = mgr.to_dict_by_service()
+        for step, card in zip(self._steps, self._cards):
+            # Step 2 translate
+            if hasattr(step, "_api_edit") and step._api_edit:
+                for service, key in service_keys.items():
+                    if service in ("gemini", "openai") and key:
+                        # Only fill if field is empty
+                        if not step._api_edit.text().strip():
+                            step._api_edit.setText(key)
+                            break
+            # Step 5 TTS
+            if (
+                hasattr(step, "_api_edit")
+                and step._api_edit
+                and hasattr(step, "_backend_combo")
+            ):
+                if step._backend_combo:
+                    backend_text = step._backend_combo.currentText().lower()
+                    for service, key in service_keys.items():
+                        if service in backend_text or service in (
+                            "fpt",
+                            "zalo",
+                            "elevenlabs",
+                            "openai_tts",
+                        ):
+                            if not step._api_edit.text().strip() and key:
+                                step._api_edit.setText(key)
 
-    def _run_all(self):
-        if not self._file:
-            QMessageBox.warning(self, "No file", "Select a video/audio file first.")
-            return
-        if not self._ensure_session():
-            return
-        if self._worker is not None:
-            QMessageBox.warning(self, "Busy", "A step is already running.")
-            return
+    def _open_api_keys_dialog(self):
+        """Open dialog to manage API keys."""
+        base = self._sess_dir_edit.text().strip()
+        dlg = ApiKeysDialog(base, parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            if base:
+                from core.api_keys import load_keys, save_keys
 
-        # Build queue from enabled cards only
-        self._queue = [s for s, c in zip(self._steps, self._cards) if c.is_enabled()]
-        if not self._queue:
-            QMessageBox.information(
-                self, "Nothing to run", "Enable at least one step first."
-            )
-            return
+                save_keys(base)
+                load_keys(base)
+                from core.api_keys import get_manager
 
-        self._stop_queue = False
-        self._log_edit.clear()
-        self._log(
-            f"🚀 Run All — {len(self._queue)} steps: "
-            + "  →  ".join(s.LABEL for s in self._queue)
-        )
-        self._set_queue_running(True)
-        self._run_next_in_queue()
-
-    def _run_next_in_queue(self):
-        if self._stop_queue:
-            self._stop_queue = False
-            self._set_queue_running(False)
-            self._set_busy(False)
-            remaining = len(self._queue)
-            self._queue = []
-            self._queue_lbl.setText("")
-            self._log(f"⏹  Queue stopped — {remaining} step(s) skipped.")
-            self._status_bar.showMessage("Queue stopped.")
-            return
-
-        if not self._queue:
-            # All done
-            self._set_queue_running(False)
-            self._set_busy(False)
-            self._queue_lbl.setText("")
-            self._log("🎉 All steps complete!")
-            self._status_bar.showMessage("✅ All steps complete!")
-            return
-
-        step = self._queue[0]
-        total_remaining = len(self._queue)
-        self._queue_lbl.setText(f"Queue: {step.LABEL}  ({total_remaining} left)")
-
-        card = self._card_for(step)
-        config = step.collect_config()
-        card.set_status("▶ Running…", "running")
-        card.set_running(True)
-        self._set_busy(True)
-
-        worker = step.make_worker(self._session, config)
-        self._worker = worker
-        worker.signals.progress.connect(self._log)
-        worker.signals.finished.connect(lambda r, s=step: self._done_queue(s, r))
-        worker.signals.error.connect(lambda e, s=step: self._error_queue(s, e))
-        worker.signals.cancelled.connect(lambda s=step: self._cancelled_queue(s))
-        self._pool.start(worker)
-
-    def _done_queue(self, step, result):
-        """Called when a queued step finishes — auto-advance."""
-        self._worker = None
-        self._set_busy(False)
-        card = self._card_for(step)
-        card.set_running(False)
-
-        out_path = result if isinstance(result, str) else ""
-        if not out_path and self._session:
-            attr = {
-                "step1_transcribe": "step1_json",
-                "step2_translate": "step2_srt",
-                "step3_burn": "step3_video",
-                "step4_separate": "step4_vocals",
-                "step5_tts": "step5_video",
-            }.get(step.STEP_ID, "")
-            out_path = str(getattr(self._session, attr, "")) if attr else ""
-        card.set_status("✅ Done", "done", out_path)
-        self._update_previews(step, result)
-
-        # Remove completed step and run next
-        if self._queue and self._queue[0] is step:
-            self._queue.pop(0)
-        self._run_next_in_queue()
-
-    def _error_queue(self, step, msg):
-        """Error in queue — stop queue, show error."""
-        self._worker = None
-        self._set_busy(False)
-        self._set_queue_running(False)
-        self._queue = []
-        self._queue_lbl.setText("")
-        card = self._card_for(step)
-        card.set_running(False)
-        card.set_status("❌ Error", "error")
-        self._log(f"❌ ERROR [{step.LABEL}]: {msg}")
-        QMessageBox.critical(self, f"Error — {step.LABEL}", f"{msg}\n\nQueue stopped.")
-
-    def _cancelled_queue(self, step):
-        """Cancel in queue — stop entire queue."""
-        self._worker = None
-        self._set_busy(False)
-        self._set_queue_running(False)
-        self._queue = []
-        self._queue_lbl.setText("")
-        card = self._card_for(step)
-        card.set_running(False)
-        card.set_status("🚫 Cancelled", "idle")
-        self._log("🚫 Queue cancelled.")
-        self._status_bar.showMessage("Queue cancelled.")
-
-    def _request_stop_queue(self):
-        """Stop after current job — don't kill current worker."""
-        self._stop_queue = True
-        self._btn_stop.setEnabled(False)
-        self._btn_stop.setText("Stopping…")
-        self._log("⏹  Stop requested — finishing current step then stopping.")
-
-    # ── Run single step ───────────────────────────────────────────────────────
+                self._autofill_api_keys(get_manager())
+                self._log("🔑 API keys saved and applied")
 
     def _pick_base_dir(self):
         d = QFileDialog.getExistingDirectory(self, "Choose base folder for sessions")
         if d:
             self._sess_dir_edit.setText(d)
+            self._load_api_keys(d)
             self._status_bar.showMessage(f"Base folder: {d}")
 
+    def _open_session_picker(self):
+        base = self._sess_dir_edit.text().strip()
+        if not base:
+            QMessageBox.warning(
+                self, "No folder", "Choose a session base folder first."
+            )
+            return
+        dlg = SessionPickerDialog(base, parent=self)
+        result = dlg.exec()
+
+        if result == QDialog.DialogCode.Accepted and dlg.selected_folder:
+            # Resume existing session
+            self._load_session(dlg.selected_folder)
+        # else: New session — do nothing, user will use file picker
+
+    def _load_session(self, folder: str):
+        """Load an existing session and restore UI state."""
+        try:
+            session = Session.load(folder)
+        except Exception as e:
+            QMessageBox.critical(self, "Load Error", f"Cannot load session:\n{e}")
+            return
+
+        self._session = session
+        self._file = session.source_file
+        self._file_edit.setText(session.source_file)
+        self._drop.set_file(Path(session.source_file).name)
+        self._sess_name_lbl.setText(session.folder.name)
+
+        self._log_edit.clear()
+        self._log(f"📂 Resumed session: {session.folder.name}")
+        self._log(f"📄 Source: {Path(session.source_file).name}")
+
+        # Restore card states based on what's already done
+        done_steps = session.done_steps()
+        for step, card in zip(self._steps, self._cards):
+            card.reset()
+            if step.STEP_ID in done_steps:
+                # Determine output path for the done step
+                out_path = self._step_output_path(step, session)
+                card.set_status("✅ Done (saved)", "loaded", out_path)
+                self._log(
+                    f"  ✅ {step.LABEL} — already done → {Path(out_path).name if out_path else ''}"
+                )
+
+        # Restore previews if step1/2 done
+        if session.step1_done:
+            try:
+                tr = session.load_transcript()
+                self._orig_edit.setPlainText(
+                    "\n".join(f"[{s.start}s–{s.end}s]  {s.text}" for s in tr.segments)
+                )
+            except Exception:
+                pass
+
+        if session.step2_done:
+            try:
+                segs = session.load_translated()
+                lines = []
+                for s in segs:
+                    lines += [
+                        f"[{s.start}s–{s.end}s]",
+                        f"  {s.original}",
+                        f"  → {s.translated}",
+                        "",
+                    ]
+                self._trans_edit.setPlainText("\n".join(lines))
+            except Exception:
+                pass
+
+        done_labels = [s.LABEL for s in self._steps if s.STEP_ID in done_steps]
+        self._log(
+            f"💡 Completed steps: {', '.join(done_labels) if done_labels else 'None'}"
+        )
+        self._log(
+            "💡 You can run any step from here — completed steps will be skipped or overwritten."
+        )
+        self._status_bar.showMessage(f"Session loaded — {len(done_steps)}/5 steps done")
+
+    def _step_output_path(self, step, session) -> str:
+        """Get the output file path for a completed step."""
+        attr = {
+            "step1_transcribe": "step1_json",
+            "step2_translate": "step2_srt",
+            "step3_burn": "step3_video",
+            "step4_separate": "step4_vocals",
+            "step5_tts": "step5_video",
+        }.get(step.STEP_ID, "")
+        if attr:
+            p = getattr(session, attr, None)
+            if p and Path(str(p)).exists():
+                return str(p)
+        return ""
+
     def _ensure_session(self) -> bool:
+        """Create new session or reuse existing one."""
         if self._session and self._session.source_file == self._file:
             return True
         base = self._sess_dir_edit.text().strip()
@@ -509,7 +791,7 @@ class MainWindow(QMainWindow):
             return False
         self._session = Session(base, self._file)
         self._sess_name_lbl.setText(self._session.folder.name)
-        self._log(f"📁 Session: {self._session.folder}")
+        self._log(f"📁 New session: {self._session.folder}")
         return True
 
     def _open_session_folder(self):
@@ -539,7 +821,7 @@ class MainWindow(QMainWindow):
 
     def _set_file(self, path):
         self._file = path
-        self._session = None  # new file = new session
+        self._session = None
         self._file_edit.setText(path)
         self._drop.set_file(Path(path).name)
         self._sess_name_lbl.setText("—  (created on first Run)")
@@ -549,7 +831,153 @@ class MainWindow(QMainWindow):
             card.reset()
         self._status_bar.showMessage(f"File: {Path(path).name}")
 
-    # ── Run a step ────────────────────────────────────────────────────────────
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def _lbl(self, text, color="#a0a8ff", size=11, bold=False):
+        l = QLabel(text)
+        l.setStyleSheet(
+            f"color:{color};font-size:{size}px;"
+            f"font-weight:{'600' if bold else '400'};"
+        )
+        return l
+
+    def _wrap(self, label, widget):
+        c = QWidget()
+        v = QVBoxLayout(c)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(3)
+        v.addWidget(self._lbl(label, bold=True))
+        v.addWidget(widget)
+        return c
+
+    def _card_for(self, step) -> StepCard:
+        return self._cards[self._steps.index(step)]
+
+    def _log(self, msg):
+        self._log_edit.append(msg)
+        self._prog_lbl.setText(msg.strip()[:90])
+        self._status_bar.showMessage(msg.strip()[:120])
+        # Also write to daily log file
+        from core.log_file import FileLogger
+
+        FileLogger.get().write(msg)
+
+    def _set_busy(self, busy: bool):
+        self._btn_cancel.setVisible(busy)
+        self._progress.setVisible(busy)
+        if not busy:
+            self._prog_lbl.setText("")
+            self._btn_cancel.setEnabled(True)
+            self._btn_cancel.setText("✕  Cancel Job")
+
+    def _set_queue_running(self, running: bool):
+        self._btn_run_all.setEnabled(not running)
+        self._btn_stop.setVisible(running)
+        self._btn_stop.setEnabled(running)
+        self._btn_stop.setText("⏹  Stop Queue")
+
+    # ── Run All ───────────────────────────────────────────────────────────────
+
+    def _run_all(self):
+        if not self._file:
+            QMessageBox.warning(self, "No file", "Select a video/audio file first.")
+            return
+        if not self._ensure_session():
+            return
+        if self._worker is not None:
+            QMessageBox.warning(self, "Busy", "A step is already running.")
+            return
+        self._queue = [s for s, c in zip(self._steps, self._cards) if c.is_enabled()]
+        if not self._queue:
+            QMessageBox.information(
+                self, "Nothing to run", "Enable at least one step first."
+            )
+            return
+        self._stop_queue = False
+        self._log_edit.clear()
+        self._log(
+            f"🚀 Run All — {len(self._queue)} steps: "
+            + "  →  ".join(s.LABEL for s in self._queue)
+        )
+        self._set_queue_running(True)
+        self._run_next_in_queue()
+
+    def _run_next_in_queue(self):
+        if self._stop_queue:
+            self._stop_queue = False
+            self._set_queue_running(False)
+            self._set_busy(False)
+            remaining = len(self._queue)
+            self._queue = []
+            self._queue_lbl.setText("")
+            self._log(f"⏹  Queue stopped — {remaining} step(s) skipped.")
+            return
+        if not self._queue:
+            self._set_queue_running(False)
+            self._set_busy(False)
+            self._queue_lbl.setText("")
+            self._log("🎉 All steps complete!")
+            self._status_bar.showMessage("✅ All steps complete!")
+            return
+        step = self._queue[0]
+        self._queue_lbl.setText(f"Queue: {step.LABEL}  ({len(self._queue)} left)")
+        card = self._card_for(step)
+        config = step.collect_config()
+        card.set_status("▶ Running…", "running")
+        card.set_running(True)
+        self._set_busy(True)
+        worker = step.make_worker(self._session, config)
+        self._worker = worker
+        worker.signals.progress.connect(self._log)
+        worker.signals.finished.connect(lambda r, s=step: self._done_queue(s, r))
+        worker.signals.error.connect(lambda e, s=step: self._error_queue(s, e))
+        worker.signals.cancelled.connect(lambda s=step: self._cancelled_queue(s))
+        self._pool.start(worker)
+
+    def _done_queue(self, step, result):
+        self._worker = None
+        self._set_busy(False)
+        card = self._card_for(step)
+        card.set_running(False)
+        out_path = result if isinstance(result, str) else ""
+        if not out_path and self._session:
+            out_path = self._step_output_path(step, self._session)
+        card.set_status("✅ Done", "done", out_path)
+        self._update_previews(step, result)
+        if self._queue and self._queue[0] is step:
+            self._queue.pop(0)
+        self._run_next_in_queue()
+
+    def _error_queue(self, step, msg):
+        self._worker = None
+        self._set_busy(False)
+        self._set_queue_running(False)
+        self._queue = []
+        self._queue_lbl.setText("")
+        card = self._card_for(step)
+        card.set_running(False)
+        card.set_status("❌ Error", "error")
+        self._log(f"❌ ERROR [{step.LABEL}]: {msg}")
+        QMessageBox.critical(self, f"Error — {step.LABEL}", f"{msg}\n\nQueue stopped.")
+
+    def _cancelled_queue(self, step):
+        self._worker = None
+        self._set_busy(False)
+        self._set_queue_running(False)
+        self._queue = []
+        self._queue_lbl.setText("")
+        card = self._card_for(step)
+        card.set_running(False)
+        card.set_status("🚫 Cancelled", "idle")
+        self._log("🚫 Queue cancelled.")
+
+    def _request_stop_queue(self):
+        self._stop_queue = True
+        self._btn_stop.setEnabled(False)
+        self._btn_stop.setText("Stopping…")
+        self._log("⏹  Stop requested — finishing current step then stopping.")
+
+    # ── Run single step ───────────────────────────────────────────────────────
 
     def _run_step(self, step):
         if not self._ensure_session():
@@ -557,14 +985,17 @@ class MainWindow(QMainWindow):
         if self._worker is not None:
             QMessageBox.warning(self, "Busy", "Another step is already running.")
             return
-
         card = self._card_for(step)
         config = step.collect_config()
-
         card.set_status("▶ Running…", "running")
         card.set_running(True)
         self._set_busy(True)
 
+        # Set step context for file logger
+        from core.log_file import FileLogger
+
+        FileLogger.get().set_step(step.STEP_ID)
+        FileLogger.get().write_separator(step.LABEL)
         worker = step.make_worker(self._session, config)
         self._worker = worker
         worker.signals.progress.connect(self._log)
@@ -596,14 +1027,7 @@ class MainWindow(QMainWindow):
         card.set_running(False)
         out_path = result if isinstance(result, str) else ""
         if not out_path and self._session:
-            attr = {
-                "step1_transcribe": "step1_json",
-                "step2_translate": "step2_srt",
-                "step3_burn": "step3_video",
-                "step4_separate": "step4_vocals",
-                "step5_tts": "step5_video",
-            }.get(step.STEP_ID, "")
-            out_path = str(getattr(self._session, attr, "")) if attr else ""
+            out_path = self._step_output_path(step, self._session)
         card.set_status("✅ Done", "done", out_path)
         self._update_previews(step, result)
         self._status_bar.showMessage(

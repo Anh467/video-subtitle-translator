@@ -377,93 +377,198 @@ class TTSStep(BaseStep):
             if os.path.exists(tmp_out.name):
                 os.unlink(tmp_out.name)
 
+    # ── Parallel TTS helper ───────────────────────────────────────────────────
+
+    def _run_parallel(
+        self, segments, worker_fn, log, cancel, max_workers: int = 1, label: str = "TTS"
+    ) -> list:
+        """
+        Run worker_fn(seg, idx) in parallel using ThreadPoolExecutor.
+        Returns list of (seg, audio_bytes_or_None) in original order.
+        worker_fn signature: (seg, idx, total) -> bytes | None
+        """
+        import concurrent.futures
+
+        total = len(segments)
+        results = [None] * total
+        done = [0]
+
+        log(f"   ⚡ Parallel {label}: {total} segments × {max_workers} workers")
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futures = {
+                ex.submit(worker_fn, seg, i, total): i for i, seg in enumerate(segments)
+            }
+            for fut in concurrent.futures.as_completed(futures):
+                if cancel.is_set():
+                    ex.shutdown(wait=False, cancel_futures=True)
+                    raise CancelledError()
+                idx = futures[fut]
+                try:
+                    results[idx] = fut.result()
+                except Exception as e:
+                    log(f"   ⚠️  Seg {idx+1} failed: {e}")
+                    results[idx] = None
+                done[0] += 1
+                if done[0] % max(1, total // 10) == 0 or done[0] == total:
+                    log(f"   📊 [{done[0]}/{total}] {label} done")
+
+        return results
+
+    def _assemble_audio(self, segments, audio_list, log, sync_mode="trim"):
+        """
+        Assemble audio pieces in correct timestamp order.
+        audio_list: list of AudioSegment | None (same order as segments)
+        """
+        from pydub import AudioSegment
+
+        result = AudioSegment.silent(duration=0)
+        cursor_ms = 0
+
+        for i, (seg, audio) in enumerate(zip(segments, audio_list)):
+            start_ms = int(seg.start * 1000)
+            if start_ms > cursor_ms:
+                result += AudioSegment.silent(duration=start_ms - cursor_ms)
+                cursor_ms = start_ms
+
+            if audio is None:
+                log(f"   ⚠️  Seg {i+1}: no audio, inserting silence")
+                seg_dur = int((seg.end - seg.start) * 1000)
+                result += AudioSegment.silent(duration=seg_dur)
+                cursor_ms = max(cursor_ms + seg_dur, int(seg.end * 1000))
+                continue
+
+            seg_dur = int((seg.end - seg.start) * 1000)
+            audio = self._fit_audio_to_segment(audio, seg_dur, sync_mode)
+            result += audio
+            cursor_ms = max(cursor_ms + len(audio), int(seg.end * 1000))
+
+        return result
+
     # ── FPT AI TTS ────────────────────────────────────────────────────────────
 
     def _fpt(
         self, segments, api_key, voice_id, out_path, log, cancel, sync_mode="trim"
     ):
-        import requests
+        import requests as _req
         from pydub import AudioSegment
 
-        key = api_key or os.environ.get("FPT_API_KEY", "")
+        from core.api_keys import get_key
+        from core.logger import ApiLogger
+
+        api = ApiLogger(log, prefix="   ")
+        key = api_key or get_key("fpt") or os.environ.get("FPT_API_KEY", "")
+        api.api_key_info("FPT", key)
         if not key:
             raise RuntimeError(
-                "FPT AI API key required.\nGet FREE key at: console.fpt.ai"
+                "FPT AI API key required.\n" "Get FREE key at: console.fpt.ai"
             )
+
         voice = voice_id or "banmai"
-        log(f"🎙️  FPT AI TTS | voice: {voice}")
-        result, cursor_ms, total = AudioSegment.silent(duration=0), 0, len(segments)
-        for i, seg in enumerate(segments, 1):
-            if cancel.is_set():
-                raise CancelledError()
-            start_ms = int(seg.start * 1000)
-            if start_ms > cursor_ms:
-                result += AudioSegment.silent(duration=start_ms - cursor_ms)
-                cursor_ms = start_ms
+        api.info(f"Voice: {voice} | Sync: {sync_mode} | Segments: {len(segments)}")
+
+        def fetch_one(seg, idx, total):
             txt = seg.translated.strip()
             if not txt:
-                continue
-            try:
-                resp = requests.post(
-                    "https://api.fpt.ai/hmi/tts/v5",
-                    headers={
-                        "api_key": key,
-                        "voice": voice,
-                        "speed": "0",
-                        "Cache-Control": "no-cache",
-                        "Content-Type": "application/x-www-form-urlencoded",
-                    },
-                    data=txt.encode("utf-8"),
-                    timeout=15,
+                return None
+            resp = _req.post(
+                "https://api.fpt.ai/hmi/tts/v5",
+                headers={
+                    "api_key": key,
+                    "voice": voice,
+                    "speed": "0",
+                    "Cache-Control": "no-cache",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+                data=txt.encode("utf-8"),
+                timeout=15,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("error", 0) != 0:
+                raise RuntimeError(
+                    f"FPT error {data.get('error')}: {data.get('message')}"
                 )
-                resp.raise_for_status()
-                data = resp.json()
-                if data.get("error", 0) != 0:
-                    raise RuntimeError(
-                        f"FPT error {data.get('error')}: {data.get('message')}"
-                    )
-                async_url = data.get("async", "")
-                if not async_url:
-                    raise RuntimeError(f"FPT: no async URL: {data}")
-                audio_content = self._fpt_poll_download(async_url, log)
-                if not audio_content:
-                    raise RuntimeError("FPT: audio not ready after timeout")
-                tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
-                tmp.write(audio_content)
-                tmp.close()
-                try:
-                    audio = AudioSegment.from_mp3(tmp.name)
-                    seg_dur_ms = int((seg.end - seg.start) * 1000)
-                    audio = self._fit_audio_to_segment(audio, seg_dur_ms, sync_mode)
-                    result += audio
-                    cursor_ms = max(cursor_ms + len(audio), int(seg.end * 1000))
-                finally:
-                    os.unlink(tmp.name)
-            except Exception as e:
-                log(f"   ⚠️  Seg {i} failed: {e}")
-            if i % 5 == 0 or i == total:
-                log(f"   [{i}/{total}] TTS generated")
-            time.sleep(0.3)
-        result.export(out_path, format="mp3")
-
-    def _fpt_poll_download(self, url, log, max_wait=60):
-        import requests
-
-        for attempt in range(max_wait):
-            try:
-                r = requests.get(url, timeout=10)
+            async_url = data.get("async", "")
+            if not async_url:
+                raise RuntimeError(f"No async URL: {data}")
+            # Poll
+            for attempt in range(60):
+                r = _req.get(async_url, timeout=10)
                 if r.status_code == 200 and len(r.content) > 100:
-                    if r.content[:3] in (b"ID3",) or r.content[:2] in (
+                    hdr = r.content[:3]
+                    if hdr == b"ID3" or r.content[:2] in (
                         b"\xff\xfb",
                         b"\xff\xf3",
                         b"\xff\xf2",
                     ):
+                        tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
+                        tmp.write(r.content)
+                        tmp.close()
+                        try:
+                            audio = AudioSegment.from_mp3(tmp.name)
+                            log(
+                                f"   ✅ Seg {idx+1}/{total} ready ({len(r.content)//1024}KB)"
+                            )
+                            return audio
+                        finally:
+                            os.unlink(tmp.name)
+                time.sleep(1)
+            raise RuntimeError(f"Timeout polling {async_url}")
+
+        # ── Parallel execution ──
+        with api.timer("FPT parallel fetch"):
+            audio_list = self._run_parallel(
+                segments,
+                fetch_one,
+                log,
+                cancel,
+                max_workers=3,  # FPT rate limit safe
+                label="FPT TTS",
+            )
+
+        with api.timer("Assemble audio"):
+            result = self._assemble_audio(segments, audio_list, log, sync_mode)
+
+        result.export(out_path, format="mp3")
+        ok = sum(1 for a in audio_list if a is not None)
+        api.summary(ok, len(segments) - ok, len(segments), "FPT TTS")
+        api.info(
+            f"Saved: {Path(out_path).name} ({Path(out_path).stat().st_size/1024:.1f}KB)"
+        )
+
+    def _fpt_poll_download(self, url, api, max_wait=60):
+        import requests
+
+        api.info(f"Polling audio (max {max_wait}s)…")
+        for attempt in range(max_wait):
+            try:
+                r = requests.get(url, timeout=10)
+                if r.status_code == 200 and len(r.content) > 100:
+                    if r.content[:3] == b"ID3" or r.content[:2] in (
+                        b"\xff\xfb",
+                        b"\xff\xf3",
+                        b"\xff\xf2",
+                    ):
+                        api.ok(
+                            f"Audio ready after {attempt+1}s | {len(r.content)/1024:.1f}KB"
+                        )
                         return r.content
                     if attempt > 5:
-                        log("   ⚠️  FPT: unexpected content type, retrying…")
-            except Exception:
-                pass
+                        api.warn(
+                            f"Attempt {attempt+1}: {len(r.content)}B header={r.content[:4].hex()} not MP3"
+                        )
+                elif r.status_code == 404:
+                    if attempt < 10:
+                        pass  # Normal — file not ready yet
+                    else:
+                        api.warn(f"Attempt {attempt+1}: 404 still not ready")
+                else:
+                    api.warn(f"Attempt {attempt+1}: HTTP {r.status_code}")
+            except Exception as e:
+                api.warn(f"Poll {attempt+1} error: {e}")
             time.sleep(1)
+        api.error(f"Polling timeout after {max_wait}s — {url}")
         return None
 
     # ── Zalo AI TTS ───────────────────────────────────────────────────────────
@@ -569,34 +674,34 @@ class TTSStep(BaseStep):
             from pydub import AudioSegment
         except ImportError:
             raise RuntimeError("Run: pip install gtts pydub audioop-lts")
-        result, cursor_ms = AudioSegment.silent(duration=0), 0
-        for i, seg in enumerate(segments, 1):
-            if cancel.is_set():
-                raise CancelledError()
-            start_ms = int(seg.start * 1000)
-            if start_ms > cursor_ms:
-                result += AudioSegment.silent(duration=start_ms - cursor_ms)
-                cursor_ms = start_ms
+
+        log(f"   ⚡ gTTS parallel | lang: {lang} | segments: {len(segments)}")
+
+        def fetch_one(seg, idx, total):
             txt = seg.translated.strip()
             if not txt:
-                continue
+                return None
             tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
             tmp.close()
             try:
                 gTTS(text=txt, lang=lang[:2], slow=False).save(tmp.name)
-                audio = AudioSegment.from_mp3(tmp.name)
-                seg_dur_ms = int((seg.end - seg.start) * 1000)
-                audio = self._fit_audio_to_segment(audio, seg_dur_ms, sync_mode)
-                result += audio
-                cursor_ms = max(cursor_ms + len(audio), int(seg.end * 1000))
-            except Exception as e:
-                log(f"   ⚠️  Seg {i} TTS failed: {e}")
+                return AudioSegment.from_mp3(tmp.name)
             finally:
                 if os.path.exists(tmp.name):
                     os.unlink(tmp.name)
-            if i % 10 == 0 or i == len(segments):
-                log(f"   [{i}/{len(segments)}] TTS generated")
+
+        audio_list = self._run_parallel(
+            segments,
+            fetch_one,
+            log,
+            cancel,
+            max_workers=5,  # gTTS free, can parallelize more
+            label="gTTS",
+        )
+        result = self._assemble_audio(segments, audio_list, log, sync_mode)
         result.export(out_path, format="mp3")
+        ok = sum(1 for a in audio_list if a is not None)
+        log(f"   🏁 gTTS: {ok}/{len(segments)} ok")
 
     # ── OpenAI TTS ────────────────────────────────────────────────────────────
 
@@ -608,9 +713,11 @@ class TTSStep(BaseStep):
             from pydub import AudioSegment
         except ImportError:
             raise RuntimeError("Run: pip install openai pydub audioop-lts")
+
         key = api_key or os.environ.get("OPENAI_API_KEY", "")
         if not key:
             raise RuntimeError("Set OPENAI_API_KEY env var.")
+
         VOICE_MAP = {
             "vi": "nova",
             "en": "alloy",
@@ -620,18 +727,12 @@ class TTSStep(BaseStep):
         }
         voice = VOICE_MAP.get(lang[:2], "nova")
         client = OpenAI(api_key=key)
-        result, cursor_ms = AudioSegment.silent(duration=0), 0
-        log(f"   OpenAI TTS voice: {voice}")
-        for i, seg in enumerate(segments, 1):
-            if cancel.is_set():
-                raise CancelledError()
-            start_ms = int(seg.start * 1000)
-            if start_ms > cursor_ms:
-                result += AudioSegment.silent(duration=start_ms - cursor_ms)
-                cursor_ms = start_ms
+        log(f"   ⚡ OpenAI TTS parallel | voice: {voice} | segments: {len(segments)}")
+
+        def fetch_one(seg, idx, total):
             txt = seg.translated.strip()
             if not txt:
-                continue
+                return None
             tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
             tmp.close()
             try:
@@ -639,19 +740,18 @@ class TTSStep(BaseStep):
                     model="tts-1", voice=voice, input=txt, response_format="mp3"
                 )
                 resp.stream_to_file(tmp.name)
-                audio = AudioSegment.from_mp3(tmp.name)
-                seg_dur_ms = int((seg.end - seg.start) * 1000)
-                audio = self._fit_audio_to_segment(audio, seg_dur_ms, sync_mode)
-                result += audio
-                cursor_ms = max(cursor_ms + len(audio), int(seg.end * 1000))
-            except Exception as e:
-                log(f"   ⚠️  Seg {i} TTS failed: {e}")
+                return AudioSegment.from_mp3(tmp.name)
             finally:
                 if os.path.exists(tmp.name):
                     os.unlink(tmp.name)
-            if i % 5 == 0 or i == len(segments):
-                log(f"   [{i}/{len(segments)}] TTS generated")
+
+        audio_list = self._run_parallel(
+            segments, fetch_one, log, cancel, max_workers=5, label="OpenAI TTS"
+        )
+        result = self._assemble_audio(segments, audio_list, log, sync_mode)
         result.export(out_path, format="mp3")
+        ok = sum(1 for a in audio_list if a is not None)
+        log(f"   🏁 OpenAI TTS: {ok}/{len(segments)} ok")
 
     # ── ElevenLabs ────────────────────────────────────────────────────────────
 

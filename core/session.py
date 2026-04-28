@@ -1,4 +1,10 @@
-"""Session — one folder per run, stores all step outputs."""
+"""Session — one folder per run, stores all step outputs.
+
+Features:
+- Auto-save tất cả output sau mỗi step
+- Load lại session cũ để resume từ bất kỳ step nào
+- list_sessions() để hiển thị danh sách sessions có thể chọn
+"""
 
 import json
 from datetime import datetime
@@ -23,6 +29,59 @@ class Session:
         obj.source_file = meta["source_file"]
         return obj
 
+    @staticmethod
+    def list_sessions(base_dir: str) -> list[dict]:
+        """List all sessions in base_dir, sorted newest first."""
+        base = Path(base_dir)
+        if not base.exists():
+            return []
+        sessions = []
+        for d in sorted(base.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
+            if not d.is_dir():
+                continue
+            meta_path = d / "session.json"
+            if not meta_path.exists():
+                continue
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                # Detect which steps are done
+                done = []
+                if (d / "step1_transcript.json").exists():
+                    done.append("①")
+                if (d / "step2_translated.json").exists():
+                    done.append("②")
+                # step3 video has dynamic extension
+                if any(d.glob("step3_output.*")):
+                    done.append("③")
+                if (d / "step4_vocals.mp3").exists():
+                    done.append("④")
+                if any(d.glob("step5_output.*")):
+                    done.append("⑤")
+
+                size = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
+                sessions.append(
+                    {
+                        "folder": str(d),
+                        "name": d.name,
+                        "source_file": meta.get("source_file", ""),
+                        "done_steps": done,
+                        "size_mb": round(size / 1024 / 1024, 1),
+                        "mtime": d.stat().st_mtime,
+                    }
+                )
+            except Exception:
+                continue
+        return sessions
+
+    @staticmethod
+    def clear_session(folder: str):
+        """Delete all files in session folder (keep folder itself)."""
+        import shutil
+
+        p = Path(folder)
+        if p.exists():
+            shutil.rmtree(str(p))
+
     # ── output paths ──────────────────────────────────────────────────────────
     @property
     def step1_json(self):
@@ -42,6 +101,9 @@ class Session:
 
     @property
     def step3_video(self):
+        # Try to find existing file first (any extension)
+        for f in self.folder.glob("step3_output.*"):
+            return f
         return self.folder / f"step3_output{Path(self.source_file).suffix}"
 
     @property
@@ -70,6 +132,8 @@ class Session:
 
     @property
     def step5_video(self):
+        for f in self.folder.glob("step5_output.*"):
+            return f
         return self.folder / f"step5_output{Path(self.source_file).suffix}"
 
     # ── completion checks ─────────────────────────────────────────────────────
@@ -93,13 +157,23 @@ class Session:
     def step5_done(self):
         return self.step5_video.exists()
 
+    def done_steps(self) -> list[str]:
+        """Return list of completed step IDs."""
+        steps = []
+        if self.step1_done:
+            steps.append("step1_transcribe")
+        if self.step2_done:
+            steps.append("step2_translate")
+        if self.step3_done:
+            steps.append("step3_burn")
+        if self.step4_done:
+            steps.append("step4_separate")
+        if self.step5_done:
+            steps.append("step5_tts")
+        return steps
+
     # ── smart video chaining ──────────────────────────────────────────────────
     def latest_video(self) -> str:
-        """
-        Returns the best available video to use as input for the next step.
-        Priority: step5 > step3 > original source
-        This allows step3 and step5 to chain in any order into one video.
-        """
         if self.step5_video.exists():
             return str(self.step5_video)
         if self.step3_video.exists():
@@ -107,13 +181,16 @@ class Session:
         return self.source_file
 
     def final_video(self) -> str:
-        """Returns the most processed video available."""
         return self.latest_video()
 
     def _save_meta(self):
         (self.folder / "session.json").write_text(
             json.dumps(
-                {"source_file": self.source_file, "folder": str(self.folder)},
+                {
+                    "source_file": self.source_file,
+                    "folder": str(self.folder),
+                    "created": datetime.now().isoformat(),
+                },
                 ensure_ascii=False,
                 indent=2,
             ),

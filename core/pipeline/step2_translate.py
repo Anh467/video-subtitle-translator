@@ -294,10 +294,10 @@ class TranslateStep(BaseStep):
             from deep_translator import GoogleTranslator
         except ImportError:
             raise RuntimeError("Run: pip install deep-translator")
+        import concurrent.futures
 
-        # Map Whisper lang code → Google Translate source code
         LANG_MAP = {
-            "zh": "zh-TW",  # Traditional Chinese (most YouTube content)
+            "zh": "zh-TW",
             "zh-cn": "zh-CN",
             "zh-tw": "zh-TW",
             "ja": "ja",
@@ -308,56 +308,58 @@ class TranslateStep(BaseStep):
             "de": "de",
         }
         google_src = LANG_MAP.get(src_lang.lower(), "auto")
-        log(f"   Source language: {src_lang} → Google source: {google_src}")
+        log(f"   Source: {src_lang} → Google: {google_src}")
 
         chunks = [
             segments[i : i + chunk_size] for i in range(0, len(segments), chunk_size)
         ]
         total = len(segments)
-        out = []
+        log(f"   {total} segs → {len(chunks)} chunks | ⚡ parallel (3 workers)")
 
-        log(f"   {total} segments → {len(chunks)} chunks of ~{chunk_size}")
+        results = [None] * len(chunks)
 
-        for ci, chunk in enumerate(chunks, 1):
-            if cancel.is_set():
-                from core.pipeline.base import CancelledError
-
-                raise CancelledError()
-
+        def translate_chunk(ci_chunk):
+            ci, chunk = ci_chunk
             texts = [s.text.strip() or " " for s in chunk]
             joined = CHUNK_SEP.join(texts)
-
             try:
-                translated_joined = GoogleTranslator(
+                translated = GoogleTranslator(
                     source=google_src, target=target
                 ).translate(joined)
-                parts = translated_joined.split(CHUNK_SEP)
-
+                parts = translated.split(CHUNK_SEP)
                 if len(parts) != len(chunk):
-                    log(
-                        f"   ⚠️  Chunk {ci}: split mismatch "
-                        f"({len(parts)} vs {len(chunk)}) — fallback"
-                    )
                     parts = self._google_individual(texts, target, google_src)
-
-                # Validate — if translation looks same as input (not translated),
-                # retry with individual mode
                 untranslated = sum(
                     1
-                    for orig, trans in zip(texts, parts)
-                    if orig.strip() and trans.strip() == orig.strip()
+                    for o, t in zip(texts, parts)
+                    if o.strip() and t.strip() == o.strip()
                 )
                 if untranslated > len(chunk) * 0.5:
-                    log(
-                        f"   ⚠️  Chunk {ci}: {untranslated}/{len(chunk)} "
-                        f"segments not translated — retrying individually"
-                    )
                     parts = self._google_individual(texts, target, google_src)
+                return ci, parts
+            except Exception:
+                return ci, self._google_individual(texts, target, google_src)
 
-            except Exception as e:
-                log(f"   ⚠️  Chunk {ci} error: {e} — fallback")
-                parts = self._google_individual(texts, target, google_src)
+        done = [0]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
+            futures = {
+                ex.submit(translate_chunk, (ci, chunk)): ci
+                for ci, chunk in enumerate(chunks)
+            }
+            for fut in concurrent.futures.as_completed(futures):
+                if cancel.is_set():
+                    from core.pipeline.base import CancelledError
 
+                    raise CancelledError()
+                ci, parts = fut.result()
+                results[ci] = (chunks[ci], parts)
+                done[0] += 1
+                segs_done = min(done[0] * chunk_size, total)
+                log(f"   [{segs_done}/{total}] translated")
+
+        # Assemble in order
+        out = []
+        for chunk, parts in results:
             for seg, trans in zip(chunk, parts):
                 out.append(
                     TranslatedSegment(
@@ -367,10 +369,6 @@ class TranslateStep(BaseStep):
                         trans.strip() or seg.text.strip(),
                     )
                 )
-
-            log(f"   [{min(ci * chunk_size, total)}/{total}] translated")
-            time.sleep(0.2)
-
         return out
 
     def _google_individual(self, texts, target, source="auto"):
@@ -1065,7 +1063,11 @@ class TranslateStep(BaseStep):
 
         # Ollama model opts
         self._ollama_opts = QWidget()
-        ov = QHBoxLayout(self._ollama_opts)
+        ov2 = QVBoxLayout(self._ollama_opts)
+        ov2.setContentsMargins(0, 0, 0, 0)
+        ov2.setSpacing(2)
+
+        ov = QHBoxLayout()
         ov.setContentsMargins(0, 0, 0, 0)
         ov.addWidget(QLabel("Model:"))
         self._ollama_model_combo = QComboBox()
@@ -1090,12 +1092,10 @@ class TranslateStep(BaseStep):
         )
         ov.addWidget(self._ollama_model_combo)
         ov.addStretch()
-
-        hint = QLabel("Install: ollama.com  |  " "Pull: ollama pull qwen2")
-        hint.setStyleSheet("color:#555;font-size:10px;")
-        ov2 = QVBoxLayout(self._ollama_opts)
-        ov2.setContentsMargins(0, 0, 0, 0)
         ov2.addLayout(ov)
+
+        hint = QLabel("Install: ollama.com  |  Pull: ollama pull qwen2")
+        hint.setStyleSheet("color:#555;font-size:10px;")
         ov2.addWidget(hint)
         self._ollama_opts.setVisible(False)
         v.addWidget(self._ollama_opts)

@@ -237,6 +237,13 @@ class TranscribeStep(BaseStep):
         self._model_combo = QComboBox()
         self._model_combo.addItems(WHISPER_MODELS)
         self._model_combo.setCurrentText("base")
+        self._model_combo.setToolTip(
+            "tiny   — ⚡ fastest (3x base), good for clear audio\n"
+            "base   — ✅ balanced (default)\n"
+            "small  — better accuracy, 2x slower\n"
+            "medium — high accuracy, 5x slower\n"
+            "large  — best, 10x slower, needs 10GB RAM"
+        )
         r1.addWidget(self._model_combo)
         r1.addSpacing(10)
         r1.addWidget(QLabel("Source lang:"))
