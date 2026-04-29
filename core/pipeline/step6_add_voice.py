@@ -1,16 +1,13 @@
 """Step 6 — compose saved TTS assets and mux into final video."""
 
+import json
 import os
 import shutil
 import subprocess
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
-from core.pipeline.tts_assets import (
-    compose_timeline_audio,
-    resolve_manifests,
-    resolve_single_tts_path,
-)
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QButtonGroup,
@@ -18,14 +15,19 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPushButton,
     QRadioButton,
     QSlider,
     QVBoxLayout,
     QWidget,
-    QPushButton,
 )
 
 from core.pipeline.base import BaseStep, CancelledError
+from core.pipeline.tts_assets import (
+    compose_timeline_audio,
+    resolve_manifests,
+    resolve_single_tts_path,
+)
 
 MIX_MODES = {
     "TTS only (replace original)": "replace",
@@ -33,6 +35,15 @@ MIX_MODES = {
     "TTS + BGM + Original voice (low vol)": "full_mix",
 }
 VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".flv", ".wmv"}
+
+BACKEND_LABELS = {
+    "google_cloud_tts": "Google Cloud TTS",
+    "openai_tts": "OpenAI TTS",
+    "fpt": "FPT TTS",
+    "zalo": "Zalo TTS",
+    "gtts": "gTTS",
+    "elevenlabs": "ElevenLabs",
+}
 
 
 class AddVoiceStep(BaseStep):
@@ -353,7 +364,9 @@ class AddVoiceStep(BaseStep):
             "Mới nhất ở trên cùng."
         )
         self._manifest_combo.setMinimumWidth(220)
-        self._manifest_combo.addItem("(No TTS assets yet — run Step 5 first)", userData=None)
+        self._manifest_combo.addItem(
+            "(No TTS assets yet — run Step 5 first)", userData=None
+        )
         r_manifest.addWidget(self._manifest_combo)
 
         btn_refresh = QPushButton("↻")
@@ -368,7 +381,6 @@ class AddVoiceStep(BaseStep):
         r_manifest.addWidget(btn_refresh)
         r_manifest.addStretch()
         v.addLayout(r_manifest)
-
 
         row = QHBoxLayout()
         row.addWidget(QLabel("Source mode:"))
@@ -464,10 +476,12 @@ class AddVoiceStep(BaseStep):
         parent_layout.addLayout(row)
         return slider
 
-
     def _refresh_manifests(self):
         """Reload manifests from disk — called by refresh button."""
-        if hasattr(self, '_current_session_for_manifests') and self._current_session_for_manifests:
+        if (
+            hasattr(self, "_current_session_for_manifests")
+            and self._current_session_for_manifests
+        ):
             self.populate_manifest_picker(self._current_session_for_manifests)
 
     def populate_manifest_picker(self, session):
@@ -487,7 +501,9 @@ class AddVoiceStep(BaseStep):
             return
         assets_dir = session.step5_tts_assets_dir
         if not assets_dir.exists() or not any(assets_dir.glob("*.json")):
-            self._manifest_combo.addItem("(No TTS assets yet — run Step 5 first)", userData=None)
+            self._manifest_combo.addItem(
+                "(No TTS assets yet — run Step 5 first)", userData=None
+            )
             self._manifest_combo.blockSignals(False)
             return
         manifests = sorted(
@@ -496,22 +512,21 @@ class AddVoiceStep(BaseStep):
             reverse=True,  # newest first
         )
         for m in manifests:
-            # Build human-readable label: backend / voice / lang / date
-            stem = m.stem  # e.g. "google_cloud_tts_vi-VN-Neural2-A_vi_20260429_110000_123456"
-            parts = stem.split("_")
             try:
-                # backend = first part(s) until voice name
-                # Format: {backend}_{voice}_{lang}_{ts}
-                import datetime
                 mtime = m.stat().st_mtime
-                dt = datetime.datetime.fromtimestamp(mtime).strftime("%m/%d %H:%M")
-                # Shorten: just show backend + voice + date
-                if len(parts) >= 4:
-                    backend = parts[0].replace("google", "GCloud").replace("openai", "OpenAI").replace("fpt", "FPT").replace("gtts", "gTTS").replace("elevenlabs", "EL").replace("zalo", "Zalo")
-                    voice = parts[1] if len(parts) > 1 else ""
-                    label = f"{backend} / {voice}  [{dt}]"
-                else:
-                    label = f"{m.stem[:40]}  [{dt}]"
+                dt = datetime.fromtimestamp(mtime).strftime("%m/%d %H:%M")
+
+                data = json.loads(m.read_text(encoding="utf-8"))
+                backend_key = (data.get("backend") or "").strip().lower()
+                backend_name = BACKEND_LABELS.get(backend_key, backend_key or "TTS")
+
+                voice_id = (data.get("voice_id") or "").strip()
+                if not voice_id:
+                    voice_id = "default"
+
+                lang = (data.get("lang") or "").strip()
+                lang_part = f" | {lang}" if lang else ""
+                label = f"{backend_name} | Voice: {voice_id}{lang_part}  [{dt}]"
             except Exception:
                 label = m.stem[:50]
             self._manifest_combo.addItem(label, userData=str(m))

@@ -92,6 +92,11 @@ class TTSStep(BaseStep):
         self._voice_id_lbl = self._voice_edit = None
         self._char_count_lbl = None  # shows char count
         self._cost_lbl = None  # shows cost estimate
+        self._selected_backend_label = "Google Cloud TTS (WaveNet)"
+        self._selected_lang = "Vietnamese"
+        self._selected_api_key = ""
+        self._selected_voice_id = "vi-VN-Neural2-A"
+        self._selected_elevenlabs_voice_id = ""
 
     # ── Public: called by MainWindow / MultiSessionWindow ─────────────────────
 
@@ -878,6 +883,7 @@ class TTSStep(BaseStep):
         self._backend_combo.addItem("All backends (batch run)")
         self._backend_combo.addItems(TTS_BACKENDS.keys())
         self._backend_combo.currentIndexChanged.connect(self._on_backend_changed)
+        self._backend_combo.currentTextChanged.connect(self._on_backend_text_changed)
         r1.addWidget(self._backend_combo)
         r1.addStretch()
         v.addLayout(r1)
@@ -887,6 +893,9 @@ class TTSStep(BaseStep):
         self._lang_combo = QComboBox()
         self._lang_combo.addItems(GTTS_LANGS.keys())
         self._lang_combo.setCurrentText("Vietnamese")
+        self._lang_combo.currentTextChanged.connect(
+            lambda t: setattr(self, "_selected_lang", t)
+        )
         r2.addWidget(self._lang_combo)
         r2.addStretch()
         v.addLayout(r2)
@@ -894,6 +903,9 @@ class TTSStep(BaseStep):
         self._api_lbl = QLabel("API Key:")
         self._api_edit = QLineEdit()
         self._api_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self._api_edit.textChanged.connect(
+            lambda t: setattr(self, "_selected_api_key", t.strip())
+        )
         self._api_lbl.setVisible(False)
         self._api_edit.setVisible(False)
         v.addWidget(self._api_lbl)
@@ -901,6 +913,7 @@ class TTSStep(BaseStep):
 
         self._voice_lbl = QLabel("Voice:")
         self._voice_combo = QComboBox()
+        self._voice_combo.currentTextChanged.connect(self._on_voice_changed)
         self._voice_lbl.setVisible(False)
         self._voice_combo.setVisible(False)
         v.addWidget(self._voice_lbl)
@@ -909,6 +922,9 @@ class TTSStep(BaseStep):
         self._voice_id_lbl = QLabel("Voice ID:")
         self._voice_edit = QLineEdit()
         self._voice_edit.setPlaceholderText("ElevenLabs voice ID (blank = default)")
+        self._voice_edit.textChanged.connect(
+            lambda t: setattr(self, "_selected_elevenlabs_voice_id", t.strip())
+        )
         self._voice_id_lbl.setVisible(False)
         self._voice_edit.setVisible(False)
         v.addWidget(self._voice_id_lbl)
@@ -936,6 +952,21 @@ class TTSStep(BaseStep):
         self._on_backend_changed(4)
         return w
 
+    def _parse_voice_id(self, text: str) -> str:
+        t = (text or "").strip()
+        if not t:
+            return ""
+        for sep in (" — ", " – ", " - "):
+            if sep in t:
+                return t.split(sep, 1)[0].strip()
+        return t
+
+    def _on_backend_text_changed(self, text: str):
+        self._selected_backend_label = text or self._selected_backend_label
+
+    def _on_voice_changed(self, text: str):
+        self._selected_voice_id = self._parse_voice_id(text)
+
     def _sep_label(self, text):
         l = QLabel(text)
         l.setStyleSheet("color:#a0a8ff;font-size:11px;font-weight:600;margin-top:4px;")
@@ -943,6 +974,8 @@ class TTSStep(BaseStep):
 
     def _on_backend_changed(self, idx):
         key_text = self._backend_combo.currentText() if self._backend_combo else ""
+        if key_text:
+            self._selected_backend_label = key_text
         backend = tts_backend_from_label(key_text)
         needs_key = backend in (
             "fpt",
@@ -965,6 +998,7 @@ class TTSStep(BaseStep):
                         self._api_edit.blockSignals(True)
                         self._api_edit.setText(key)
                         self._api_edit.blockSignals(False)
+                        self._selected_api_key = key.strip()
                         break
             except Exception:
                 pass
@@ -999,6 +1033,9 @@ class TTSStep(BaseStep):
                     "vi-VN-Standard-B — Nam Standard",
                 ]
             )
+            self._selected_voice_id = self._parse_voice_id(
+                self._voice_combo.currentText()
+            )
             self._voice_lbl.setVisible(True)
             self._voice_combo.setVisible(True)
         if backend == "fpt":
@@ -1016,6 +1053,9 @@ class TTSStep(BaseStep):
                     "ngoclam — Nữ miền Bắc (trẻ)",
                 ]
             )
+            self._selected_voice_id = self._parse_voice_id(
+                self._voice_combo.currentText()
+            )
         elif backend == "zalo":
             self._voice_lbl.setText("Voice (Zalo):")
             self._voice_combo.clear()
@@ -1026,6 +1066,9 @@ class TTSStep(BaseStep):
                     "3 — Nữ miền Bắc",
                     "4 — Nam miền Bắc",
                 ]
+            )
+            self._selected_voice_id = self._parse_voice_id(
+                self._voice_combo.currentText()
             )
 
         # Recalculate cost estimate when backend changes
@@ -1039,19 +1082,16 @@ class TTSStep(BaseStep):
                 self._cost_lbl.setStyleSheet("color:#ffaa55;font-size:10px;")
 
     def collect_config(self):
-        key_text = self._backend_combo.currentText() if self._backend_combo else ""
+        key_text = self._selected_backend_label
         backend = tts_backend_from_label(key_text)
         voice_id = ""
-        if backend in ("fpt", "zalo", "google_cloud_tts") and self._voice_combo:
-            voice_id = self._voice_combo.currentText().split(" — ")[0].strip()
-        elif backend == "elevenlabs" and self._voice_edit:
-            voice_id = self._voice_edit.text().strip()
+        if backend in ("fpt", "zalo", "google_cloud_tts"):
+            voice_id = self._selected_voice_id
+        elif backend == "elevenlabs":
+            voice_id = self._selected_elevenlabs_voice_id
         return {
             "backend": backend,
-            "lang": GTTS_LANGS.get(
-                self._lang_combo.currentText() if self._lang_combo else "Vietnamese",
-                "vi",
-            ),
-            "api_key": self._api_edit.text().strip() or None,
+            "lang": GTTS_LANGS.get(self._selected_lang, "vi"),
+            "api_key": (self._selected_api_key or "").strip() or None,
             "voice_id": voice_id or None,
         }
