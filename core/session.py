@@ -32,6 +32,7 @@ class Session:
         obj.source_file = meta["source_file"]
         obj.title = meta.get("title", "")
         obj.description = meta.get("description", "")
+        # thumbnail is detected from folder, not stored in meta
         return obj
 
     @staticmethod
@@ -41,7 +42,7 @@ class Session:
         if not base.exists():
             return []
         sessions = []
-        for d in sorted(base.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
+        for d in sorted(base.iterdir(), key=lambda x: x.name.lower()):
             if not d.is_dir():
                 continue
             meta_path = d / "session.json"
@@ -64,6 +65,13 @@ class Session:
                     done.append("⑥")
 
                 size = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
+                # Detect thumbnail
+                thumb = ""
+                for ext in (".jpg", ".jpeg", ".png", ".webp"):
+                    tp = d / f"thumbnail{ext}"
+                    if tp.exists():
+                        thumb = str(tp)
+                        break
                 sessions.append(
                     {
                         "folder": str(d),
@@ -71,6 +79,7 @@ class Session:
                         "source_file": meta.get("source_file", ""),
                         "title": meta.get("title", ""),
                         "description": meta.get("description", ""),
+                        "thumbnail": thumb,
                         "done_steps": done,
                         "size_mb": round(size / 1024 / 1024, 1),
                         "mtime": d.stat().st_mtime,
@@ -89,13 +98,37 @@ class Session:
         if p.exists():
             shutil.rmtree(str(p))
 
-    # ── Info (title + description) ────────────────────────────────────────────
+    # ── Info (title + description + thumbnail) ───────────────────────────────
 
     def save_info(self, title: str = "", description: str = ""):
         """Save title + description into session.json (non-destructive update)."""
         self.title = title.strip()
         self.description = description.strip()
         self._save_meta()
+
+    def save_thumbnail(self, src_path: str) -> str:
+        """Copy an image to session folder as thumbnail.jpg. Returns saved path."""
+        import shutil
+        from pathlib import Path as _Path
+
+        src = _Path(src_path)
+        ext = src.suffix.lower() or ".jpg"
+        dst = self.folder / f"thumbnail{ext}"
+        # Remove any old thumbnail with different extension
+        for old in self.folder.glob("thumbnail.*"):
+            if old.resolve() != dst.resolve():
+                old.unlink(missing_ok=True)
+        shutil.copy2(src, dst)
+        return str(dst)
+
+    @property
+    def thumbnail(self) -> str:
+        """Return path to thumbnail image if it exists, else empty string."""
+        for ext in (".jpg", ".jpeg", ".png", ".webp"):
+            p = self.folder / f"thumbnail{ext}"
+            if p.exists():
+                return str(p)
+        return ""
 
     # ── output paths ──────────────────────────────────────────────────────────
     @property

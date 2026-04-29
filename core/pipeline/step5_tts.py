@@ -38,6 +38,45 @@ GTTS_LANGS = {
     "Spanish": "es",
 }
 
+# Approximate cost per 1M chars (USD) for reference display
+COST_PER_1M = {
+    "fpt": 0.00,  # free tier
+    "zalo": 0.00,  # free tier
+    "gtts": 0.00,  # free
+    "google_cloud_tts": 4.00,  # $4/1M chars (Standard), $16/1M (WaveNet/Neural2)
+    "openai_tts": 15.00,  # $15/1M chars
+    "elevenlabs": 30.00,  # ~$30/1M chars (Creator plan)
+}
+
+
+def _count_chars(session) -> tuple[int, str]:
+    """
+    Count total translated characters in session.
+    Returns (char_count, display_string).
+    """
+    try:
+        if not session.step2_done:
+            return 0, "No translated script yet"
+        segs = session.load_translated()
+        total = sum(len(s.translated.strip()) for s in segs)
+        return total, f"{total:,} characters  ({len(segs)} segments)"
+    except Exception as e:
+        return 0, f"Cannot read script: {e}"
+
+
+def _estimate_cost(char_count: int, backend_key: str) -> str:
+    """Return cost estimate string for given char count and backend."""
+    if char_count == 0:
+        return ""
+    cost_per_1m = COST_PER_1M.get(backend_key, 0)
+    if cost_per_1m == 0:
+        return "Free"
+    usd = char_count / 1_000_000 * cost_per_1m
+    vnd = usd * 25_000
+    if vnd < 1:
+        return f"~${usd:.4f} USD"
+    return f"~${usd:.3f} USD  (~{vnd:,.0f} VNĐ)"
+
 
 class TTSStep(BaseStep):
     STEP_ID = "step5_tts"
@@ -51,6 +90,53 @@ class TTSStep(BaseStep):
         self._api_lbl = self._api_edit = None
         self._voice_lbl = self._voice_combo = None
         self._voice_id_lbl = self._voice_edit = None
+        self._char_count_lbl = None  # shows char count
+        self._cost_lbl = None  # shows cost estimate
+
+    # ── Public: called by MainWindow / MultiSessionWindow ─────────────────────
+
+    def update_char_count(self, session=None):
+        """
+        Refresh the character count label from a session object.
+        Call this whenever the active session changes.
+        """
+        if self._char_count_lbl is None:
+            return
+
+        if session is None:
+            self._char_count_lbl.setText("No session loaded")
+            self._char_count_lbl.setStyleSheet("color:#555;font-size:10px;")
+            if self._cost_lbl:
+                self._cost_lbl.setText("")
+            return
+
+        count, display = _count_chars(session)
+
+        if count == 0:
+            self._char_count_lbl.setText(display)
+            self._char_count_lbl.setStyleSheet("color:#555;font-size:10px;")
+            if self._cost_lbl:
+                self._cost_lbl.setText("")
+            return
+
+        self._char_count_lbl.setText(f"📝 {display}")
+        self._char_count_lbl.setStyleSheet("color:#a0c8ff;font-size:10px;")
+
+        # Update cost estimate
+        if self._cost_lbl and self._backend_combo:
+            backend_key = tts_backend_from_label(self._backend_combo.currentText())
+            cost = _estimate_cost(count, backend_key)
+            if cost == "Free":
+                self._cost_lbl.setText("💸 Cost: Free")
+                self._cost_lbl.setStyleSheet("color:#5dca8e;font-size:10px;")
+            elif cost:
+                self._cost_lbl.setText(f"💸 Cost: {cost}")
+                self._cost_lbl.setStyleSheet("color:#ffaa55;font-size:10px;")
+            else:
+                self._cost_lbl.setText("")
+
+        # Store count for backend-change recalculation
+        self._last_char_count = count
 
     # ── Run ───────────────────────────────────────────────────────────────────
 
@@ -65,8 +151,10 @@ class TTSStep(BaseStep):
         if not segments:
             raise RuntimeError("No translated segments — run Step 2 first.")
 
+        total_chars = sum(len(s.translated.strip()) for s in segments)
         backends = self._resolve_backends(backend)
         log(f"🗣️  TTS Backends: {', '.join(backends)} | Lang: {lang}")
+        log(f"📝 Characters to send: {total_chars:,}")
 
         if cancel.is_set():
             raise CancelledError()
@@ -199,53 +287,25 @@ class TTSStep(BaseStep):
     ):
         if backend == "fpt":
             return self._fpt(
-                segments,
-                api_key,
-                voice_id,
-                out_path,
-                log,
-                cancel,
-                request_dir,
+                segments, api_key, voice_id, out_path, log, cancel, request_dir
             )
         elif backend == "zalo":
             return self._zalo(
-                segments,
-                api_key,
-                voice_id,
-                out_path,
-                log,
-                cancel,
-                request_dir,
+                segments, api_key, voice_id, out_path, log, cancel, request_dir
             )
         elif backend == "gtts":
-            return self._gtts(
-                segments,
-                lang,
-                out_path,
-                log,
-                cancel,
-                request_dir,
-            )
+            return self._gtts(segments, lang, out_path, log, cancel, request_dir)
         elif backend == "openai_tts":
             return self._openai_tts(
-                segments,
-                lang,
-                api_key,
-                out_path,
-                log,
-                cancel,
-                request_dir,
+                segments, lang, api_key, out_path, log, cancel, request_dir
+            )
+        elif backend == "google_cloud_tts":
+            return self._google_cloud_tts(
+                segments, lang, api_key, voice_id, out_path, log, cancel, request_dir
             )
         elif backend == "elevenlabs":
             return self._elevenlabs(
-                segments,
-                lang,
-                api_key,
-                voice_id,
-                out_path,
-                log,
-                cancel,
-                request_dir,
+                segments, lang, api_key, voice_id, out_path, log, cancel, request_dir
             )
         else:
             raise RuntimeError(f"Unknown TTS backend: {backend}")
@@ -253,21 +313,14 @@ class TTSStep(BaseStep):
     # ── Parallel TTS helper ───────────────────────────────────────────────────
 
     def _run_parallel(
-        self, segments, worker_fn, log, cancel, max_workers: int = 1, label: str = "TTS"
-    ) -> list:
-        """
-        Run worker_fn(seg, idx) in parallel using ThreadPoolExecutor.
-        Returns list of (seg, audio_bytes_or_None) in original order.
-        worker_fn signature: (seg, idx, total) -> bytes | None
-        """
+        self, segments, worker_fn, log, cancel, max_workers=1, label="TTS"
+    ):
         import concurrent.futures
 
         total = len(segments)
         results = [None] * total
         done = [0]
-
         log(f"   ⚡ Parallel {label}: {total} segments × {max_workers} workers")
-
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
             futures = {
                 ex.submit(worker_fn, seg, i, total): i for i, seg in enumerate(segments)
@@ -285,35 +338,26 @@ class TTSStep(BaseStep):
                 done[0] += 1
                 if done[0] % max(1, total // 10) == 0 or done[0] == total:
                     log(f"   📊 [{done[0]}/{total}] {label} done")
-
         return results
 
     def _assemble_audio(self, segments, audio_list, log):
-        """
-        Assemble audio pieces in correct timestamp order.
-        audio_list: list of AudioSegment | None (same order as segments)
-        """
         from pydub import AudioSegment
 
         result = AudioSegment.silent(duration=0)
         cursor_ms = 0
-
         for i, (seg, audio) in enumerate(zip(segments, audio_list)):
             start_ms = int(seg.start * 1000)
             if start_ms > cursor_ms:
                 result += AudioSegment.silent(duration=start_ms - cursor_ms)
                 cursor_ms = start_ms
-
             if audio is None:
                 log(f"   ⚠️  Seg {i+1}: no audio, inserting silence")
                 seg_dur = int((seg.end - seg.start) * 1000)
                 result += AudioSegment.silent(duration=seg_dur)
                 cursor_ms = max(cursor_ms + seg_dur, int(seg.end * 1000))
                 continue
-
             result += audio
             cursor_ms = max(cursor_ms + len(audio), int(seg.end * 1000))
-
         return result
 
     def _export_segment_assets(self, audio_list, request_dir: Path) -> list[str | None]:
@@ -332,14 +376,7 @@ class TTSStep(BaseStep):
     # ── FPT AI TTS ────────────────────────────────────────────────────────────
 
     def _fpt(
-        self,
-        segments,
-        api_key,
-        voice_id,
-        out_path,
-        log,
-        cancel,
-        request_dir=None,
+        self, segments, api_key, voice_id, out_path, log, cancel, request_dir=None
     ):
         import requests as _req
         from pydub import AudioSegment
@@ -352,7 +389,7 @@ class TTSStep(BaseStep):
         api.api_key_info("FPT", key)
         if not key:
             raise RuntimeError(
-                "FPT AI API key required.\n" "Get FREE key at: console.fpt.ai"
+                "FPT AI API key required.\nGet FREE key at: console.fpt.ai"
             )
 
         voice = voice_id or "banmai"
@@ -376,29 +413,25 @@ class TTSStep(BaseStep):
                     data=txt.encode("utf-8"),
                     timeout=15,
                 )
-
                 if resp.status_code == 429:
                     retry_after = resp.headers.get("Retry-After", "")
-                    if retry_after.isdigit():
-                        wait = max(1, int(retry_after))
-                    else:
-                        wait = min(2**post_attempt, 16)
+                    wait = (
+                        max(1, int(retry_after))
+                        if retry_after.isdigit()
+                        else min(2**post_attempt, 16)
+                    )
                     if post_attempt < 4:
                         log(
-                            f"   ⏳ Seg {idx+1}/{total} hit 429, retry in {wait}s "
-                            f"({post_attempt+1}/5)"
+                            f"   ⏳ Seg {idx+1}/{total} hit 429, retry in {wait}s ({post_attempt+1}/5)"
                         )
                         time.sleep(wait)
                         continue
                     raise RuntimeError("FPT 429 Too Many Requests (retries exhausted)")
-
                 resp.raise_for_status()
                 data = resp.json()
                 break
-
             if data is None:
                 raise RuntimeError("FPT request failed: no response payload")
-
             if data.get("error", 0) != 0:
                 raise RuntimeError(
                     f"FPT error {data.get('error')}: {data.get('message')}"
@@ -406,7 +439,6 @@ class TTSStep(BaseStep):
             async_url = data.get("async", "")
             if not async_url:
                 raise RuntimeError(f"No async URL: {data}")
-            # Poll
             for attempt in range(60):
                 r = _req.get(async_url, timeout=10)
                 if r.status_code == 200 and len(r.content) > 100:
@@ -430,40 +462,22 @@ class TTSStep(BaseStep):
                 time.sleep(1)
             raise RuntimeError(f"Timeout polling {async_url}")
 
-        # ── Parallel execution ──
         with api.timer("FPT parallel fetch"):
             audio_list = self._run_parallel(
-                segments,
-                fetch_one,
-                log,
-                cancel,
-                max_workers=1,  # Avoid aggressive burst causing 429 on free tier
-                label="FPT TTS",
+                segments, fetch_one, log, cancel, max_workers=1, label="FPT TTS"
             )
-
         with api.timer("Assemble audio"):
             result = self._assemble_audio(segments, audio_list, log)
-
         result.export(out_path, format="mp3")
         segment_files = self._export_segment_assets(audio_list, request_dir)
         ok = sum(1 for a in audio_list if a is not None)
         api.summary(ok, len(segments) - ok, len(segments), "FPT TTS")
-        api.info(
-            f"Saved: {Path(out_path).name} ({Path(out_path).stat().st_size/1024:.1f}KB)"
-        )
         return segment_files
 
     # ── Zalo AI TTS ───────────────────────────────────────────────────────────
 
     def _zalo(
-        self,
-        segments,
-        api_key,
-        voice_id,
-        out_path,
-        log,
-        cancel,
-        request_dir=None,
+        self, segments, api_key, voice_id, out_path, log, cancel, request_dir=None
     ):
         import requests
         from pydub import AudioSegment
@@ -504,9 +518,7 @@ class TTSStep(BaseStep):
                         timeout=15,
                     )
                     if resp.status_code == 429:
-                        wait = 2**attempt
-                        log(f"   ⏳ Rate limited, waiting {wait}s…")
-                        time.sleep(wait)
+                        time.sleep(2**attempt)
                         continue
                     break
                 resp.raise_for_status()
@@ -532,8 +544,7 @@ class TTSStep(BaseStep):
                 ):
                     suffix = ".mp3"
                 else:
-                    preview = content[:100].decode("utf-8", errors="replace")
-                    raise RuntimeError(f"Zalo: unknown format: {preview[:80]}")
+                    raise RuntimeError("Zalo: unknown format")
                 tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
                 tmp.write(content)
                 tmp.close()
@@ -558,15 +569,7 @@ class TTSStep(BaseStep):
 
     # ── gTTS ──────────────────────────────────────────────────────────────────
 
-    def _gtts(
-        self,
-        segments,
-        lang,
-        out_path,
-        log,
-        cancel,
-        request_dir=None,
-    ):
+    def _gtts(self, segments, lang, out_path, log, cancel, request_dir=None):
         try:
             from gtts import gTTS
             from pydub import AudioSegment
@@ -589,12 +592,7 @@ class TTSStep(BaseStep):
                     os.unlink(tmp.name)
 
         audio_list = self._run_parallel(
-            segments,
-            fetch_one,
-            log,
-            cancel,
-            max_workers=5,  # gTTS free, can parallelize more
-            label="gTTS",
+            segments, fetch_one, log, cancel, max_workers=5, label="gTTS"
         )
         result = self._assemble_audio(segments, audio_list, log)
         result.export(out_path, format="mp3")
@@ -606,14 +604,7 @@ class TTSStep(BaseStep):
     # ── OpenAI TTS ────────────────────────────────────────────────────────────
 
     def _openai_tts(
-        self,
-        segments,
-        lang,
-        api_key,
-        out_path,
-        log,
-        cancel,
-        request_dir=None,
+        self, segments, lang, api_key, out_path, log, cancel, request_dir=None
     ):
         try:
             from openai import OpenAI
@@ -662,18 +653,146 @@ class TTSStep(BaseStep):
         log(f"   🏁 OpenAI TTS: {ok}/{len(segments)} ok")
         return segment_files
 
+    # ── Google Cloud TTS ──────────────────────────────────────────────────────
+
+    def _google_cloud_tts(
+        self, segments, lang, api_key, voice_id, out_path, log, cancel, request_dir=None
+    ):
+        """
+        Google Cloud Text-to-Speech API.
+        Supports Standard, WaveNet, Neural2, Studio voices.
+        Pricing: Standard=$4/1M chars, WaveNet/Neural2=$16/1M chars.
+
+        Setup:
+          1. Enable Cloud TTS API at console.cloud.google.com
+          2. Create API key (or use service account JSON)
+          3. Enter API key in Step 5 config
+        """
+        try:
+            from pydub import AudioSegment
+        except ImportError:
+            raise RuntimeError("Run: pip install pydub audioop-lts")
+
+        import base64
+
+        import requests as _req
+
+        key = api_key or os.environ.get("GOOGLE_CLOUD_TTS_KEY", "")
+        if not key:
+            raise RuntimeError(
+                "Google Cloud TTS API key required.\n"
+                "1. Go to console.cloud.google.com\n"
+                "2. Enable Cloud Text-to-Speech API\n"
+                "3. Create API key → paste here"
+            )
+
+        # Voice selection
+        # voice_id format: "vi-VN-Neural2-A" or "vi-VN-Wavenet-A" etc.
+        # Default: Neural2 for Vietnamese
+        LANG_VOICE_MAP = {
+            "vi": ("vi-VN", "vi-VN-Neural2-A", "FEMALE"),
+            "en": ("en-US", "en-US-Neural2-F", "FEMALE"),
+            "ja": ("ja-JP", "ja-JP-Neural2-B", "FEMALE"),
+            "ko": ("ko-KR", "ko-KR-Neural2-A", "FEMALE"),
+            "zh": ("cmn-CN", "cmn-CN-Wavenet-A", "FEMALE"),
+            "zh-cn": ("cmn-CN", "cmn-CN-Wavenet-A", "FEMALE"),
+            "fr": ("fr-FR", "fr-FR-Neural2-A", "FEMALE"),
+            "de": ("de-DE", "de-DE-Neural2-F", "FEMALE"),
+            "es": ("es-ES", "es-ES-Neural2-A", "FEMALE"),
+        }
+        lang_key = lang[:2].lower() if lang else "vi"
+        default_lang_code, default_voice, default_gender = LANG_VOICE_MAP.get(
+            lang_key, ("vi-VN", "vi-VN-Neural2-A", "FEMALE")
+        )
+
+        if voice_id and voice_id.strip():
+            # User specified voice, infer lang_code from voice name
+            # e.g. "vi-VN-Neural2-A" → lang_code = "vi-VN"
+            parts = voice_id.strip().split("-")
+            lang_code = (
+                f"{parts[0]}-{parts[1]}" if len(parts) >= 2 else default_lang_code
+            )
+            voice_name = voice_id.strip()
+        else:
+            lang_code = default_lang_code
+            voice_name = default_voice
+
+        log(
+            f"   ⚡ Google Cloud TTS | voice: {voice_name} | lang: {lang_code} | segs: {len(segments)}"
+        )
+
+        url = f"https://texttospeech.googleapis.com/v1/text:synthesize?key={key}"
+
+        def fetch_one(seg, idx, total):
+            txt = seg.translated.strip()
+            if not txt:
+                return None
+            payload = {
+                "input": {"text": txt},
+                "voice": {
+                    "languageCode": lang_code,
+                    "name": voice_name,
+                },
+                "audioConfig": {
+                    "audioEncoding": "MP3",
+                    "speakingRate": 1.0,
+                    "pitch": 0.0,
+                },
+            }
+            for attempt in range(3):
+                try:
+                    resp = _req.post(url, json=payload, timeout=15)
+                    if resp.status_code == 429:
+                        wait = 2**attempt
+                        log(f"   ⏳ Seg {idx+1}/{total} rate limited, wait {wait}s")
+                        time.sleep(wait)
+                        continue
+                    if resp.status_code == 400:
+                        err = resp.json().get("error", {})
+                        raise RuntimeError(
+                            f"Bad request: {err.get('message', resp.text[:200])}"
+                        )
+                    if resp.status_code == 401:
+                        raise RuntimeError(
+                            "401 Unauthorized — API key invalid or Cloud TTS not enabled.\n"
+                            "Check: console.cloud.google.com → APIs & Services → Cloud TTS"
+                        )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    audio_b64 = data.get("audioContent", "")
+                    if not audio_b64:
+                        raise RuntimeError("Empty audio response")
+                    audio_bytes = base64.b64decode(audio_b64)
+                    tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
+                    tmp.write(audio_bytes)
+                    tmp.close()
+                    try:
+                        audio = AudioSegment.from_mp3(tmp.name)
+                        return audio
+                    finally:
+                        os.unlink(tmp.name)
+                except RuntimeError:
+                    raise
+                except Exception:
+                    if attempt == 2:
+                        raise
+                    time.sleep(1)
+            return None
+
+        audio_list = self._run_parallel(
+            segments, fetch_one, log, cancel, max_workers=5, label="Google Cloud TTS"
+        )
+        result = self._assemble_audio(segments, audio_list, log)
+        result.export(out_path, format="mp3")
+        segment_files = self._export_segment_assets(audio_list, request_dir)
+        ok = sum(1 for a in audio_list if a is not None)
+        log(f"   🏁 Google Cloud TTS: {ok}/{len(segments)} ok")
+        return segment_files
+
     # ── ElevenLabs ────────────────────────────────────────────────────────────
 
     def _elevenlabs(
-        self,
-        segments,
-        lang,
-        api_key,
-        voice_id,
-        out_path,
-        log,
-        cancel,
-        request_dir=None,
+        self, segments, lang, api_key, voice_id, out_path, log, cancel, request_dir=None
     ):
         try:
             from elevenlabs import VoiceSettings
@@ -781,8 +900,26 @@ class TTSStep(BaseStep):
         v.addWidget(self._voice_id_lbl)
         v.addWidget(self._voice_edit)
 
-        self._backend_combo.setCurrentIndex(1)  # Default: FPT AI TTS
-        self._on_backend_changed(1)
+        # ── Character count + cost estimate ──────────────────────────────────
+        sep = QWidget()
+        sep.setFixedHeight(1)
+        sep.setStyleSheet("background:#2d2d4e;margin:2px 0;")
+        v.addWidget(sep)
+
+        self._char_count_lbl = QLabel("No session loaded")
+        self._char_count_lbl.setStyleSheet("color:#555;font-size:10px;")
+        self._char_count_lbl.setWordWrap(True)
+        v.addWidget(self._char_count_lbl)
+
+        self._cost_lbl = QLabel("")
+        self._cost_lbl.setStyleSheet("color:#ffaa55;font-size:10px;")
+        v.addWidget(self._cost_lbl)
+
+        # Store last char count for recalc when backend changes
+        self._last_char_count = 0
+
+        self._backend_combo.setCurrentIndex(3)  # Default: gTTS (Google, free)
+        self._on_backend_changed(3)
         return w
 
     def _sep_label(self, text):
@@ -794,11 +931,12 @@ class TTSStep(BaseStep):
         key_text = self._backend_combo.currentText() if self._backend_combo else ""
         backend = tts_backend_from_label(key_text)
         needs_key = backend in ("fpt", "zalo", "openai_tts", "elevenlabs")
-        needs_combo = backend in ("fpt", "zalo")
+        needs_combo = backend in ("fpt", "zalo", "google_cloud_tts")
         needs_el_id = backend == "elevenlabs"
         placeholders = {
             "fpt": "FPT API key — fpt.ai/tts (1M ký tự free)",
             "zalo": "Zalo AI key — zalo.ai/developers",
+            "google_cloud_tts": "Google Cloud API key — console.cloud.google.com",
             "openai_tts": "OpenAI API key — platform.openai.com",
             "elevenlabs": "ElevenLabs key — elevenlabs.io",
         }
@@ -810,6 +948,22 @@ class TTSStep(BaseStep):
         self._voice_combo.setVisible(needs_combo)
         self._voice_id_lbl.setVisible(needs_el_id)
         self._voice_edit.setVisible(needs_el_id)
+        if backend == "google_cloud_tts":
+            self._voice_lbl.setText("Voice name:")
+            self._voice_combo.clear()
+            self._voice_combo.addItems(
+                [
+                    "vi-VN-Neural2-A — Nữ Neural2 (recommended)",
+                    "vi-VN-Neural2-D — Nam Neural2",
+                    "vi-VN-Wavenet-A — Nữ WaveNet",
+                    "vi-VN-Wavenet-B — Nam WaveNet",
+                    "vi-VN-Wavenet-C — Nữ WaveNet 2",
+                    "vi-VN-Standard-A — Nữ Standard (rẻ nhất)",
+                    "vi-VN-Standard-B — Nam Standard",
+                ]
+            )
+            self._voice_lbl.setVisible(True)
+            self._voice_combo.setVisible(True)
         if backend == "fpt":
             self._voice_lbl.setText("Voice (FPT):")
             self._voice_combo.clear()
@@ -837,11 +991,21 @@ class TTSStep(BaseStep):
                 ]
             )
 
+        # Recalculate cost estimate when backend changes
+        if self._cost_lbl and self._last_char_count > 0:
+            cost = _estimate_cost(self._last_char_count, backend)
+            if cost == "Free":
+                self._cost_lbl.setText("💸 Cost: Free")
+                self._cost_lbl.setStyleSheet("color:#5dca8e;font-size:10px;")
+            elif cost:
+                self._cost_lbl.setText(f"💸 Cost: {cost}")
+                self._cost_lbl.setStyleSheet("color:#ffaa55;font-size:10px;")
+
     def collect_config(self):
         key_text = self._backend_combo.currentText() if self._backend_combo else ""
         backend = tts_backend_from_label(key_text)
         voice_id = ""
-        if backend in ("fpt", "zalo") and self._voice_combo:
+        if backend in ("fpt", "zalo", "google_cloud_tts") and self._voice_combo:
             voice_id = self._voice_combo.currentText().split(" — ")[0].strip()
         elif backend == "elevenlabs" and self._voice_edit:
             voice_id = self._voice_edit.text().strip()

@@ -298,7 +298,9 @@ class SessionPickerDialog(QDialog):
             dt = datetime.fromtimestamp(s["mtime"]).strftime("%Y-%m-%d %H:%M")
             done = " ".join(s["done_steps"]) if s["done_steps"] else "—"
             src = Path(s["source_file"]).name if s["source_file"] else "unknown"
-            text = f"  {s['name']}\n  📄 {src}  |  ✅ {done}  |  💾 {s['size_mb']} MB  |  🕐 {dt}"
+            display_name = s.get("title", "").strip() or s["name"]
+            folder_sub = f"  ({s['name']})" if display_name != s["name"] else ""
+            text = f"  {display_name}{folder_sub}\n  📄 {src}  |  ✅ {done}  |  💾 {s['size_mb']} MB  |  🕐 {dt}"
             item = QListWidgetItem(text)
             item.setData(Qt.ItemDataRole.UserRole, s)
             self._list.addItem(item)
@@ -687,10 +689,12 @@ class MainWindow(QMainWindow):
                 and hasattr(step, "_api_key_edit")
                 and step._api_key_edit
             ):
-                if not step._api_key_edit.text().strip():
-                    key = service_keys.get("openai", "")
-                    if key:
-                        step._api_key_edit.setText(key)
+                key = service_keys.get("openai", "")
+                if key:
+                    # Always sync from manager → field so API Keys dialog updates Step 1
+                    step._api_key_edit.blockSignals(True)
+                    step._api_key_edit.setText(key)
+                    step._api_key_edit.blockSignals(False)
 
             # Step 2 translate
             if (
@@ -821,6 +825,11 @@ class MainWindow(QMainWindow):
         # Load session info editor
         self._info_editor.load_session(session)
 
+        # Update TTS char count
+        for step in self._steps:
+            if hasattr(step, "update_char_count"):
+                step.update_char_count(session)
+
         done_labels = [s.LABEL for s in self._steps if s.STEP_ID in done_steps]
         self._log(
             f"💡 Completed steps: {', '.join(done_labels) if done_labels else 'None'}"
@@ -898,6 +907,9 @@ class MainWindow(QMainWindow):
         self._sess_name_lbl.setText("—  (created on first Run)")
         self._subtitle_editor.clear()
         self._info_editor.clear()
+        for step in self._steps:
+            if hasattr(step, "update_char_count"):
+                step.update_char_count(None)
         for card in self._cards:
             card.reset()
         self._status_bar.showMessage(f"File: {Path(path).name}")
@@ -1076,6 +1088,11 @@ class MainWindow(QMainWindow):
         self._pool.start(worker)
 
     def _update_previews(self, step, result):
+        # Refresh TTS char count whenever step2 finishes
+        if step.STEP_ID == "step2_translate" and self._session:
+            for s in self._steps:
+                if hasattr(s, "update_char_count"):
+                    s.update_char_count(self._session)
         if step.STEP_ID == "step1_transcribe" and hasattr(result, "segments"):
             self._subtitle_editor.set_orig_placeholder("")
             self._subtitle_editor._orig_edit.setPlainText(

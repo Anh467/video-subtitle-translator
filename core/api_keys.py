@@ -1,18 +1,19 @@
 """
-ApiKeyManager — load/save API keys từ file .env trong session folder hoặc base dir.
+ApiKeyManager — load/save API keys từ file .subsync_keys trong session folder.
 
-File .env format:
+File .subsync_keys format:
   GEMINI_API_KEY=AIzaSy...
   OPENAI_API_KEY=sk-...
   FPT_API_KEY=xxxxx
   ZALO_API_KEY=xxxxx
   ELEVENLABS_API_KEY=xxxxx
+  GOOGLE_CLOUD_TTS_KEY=AIzaSy...
 """
 
 import os
 from pathlib import Path
 
-ENV_FILE = ".subsync_keys"  # tên file chứa keys
+ENV_FILE = ".subsync_keys"
 
 KNOWN_KEYS = {
     "GEMINI_API_KEY": {"label": "Gemini API Key", "service": "gemini"},
@@ -20,6 +21,10 @@ KNOWN_KEYS = {
     "FPT_API_KEY": {"label": "FPT AI TTS Key", "service": "fpt"},
     "ZALO_API_KEY": {"label": "Zalo AI TTS Key", "service": "zalo"},
     "ELEVENLABS_API_KEY": {"label": "ElevenLabs Key", "service": "elevenlabs"},
+    "GOOGLE_CLOUD_TTS_KEY": {
+        "label": "Google Cloud TTS Key",
+        "service": "google_cloud",
+    },
 }
 
 
@@ -31,7 +36,6 @@ class ApiKeyManager:
             self.load(base_dir)
 
     def load(self, base_dir: str):
-        """Load keys từ <base_dir>/.subsync_keys"""
         self._base_dir = base_dir
         path = Path(base_dir) / ENV_FILE
         self._keys = {}
@@ -46,13 +50,11 @@ class ApiKeyManager:
                     v = v.strip()
                     if k and v:
                         self._keys[k] = v
-        # Also load from environment (lower priority)
         for k in KNOWN_KEYS:
             if k not in self._keys and os.environ.get(k):
                 self._keys[k] = os.environ[k]
 
     def save(self, base_dir: str = ""):
-        """Save keys to <base_dir>/.subsync_keys"""
         d = base_dir or self._base_dir
         if not d:
             return
@@ -77,7 +79,6 @@ class ApiKeyManager:
         return dict(self._keys)
 
     def to_dict_by_service(self) -> dict:
-        """Return {service: api_key} mapping."""
         result = {}
         for k, meta in KNOWN_KEYS.items():
             v = self._keys.get(k, "")
@@ -86,7 +87,6 @@ class ApiKeyManager:
         return result
 
 
-# Global singleton — shared across all steps
 _manager = ApiKeyManager()
 
 
@@ -103,11 +103,8 @@ def save_keys(base_dir: str):
 
 
 def get_key(service_or_env: str) -> str:
-    """Get key by service name or env var name."""
-    # Try env var name directly
     if service_or_env in KNOWN_KEYS:
         return _manager.get(service_or_env)
-    # Try by service name
     for k, meta in KNOWN_KEYS.items():
         if meta["service"] == service_or_env:
             return _manager.get(k)

@@ -221,20 +221,48 @@ class SessionListPanel(QWidget):
         icon_lbl.setStyleSheet("font-size:14px;")
         h.addWidget(icon_lbl)
 
+        # Thumbnail (small, if exists)
+        thumb_path = s.get("thumbnail", "")
+        if thumb_path and __import__("pathlib").Path(thumb_path).exists():
+            from PyQt6.QtGui import QPixmap
+
+            thumb_lbl = QLabel()
+            thumb_lbl.setFixedSize(48, 27)
+            pix = QPixmap(thumb_path).scaled(
+                48,
+                27,
+                __import__(
+                    "PyQt6.QtCore", fromlist=["Qt"]
+                ).Qt.AspectRatioMode.KeepAspectRatio,
+                __import__(
+                    "PyQt6.QtCore", fromlist=["Qt"]
+                ).Qt.TransformationMode.SmoothTransformation,
+            )
+            thumb_lbl.setPixmap(pix)
+            thumb_lbl.setStyleSheet(
+                "border:1px solid #2a3a5a;border-radius:3px;background:#0a0a1a;"
+            )
+            h.addWidget(thumb_lbl)
+
         info_w = QWidget()
         info_w.setStyleSheet("background:transparent;")
         info_v = QVBoxLayout(info_w)
         info_v.setContentsMargins(0, 0, 0, 0)
         info_v.setSpacing(1)
 
-        name_lbl = QLabel(s["name"])
+        display_name = s.get("title", "").strip() or s["name"]
+        name_lbl = QLabel(display_name)
         name_lbl.setStyleSheet("color:#e0e0e0;font-size:12px;font-weight:600;")
+        name_lbl.setToolTip(s["name"])  # show folder name on hover
         info_v.addWidget(name_lbl)
 
         src = Path(s["source_file"]).name if s["source_file"] else "unknown"
         done_str = " ".join(s["done_steps"]) if s["done_steps"] else "—"
         dt = datetime.fromtimestamp(s["mtime"]).strftime("%m-%d %H:%M")
-        detail = QLabel(f"📄 {src}   ✅ {done_str}   💾 {s['size_mb']}MB   🕐 {dt}")
+        folder_hint = f"  📁 {s['name']}" if display_name != s["name"] else ""
+        detail = QLabel(
+            f"📄 {src}   ✅ {done_str}   💾 {s['size_mb']}MB   🕐 {dt}{folder_hint}"
+        )
         detail.setStyleSheet("color:#666;font-size:10px;")
         info_v.addWidget(detail)
 
@@ -596,6 +624,11 @@ class MultiSessionWindow(QMainWindow):
 
         # Load subtitle preview + editor
         self._subtitle_editor.load_session(session)
+
+        # Update TTS char count for clicked session
+        for step in self._steps:
+            if hasattr(step, "update_char_count"):
+                step.update_char_count(session)
 
         # Restore step card statuses
         done_steps = session.done_steps()

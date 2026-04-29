@@ -27,6 +27,7 @@ TTS_BACKEND_LABEL_TO_KEY = {
     "FPT AI TTS (free ⭐ VI)": "fpt",
     "Zalo AI TTS (free VI)": "zalo",
     "gTTS (Google, free)": "gtts",
+    "Google Cloud TTS (WaveNet)": "google_cloud_tts",
     "OpenAI TTS (natural)": "openai_tts",
     "ElevenLabs (best+emotion)": "elevenlabs",
 }
@@ -73,6 +74,8 @@ def tts_key_candidates(backend_key: str) -> list[str]:
         return ["elevenlabs"]
     if backend_key == "openai_tts":
         return ["openai"]
+    if backend_key == "google_cloud_tts":
+        return ["google_cloud"]
     if backend_key == "all":
-        return ["fpt", "zalo", "elevenlabs", "openai"]
+        return ["fpt", "zalo", "elevenlabs", "openai", "google_cloud"]
     return []
