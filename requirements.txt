@@ -2,23 +2,24 @@
 PyQt6
 openai-whisper
 openai
-
+ 
 # ── Step 2 — Translation ──────────────────────────────────────────────────────
 deep-translator          # Google Translate (free, no key)
 google-genai             # Gemini Flash (free, needs key from aistudio.google.com)
-
+ 
 # ── Step 4 — Voice separation ─────────────────────────────────────────────────
 demucs
-
+ 
 # ── Step 5 — TTS ──────────────────────────────────────────────────────────────
 gtts
 pydub
 elevenlabs
 audioop-lts              # Fix pydub on Python 3.13+
-
+ 
 # ── Utils ─────────────────────────────────────────────────────────────────────
 ffmpeg-python
-
+Pillow
+ 
 # ── Install notes ─────────────────────────────────────────────────────────────
 # ffmpeg binary (required):
 #   Windows : winget install ffmpeg

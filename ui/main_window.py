@@ -32,6 +32,7 @@ from core.pipeline.step3_burn import BurnStep
 from core.pipeline.step4_separate import SeparateStep
 from core.pipeline.step5_tts import TTSStep
 from core.pipeline.step6_add_voice import AddVoiceStep
+from core.pipeline.step7_publish_info import PublishInfoStep
 from core.session import Session
 from ui.multi_session_window import MultiSessionWindow
 from ui.widgets.drop_zone import SUPPORTED, DropZone
@@ -386,6 +387,7 @@ class MainWindow(QMainWindow):
             SeparateStep(),
             TTSStep(),
             AddVoiceStep(),
+            PublishInfoStep(),
         ]
         self._cards: list[StepCard] = []
         self._multi_window: MultiSessionWindow | None = None
@@ -858,6 +860,7 @@ class MainWindow(QMainWindow):
             "step4_separate": "step4_vocals",
             "step5_tts": "step5_tts",
             "step6_add_voice": "step6_video",
+            "step7_publish_info": "step7_info",
         }.get(step.STEP_ID, "")
         if attr:
             p = getattr(session, attr, None)
@@ -1126,6 +1129,13 @@ class MainWindow(QMainWindow):
             self._subtitle_editor._dirty = False
             if self._session:
                 self._subtitle_editor.set_session_for_save(self._session)
+
+        if step.STEP_ID == "step7_publish_info" and self._session:
+            try:
+                self._session = Session.load(str(self._session.folder))
+                self._info_editor.load_session(self._session)
+            except Exception:
+                pass
 
     def _done(self, step, result):
         card = self._card_for(step)

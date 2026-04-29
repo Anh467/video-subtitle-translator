@@ -63,6 +63,8 @@ class Session:
                     done.append("⑤")
                 if any(d.glob("step6_output.*")) or any(d.glob("step5_output.*")):
                     done.append("⑥")
+                if (d / "step7_publish_info.json").exists():
+                    done.append("⑦")
 
                 size = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
                 # Detect thumbnail
@@ -214,6 +216,10 @@ class Session:
         return self.folder / "result" / f"step6_output{Path(self.source_file).suffix}"
 
     @property
+    def step7_info(self):
+        return self.folder / "step7_publish_info.json"
+
+    @property
     def result_dir(self) -> Path:
         """Folder for final output files."""
         d = self.folder / "result"
@@ -249,6 +255,10 @@ class Session:
             return True
         return self.step6_video.exists()
 
+    @property
+    def step7_done(self):
+        return self.step7_info.exists()
+
     def done_steps(self) -> list[str]:
         steps = []
         if self.step1_done:
@@ -263,6 +273,8 @@ class Session:
             steps.append("step5_tts")
         if self.step6_done:
             steps.append("step6_add_voice")
+        if self.step7_done:
+            steps.append("step7_publish_info")
         return steps
 
     # ── smart video chaining ──────────────────────────────────────────────────

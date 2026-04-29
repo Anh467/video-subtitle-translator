@@ -276,6 +276,7 @@ class SessionListPanel(QWidget):
                 "step4_separate": "④",
                 "step5_tts": "⑤",
                 "step6_add_voice": "⑥",
+                "step7_publish_info": "⑦",
             }
             parts = []
             for sid, icon in STEP_ICONS.items():
@@ -670,6 +671,8 @@ class MultiSessionWindow(QMainWindow):
                                 step._api_edit.blockSignals(True)
                                 step._api_edit.setText(key)
                                 step._api_edit.blockSignals(False)
+                                if hasattr(step, "_selected_api_key"):
+                                    step._selected_api_key = key.strip()
                                 break
         except Exception:
             pass  # Never block UI due to autofill failure
@@ -847,6 +850,13 @@ class MultiSessionWindow(QMainWindow):
         card.set_status("✅ Done", "done", out_path)
 
         self._session_panel.set_session_status(folder, "done", step.STEP_ID)
+        if step.STEP_ID == "step7_publish_info":
+            try:
+                self._current_session = Session.load(folder)
+                self._info_editor.load_session(self._current_session)
+                self._session_panel.refresh()
+            except Exception:
+                pass
 
         # Check if this session has no more jobs after this one
         more_for_session = any(sd["folder"] == folder for sd, _ in self._job_queue[1:])
@@ -926,6 +936,7 @@ class MultiSessionWindow(QMainWindow):
             "step4_separate": "step4_vocals",
             "step5_tts": "step5_tts",
             "step6_add_voice": "step6_video",
+            "step7_publish_info": "step7_info",
         }.get(step.STEP_ID, "")
         if attr:
             p = getattr(session, attr, None)
