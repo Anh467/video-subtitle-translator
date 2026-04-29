@@ -14,12 +14,16 @@ from collections import Counter
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageEnhance, ImageFont
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -104,6 +108,36 @@ class PublishInfoStep(BaseStep):
         self._thumb_mode_combo = None
         self._thumb_at_spin = None
         self._overwrite_chk = None
+        self._thumb_bg_label = None
+        self._thumb_bg_preview = None
+        self._thumb_bg_path = ""
+        self._base_dir = ""
+        self._ollama_last_failed = False
+
+    def set_base_dir(self, base_dir: str):
+        self._base_dir = (base_dir or "").strip()
+        self._load_shared_thumb_background()
+        self._refresh_thumb_bg_preview()
+
+    def _shared_thumb_background_path(self, base_dir: str | None = None) -> str:
+        root = (base_dir or self._base_dir or "").strip()
+        if not root:
+            return ""
+        d = Path(root)
+        for ext in (".png", ".jpg", ".jpeg", ".webp", ".bmp"):
+            p = d / f"step7_thumb_foreground{ext}"
+            if p.exists():
+                return str(p)
+        return ""
+
+    def _load_shared_thumb_background(self):
+        if self._thumb_bg_path and Path(self._thumb_bg_path).exists():
+            return
+        p = self._shared_thumb_background_path()
+        if p:
+            self._thumb_bg_path = p
+            if self._thumb_bg_label is not None:
+                self._thumb_bg_label.setText(Path(p).name)
 
     def run(self, session, config, log, cancel):
         if not session.step2_done:
@@ -120,6 +154,8 @@ class PublishInfoStep(BaseStep):
 
         style = config.get("style", "story")
         gen_backend = config.get("gen_backend", "ollama")
+        # Reset per-run Ollama health flag.
+        self._ollama_last_failed = False
         ollama_model = config.get("ollama_model", "qwen2")
         max_tags = int(config.get("max_tags", 8) or 8)
         thumb_mode = config.get("thumb_mode", "keep")
@@ -143,6 +179,11 @@ class PublishInfoStep(BaseStep):
             title = self._build_title(lines, style=style)
             description = self._build_description(lines, hashtags)
 
+        thumb_gen_backend = gen_backend
+        if gen_backend == "ollama" and self._ollama_last_failed:
+            thumb_gen_backend = "rule"
+            log("⚙️  Ollama unavailable in this run, thumbnail AI calls disabled.")
+
         log(f"🧠 Generated title: {title}")
         log(f"🏷️  Hashtags: {' '.join(hashtags)}")
 
@@ -164,14 +205,30 @@ class PublishInfoStep(BaseStep):
         if thumb_mode == "auto" or (
             thumb_mode == "auto_if_missing" and not session.thumbnail
         ):
+            bg_from_config = (config.get("thumb_bg_path") or "").strip()
+            if not bg_from_config:
+                bg_from_config = self._shared_thumb_background_path(
+                    str(session.folder.parent)
+                )
+            if bg_from_config and Path(bg_from_config).exists():
+                try:
+                    saved_bg = session.save_thumb_background(bg_from_config)
+                    self._thumb_bg_path = saved_bg
+                    log(f"🧱 Saved Step 7 background layer: {Path(saved_bg).name}")
+                except Exception as e:
+                    log(f"⚠️  Cannot save Step 7 background layer: {e}")
+            bg_layer = session.thumb_background
+
             thumb_saved = self._generate_thumbnail(
                 session,
                 at_sec=thumb_at_sec,
                 hook_title=final_title or title,
+                segments=segments,
                 lines=lines,
                 style=style,
-                gen_backend=gen_backend,
+                gen_backend=thumb_gen_backend,
                 ollama_model=ollama_model,
+                foreground_bg=bg_layer,
                 log=log,
             )
             if thumb_saved:
@@ -185,6 +242,7 @@ class PublishInfoStep(BaseStep):
             "hashtags": hashtags,
             "thumbnail": session.thumbnail,
             "generated_thumbnail": thumb_saved,
+            "thumb_background": session.thumb_background,
             "style": style,
             "max_tags": max_tags,
         }
@@ -258,6 +316,8 @@ class PublishInfoStep(BaseStep):
             return {}
 
     def _ollama_generate(self, prompt: str, model: str = "qwen2") -> str:
+        if self._ollama_last_failed:
+            raise RuntimeError("Ollama temporarily disabled in this run")
         payload = json.dumps(
             {
                 "model": model,
@@ -274,9 +334,14 @@ class PublishInfoStep(BaseStep):
             data=payload,
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=150) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            return (data.get("response") or "").strip()
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                self._ollama_last_failed = False
+                return (data.get("response") or "").strip()
+        except Exception:
+            self._ollama_last_failed = True
+            raise
 
     def _generate_title_description_ollama(
         self,
@@ -417,22 +482,27 @@ class PublishInfoStep(BaseStep):
         if not base and lines:
             base = lines[0].strip()
         base = re.sub(r"\s+", " ", base)
-        base = base[:64].strip(" .,!?:;-")
+        base = base[:48].strip(" .,!?:;-")
 
         if style == "dramatic":
             prefix = "SUC THAT GAY SOC"
         elif style == "short":
-            prefix = "BAN KHONG NGO TOI"
+            prefix = "BAN KHONG THE NGO"
         else:
             prefix = "CU LAT NGOAN MUC"
 
         if not base:
             return prefix
 
-        # Keep text short and punchy for thumbnail readability.
-        if len(base) > 34:
-            base = base[:34].rstrip() + "..."
-        return f"{prefix}: {base}"
+        words = re.findall(r"[A-Za-z0-9À-ỹà-ỹ]+", base)
+        core = " ".join(words[:2]).upper() if words else "BAT NGO"
+        out = f"{prefix} {core}".strip()
+        out_words = out.split()
+        if len(out_words) > 5:
+            out = " ".join(out_words[:5])
+        if len(out_words) < 4:
+            out = "SUC THAT QUA BAT NGO"
+        return out
 
     def _generate_hook_text_ollama(
         self,
@@ -450,10 +520,10 @@ class PublishInfoStep(BaseStep):
         }.get(style, "storytelling")
         prompt = (
             "You create Vietnamese thumbnail hooks.\n"
-            "Write ONE short uppercase hook line for a YouTube thumbnail.\n"
+            "Write ONE very short uppercase hook line for a YouTube thumbnail.\n"
             f"Style: {style_hint}.\n"
             "Rules:\n"
-            "- Max 7 words\n"
+            "- Exactly 4 to 5 words\n"
             "- Punchy, emotional, no clickbait lies\n"
             "- No hashtag, no emoji, no quotes\n"
             "- Output plain text only\n\n"
@@ -466,23 +536,55 @@ class PublishInfoStep(BaseStep):
             txt = re.sub(r"[^A-Za-z0-9À-ỹà-ỹ\s:!?-]", "", txt)
             if not txt:
                 raise RuntimeError("empty hook")
-            words = txt.split()
-            if len(words) > 7:
-                txt = " ".join(words[:7])
+            words = [w for w in txt.split() if w]
+            if len(words) > 5:
+                words = words[:5]
+            if len(words) < 4:
+                raise RuntimeError("hook too short")
+            txt = " ".join(words)
             return txt.upper()
         except Exception as e:
             log(f"⚠️  Ollama hook fallback: {e}")
             return self._pick_hook_text(hook_title, lines, style)
 
-    def _escape_drawtext(self, text: str) -> str:
-        return (
-            (text or "")
-            .replace("\\", r"\\")
-            .replace(":", r"\:")
-            .replace("'", r"\'")
-            .replace("%", r"\%")
-            .replace(",", r"\,")
+    def _pick_thumb_timestamp_ollama(
+        self,
+        segments,
+        fallback_sec: float,
+        model: str,
+        log,
+    ) -> float:
+        items = []
+        for s in segments[:120]:
+            txt = (getattr(s, "translated", "") or "").strip()
+            if not txt:
+                continue
+            st = float(getattr(s, "start", 0.0) or 0.0)
+            en = float(getattr(s, "end", st) or st)
+            items.append(f"{st:.1f}-{en:.1f}: {txt}")
+        if not items:
+            return max(0.0, float(fallback_sec or 0.0))
+
+        prompt = (
+            "You are selecting the best thumbnail moment for a Vietnamese short video.\n"
+            "Given timed translated segments, choose one timestamp where visual action is likely strongest and relevant.\n"
+            "Rules:\n"
+            "- Prefer moments with conflict, reveal, surprise, payoff, or key turning points\n"
+            "- Avoid intro/outro and empty moments\n"
+            '- Return JSON only: {"second": number, "reason": string}\n\n'
+            "SEGMENTS:\n" + "\n".join(items)
         )
+        try:
+            raw = self._ollama_generate(prompt, model=model)
+            obj = self._extract_json_object(raw)
+            sec = float(obj.get("second", fallback_sec))
+            if sec < 0:
+                sec = 0.0
+            log(f"🧭 AI picked thumbnail time: {sec:.1f}s")
+            return sec
+        except Exception as e:
+            log(f"⚠️  AI thumb timing fallback: {e}")
+            return max(0.0, float(fallback_sec or 0.0))
 
     def _extract_representative_frame(
         self, src: str, at_sec: float, out_img: str, log
@@ -548,20 +650,40 @@ class PublishInfoStep(BaseStep):
         return Path(out_img).exists() and Path(out_img).stat().st_size > 0
 
     def _render_edited_thumbnail(
-        self, src_img: str, out_img: str, hook_text: str, log
+        self,
+        src_img: str,
+        out_img: str,
+        hook_text: str,
+        foreground_bg: str,
+        log,
     ) -> bool:
         try:
-            img = Image.open(src_img).convert("RGB")
-            w, h = img.size
+            base = Image.open(src_img).convert("RGB")
+            w, h = base.size
 
             # Slight pop for thumbnail look.
-            img = ImageEnhance.Contrast(img).enhance(1.08)
-            img = ImageEnhance.Color(img).enhance(1.18)
+            base = ImageEnhance.Contrast(base).enhance(1.08)
+            base = ImageEnhance.Color(base).enhance(1.18)
 
-            overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+            canvas = base.convert("RGBA")
+            if foreground_bg and Path(foreground_bg).exists():
+                fg = Image.open(foreground_bg).convert("RGBA")
+                bg_ratio = fg.width / max(1, fg.height)
+                out_ratio = w / max(1, h)
+                if bg_ratio > out_ratio:
+                    nh = h
+                    nw = int(h * bg_ratio)
+                else:
+                    nw = w
+                    nh = int(w / max(1e-6, bg_ratio))
+                fg = fg.resize((max(1, nw), max(1, nh)), Image.Resampling.LANCZOS)
+                x = (nw - w) // 2
+                y = (nh - h) // 2
+                fg = fg.crop((x, y, x + w, y + h))
+                canvas = Image.alpha_composite(canvas, fg)
+
+            overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
             draw = ImageDraw.Draw(overlay)
-            y0 = int(h * 0.70)
-            draw.rectangle([(0, y0), (w, h)], fill=(0, 0, 0, 128))
 
             font_paths = [
                 "C:/Windows/Fonts/arialbd.ttf",
@@ -598,23 +720,32 @@ class PublishInfoStep(BaseStep):
                     cur = wd
             if cur:
                 lines.append(cur)
-            lines = lines[:2]
+            lines = lines[:1]
 
             line_h = draw.textbbox((0, 0), "Ay", font=font)[3] + 6
             total_h = len(lines) * line_h
-            y_text = max(y0 + 8, int(h * 0.83 - total_h / 2))
+            y_text = int(h * 0.80 - total_h / 2)
 
             for ln in lines:
                 bb = draw.textbbox((0, 0), ln, font=font)
                 tw = bb[2] - bb[0]
                 x = int((w - tw) / 2)
                 # Stroke-like outline by drawing multiple shadows.
-                for dx, dy in [(-2, 0), (2, 0), (0, -2), (0, 2), (-2, -2), (2, 2)]:
+                for dx, dy in [
+                    (-3, 0),
+                    (3, 0),
+                    (0, -3),
+                    (0, 3),
+                    (-3, -3),
+                    (3, 3),
+                    (-2, 2),
+                    (2, -2),
+                ]:
                     draw.text((x + dx, y_text + dy), ln, font=font, fill=(0, 0, 0, 220))
                 draw.text((x, y_text), ln, font=font, fill=(255, 255, 255, 255))
                 y_text += line_h
 
-            out = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+            out = Image.alpha_composite(canvas, overlay).convert("RGB")
             out.save(out_img, format="JPEG", quality=92)
             return Path(out_img).exists() and Path(out_img).stat().st_size > 0
         except Exception as e:
@@ -626,10 +757,12 @@ class PublishInfoStep(BaseStep):
         session,
         at_sec: float,
         hook_title: str,
+        segments,
         lines: list[str],
         style: str,
         gen_backend: str,
         ollama_model: str,
+        foreground_bg: str,
         log,
     ) -> str:
         src = session.latest_video() or session.source_file
@@ -649,13 +782,28 @@ class PublishInfoStep(BaseStep):
                 model=ollama_model,
                 log=log,
             )
+            pick_sec = self._pick_thumb_timestamp_ollama(
+                segments=segments,
+                fallback_sec=at_sec,
+                model=ollama_model,
+                log=log,
+            )
         else:
             hook = self._pick_hook_text(hook_title, lines, style)
+            pick_sec = at_sec
         try:
-            if not self._extract_representative_frame(src, at_sec, raw_frame.name, log):
+            if not self._extract_representative_frame(
+                src, pick_sec, raw_frame.name, log
+            ):
                 return ""
             log(f"🎯 Thumbnail hook text: {hook}")
-            if self._render_edited_thumbnail(raw_frame.name, edited.name, hook, log):
+            if self._render_edited_thumbnail(
+                raw_frame.name,
+                edited.name,
+                hook,
+                foreground_bg,
+                log,
+            ):
                 return session.save_thumbnail(edited.name)
             return session.save_thumbnail(raw_frame.name)
         finally:
@@ -754,17 +902,113 @@ class PublishInfoStep(BaseStep):
         r4.addStretch()
         v.addLayout(r4)
 
+        r5 = QHBoxLayout()
+        r5.addWidget(QLabel("Foreground image:"))
+        self._thumb_bg_label = QLabel("No file selected")
+        self._thumb_bg_label.setStyleSheet("color:#889; font-size:10px;")
+        self._thumb_bg_label.setMinimumWidth(170)
+        r5.addWidget(self._thumb_bg_label)
+
+        up_btn = QPushButton("Upload")
+        up_btn.setFixedHeight(24)
+        up_btn.clicked.connect(self._pick_thumb_background)
+        r5.addWidget(up_btn)
+
+        clr_btn = QPushButton("Clear")
+        clr_btn.setFixedHeight(24)
+        clr_btn.clicked.connect(self._clear_thumb_background)
+        r5.addWidget(clr_btn)
+        r5.addStretch()
+        v.addLayout(r5)
+
+        self._thumb_bg_preview = QLabel("no preview")
+        self._thumb_bg_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._thumb_bg_preview.setFixedSize(180, 100)
+        self._thumb_bg_preview.setStyleSheet(
+            "background:#0a0a1a;border:1px solid #2a3a5a;border-radius:5px;color:#666;font-size:10px;"
+        )
+        v.addWidget(self._thumb_bg_preview)
+
         self._overwrite_chk = QCheckBox("Overwrite existing title/description")
         self._overwrite_chk.setChecked(False)
         v.addWidget(self._overwrite_chk)
 
         hint = QLabel(
-            "Generate metadata + edited thumbnail (hook text overlay), then save to session.json."
+            "Thumbnail layers: frame from video (back) + uploaded foreground image + AI hook text."
         )
         hint.setStyleSheet("color:#666;font-size:10px;")
         hint.setWordWrap(True)
         v.addWidget(hint)
+
+        self._load_shared_thumb_background()
+        self._refresh_thumb_bg_preview()
         return w
+
+    def _refresh_thumb_bg_preview(self):
+        if self._thumb_bg_label is not None:
+            if self._thumb_bg_path and Path(self._thumb_bg_path).exists():
+                self._thumb_bg_label.setText(Path(self._thumb_bg_path).name)
+            else:
+                self._thumb_bg_label.setText("No file selected")
+
+        if self._thumb_bg_preview is None:
+            return
+
+        if self._thumb_bg_path and Path(self._thumb_bg_path).exists():
+            pix = QPixmap(self._thumb_bg_path).scaled(
+                180,
+                100,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            self._thumb_bg_preview.setPixmap(pix)
+            self._thumb_bg_preview.setText("")
+            self._thumb_bg_preview.setStyleSheet(
+                "background:#0a0a1a;border:1px solid #3a5a3a;border-radius:5px;"
+            )
+        else:
+            self._thumb_bg_preview.clear()
+            self._thumb_bg_preview.setText("no preview")
+            self._thumb_bg_preview.setStyleSheet(
+                "background:#0a0a1a;border:1px solid #2a3a5a;border-radius:5px;color:#666;font-size:10px;"
+            )
+
+    def _pick_thumb_background(self):
+        path, _ = QFileDialog.getOpenFileName(
+            None,
+            "Select foreground image for Step 7 thumbnail",
+            "",
+            "Images (*.jpg *.jpeg *.png *.webp *.bmp)",
+        )
+        if not path:
+            return
+        chosen = path
+        if self._base_dir:
+            import shutil
+
+            src = Path(path)
+            dst = (
+                Path(self._base_dir)
+                / f"step7_thumb_foreground{src.suffix.lower() or '.png'}"
+            )
+            Path(self._base_dir).mkdir(parents=True, exist_ok=True)
+            for old in Path(self._base_dir).glob("step7_thumb_foreground.*"):
+                if old.resolve() != dst.resolve():
+                    old.unlink(missing_ok=True)
+            shutil.copy2(src, dst)
+            chosen = str(dst)
+        self._thumb_bg_path = chosen
+        self._refresh_thumb_bg_preview()
+
+    def _clear_thumb_background(self):
+        shared = self._shared_thumb_background_path()
+        if shared:
+            try:
+                Path(shared).unlink(missing_ok=True)
+            except Exception:
+                pass
+        self._thumb_bg_path = ""
+        self._refresh_thumb_bg_preview()
 
     def collect_config(self):
         style_key = {
@@ -802,6 +1046,8 @@ class PublishInfoStep(BaseStep):
             "thumb_at_sec": (
                 self._thumb_at_spin.value() if self._thumb_at_spin else 12.0
             ),
+            "thumb_bg_path": self._thumb_bg_path
+            or self._shared_thumb_background_path(),
             "overwrite": (
                 self._overwrite_chk.isChecked() if self._overwrite_chk else False
             ),

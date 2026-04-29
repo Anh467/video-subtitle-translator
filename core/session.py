@@ -18,8 +18,10 @@ class Session:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.folder = Path(base_dir) / f"{stem}_{ts}"
         self.source_file = str(source_file)
+        self.created = datetime.now().isoformat()
         self.title: str = ""
         self.description: str = ""
+        self._thumb_background: str = ""
         self.folder.mkdir(parents=True, exist_ok=True)
         self._save_meta()
 
@@ -30,8 +32,10 @@ class Session:
         obj = object.__new__(cls)
         obj.folder = f
         obj.source_file = meta["source_file"]
+        obj.created = meta.get("created") or datetime.now().isoformat()
         obj.title = meta.get("title", "")
         obj.description = meta.get("description", "")
+        obj._thumb_background = meta.get("thumb_background", "")
         # thumbnail is detected from folder, not stored in meta
         return obj
 
@@ -81,6 +85,7 @@ class Session:
                         "source_file": meta.get("source_file", ""),
                         "title": meta.get("title", ""),
                         "description": meta.get("description", ""),
+                        "thumb_background": meta.get("thumb_background", ""),
                         "thumbnail": thumb,
                         "done_steps": done,
                         "size_mb": round(size / 1024 / 1024, 1),
@@ -123,6 +128,22 @@ class Session:
         shutil.copy2(src, dst)
         return str(dst)
 
+    def save_thumb_background(self, src_path: str) -> str:
+        """Copy an image to session folder for Step 7 thumbnail overlay layer."""
+        import shutil
+        from pathlib import Path as _Path
+
+        src = _Path(src_path)
+        ext = src.suffix.lower() or ".jpg"
+        dst = self.folder / f"thumb_background{ext}"
+        for old in self.folder.glob("thumb_background.*"):
+            if old.resolve() != dst.resolve():
+                old.unlink(missing_ok=True)
+        shutil.copy2(src, dst)
+        self._thumb_background = str(dst)
+        self._save_meta()
+        return str(dst)
+
     @property
     def thumbnail(self) -> str:
         """Return path to thumbnail image if it exists, else empty string."""
@@ -130,6 +151,18 @@ class Session:
             p = self.folder / f"thumbnail{ext}"
             if p.exists():
                 return str(p)
+        return ""
+
+    @property
+    def thumb_background(self) -> str:
+        """Return Step 7 foreground background image path if it exists."""
+        for ext in (".jpg", ".jpeg", ".png", ".webp", ".bmp"):
+            p = self.folder / f"thumb_background{ext}"
+            if p.exists():
+                return str(p)
+        p = Path(self._thumb_background) if self._thumb_background else None
+        if p and p.exists():
+            return str(p)
         return ""
 
     # ── output paths ──────────────────────────────────────────────────────────
@@ -298,9 +331,10 @@ class Session:
                 {
                     "source_file": self.source_file,
                     "folder": str(self.folder),
-                    "created": datetime.now().isoformat(),
+                    "created": self.created,
                     "title": self.title,
                     "description": self.description,
+                    "thumb_background": self.thumb_background,
                 },
                 ensure_ascii=False,
                 indent=2,
