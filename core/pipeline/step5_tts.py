@@ -612,9 +612,16 @@ class TTSStep(BaseStep):
         except ImportError:
             raise RuntimeError("Run: pip install openai pydub audioop-lts")
 
-        key = api_key or os.environ.get("OPENAI_API_KEY", "")
+        key = api_key or ""
         if not key:
-            raise RuntimeError("Set OPENAI_API_KEY env var.")
+            try:
+                from core.api_keys import get_key as _gk
+
+                key = _gk("openai") or os.environ.get("OPENAI_API_KEY", "")
+            except Exception:
+                key = os.environ.get("OPENAI_API_KEY", "")
+        if not key:
+            raise RuntimeError("Enter OpenAI API key via API Keys Manager.")
 
         VOICE_MAP = {
             "vi": "nova",
@@ -800,9 +807,16 @@ class TTSStep(BaseStep):
             from pydub import AudioSegment
         except ImportError:
             raise RuntimeError("Run: pip install elevenlabs pydub audioop-lts")
-        key = api_key or os.environ.get("ELEVENLABS_API_KEY", "")
+        key = api_key or ""
         if not key:
-            raise RuntimeError("Set ELEVENLABS_API_KEY env var.")
+            try:
+                from core.api_keys import get_key as _gk
+
+                key = _gk("elevenlabs") or os.environ.get("ELEVENLABS_API_KEY", "")
+            except Exception:
+                key = os.environ.get("ELEVENLABS_API_KEY", "")
+        if not key:
+            raise RuntimeError("Enter ElevenLabs key via API Keys Manager.")
         client = ElevenLabs(api_key=key)
         vid = voice_id or "EXAVITQu4vr4xnSDxMaL"
         result, cursor_ms = AudioSegment.silent(duration=0), 0
@@ -918,8 +932,8 @@ class TTSStep(BaseStep):
         # Store last char count for recalc when backend changes
         self._last_char_count = 0
 
-        self._backend_combo.setCurrentIndex(3)  # Default: gTTS (Google, free)
-        self._on_backend_changed(3)
+        self._backend_combo.setCurrentIndex(4)  # Default: Google Cloud TTS (WaveNet)
+        self._on_backend_changed(4)
         return w
 
     def _sep_label(self, text):

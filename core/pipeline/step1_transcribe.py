@@ -99,11 +99,20 @@ class TranscribeStep(BaseStep):
         except ImportError:
             raise RuntimeError("Run: pip install openai")
 
-        api_key = config.get("api_key") or os.environ.get("OPENAI_API_KEY", "")
+        api_key = config.get("api_key") or ""
+        if not api_key:
+            # Fallback: read directly from ApiKeyManager (handles multi-session case
+            # where widget field may be empty but key is saved in .subsync_keys)
+            try:
+                from core.api_keys import get_key
+
+                api_key = get_key("openai") or os.environ.get("OPENAI_API_KEY", "")
+            except Exception:
+                api_key = os.environ.get("OPENAI_API_KEY", "")
         if not api_key:
             raise RuntimeError(
                 "OpenAI API key required for Whisper API.\n"
-                "Enter key in Step 1 config or set OPENAI_API_KEY env var."
+                "Enter key in Step 1 config or set via API Keys Manager."
             )
 
         language = config.get("language")
@@ -352,6 +361,16 @@ class TranscribeStep(BaseStep):
 
     # ── Config widget ─────────────────────────────────────────────────────────
 
+    def _on_api_key_changed(self, text: str):
+        """Sync key typed directly into Step 1 field back to ApiKeyManager."""
+        try:
+            from core.api_keys import get_manager
+
+            mgr = get_manager()
+            mgr.set("OPENAI_API_KEY", text.strip())
+        except Exception:
+            pass
+
     def build_config_widget(self, parent=None):
         w = QWidget(parent)
         v = QVBoxLayout(w)
@@ -384,6 +403,7 @@ class TranscribeStep(BaseStep):
         self._api_key_edit = QLineEdit()
         self._api_key_edit.setPlaceholderText("sk-... (platform.openai.com)")
         self._api_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self._api_key_edit.textChanged.connect(self._on_api_key_changed)
         av.addWidget(self._api_key_lbl)
         av.addWidget(self._api_key_edit)
 

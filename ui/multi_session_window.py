@@ -421,6 +421,8 @@ class MultiSessionWindow(QMainWindow):
         self._setup_ui()
         if base_dir:
             self._session_panel.set_base_dir(base_dir)
+        # Autofill API keys into newly created step widgets
+        self._autofill_keys()
 
     # ── UI ────────────────────────────────────────────────────────────────────
 
@@ -600,6 +602,77 @@ class MultiSessionWindow(QMainWindow):
     def update_base_dir(self, base_dir: str):
         self._base_dir = base_dir
         self._session_panel.set_base_dir(base_dir)
+        self._autofill_keys()
+
+    def _autofill_keys(self):
+        """Push API keys from manager into step widgets.
+        Called on init and whenever base_dir changes.
+        Step cards create new widgets via build_config_widget() which clears
+        previous values — this restores them from the persistent manager.
+        """
+        try:
+            from core.api_keys import get_manager
+            from core.pipeline.selection import (
+                translate_key_candidates,
+                tts_backend_from_label,
+                tts_key_candidates,
+            )
+
+            mgr = get_manager()
+            service_keys = mgr.to_dict_by_service()
+
+            for step in self._steps:
+                sid = getattr(step, "STEP_ID", "")
+
+                # Step 1: Whisper API key
+                if sid == "step1_transcribe":
+                    if hasattr(step, "_api_key_edit") and step._api_key_edit:
+                        key = service_keys.get("openai", "")
+                        if key:
+                            step._api_key_edit.blockSignals(True)
+                            step._api_key_edit.setText(key)
+                            step._api_key_edit.blockSignals(False)
+
+                # Step 2: translate API key
+                elif sid == "step2_translate":
+                    if (
+                        hasattr(step, "_api_edit")
+                        and step._api_edit
+                        and hasattr(step, "_backend_combo")
+                        and step._backend_combo
+                    ):
+                        backend_text = step._backend_combo.currentText().lower()
+                        bk = (
+                            "gemini"
+                            if "gemini" in backend_text
+                            else "openai" if "openai" in backend_text else "google"
+                        )
+                        for svc in translate_key_candidates(bk):
+                            key = service_keys.get(svc, "")
+                            if key:
+                                step._api_edit.blockSignals(True)
+                                step._api_edit.setText(key)
+                                step._api_edit.blockSignals(False)
+                                break
+
+                # Step 5: TTS API key
+                elif sid == "step5_tts":
+                    if (
+                        hasattr(step, "_api_edit")
+                        and step._api_edit
+                        and hasattr(step, "_backend_combo")
+                        and step._backend_combo
+                    ):
+                        bk = tts_backend_from_label(step._backend_combo.currentText())
+                        for svc in tts_key_candidates(bk):
+                            key = service_keys.get(svc, "")
+                            if key:
+                                step._api_edit.blockSignals(True)
+                                step._api_edit.setText(key)
+                                step._api_edit.blockSignals(False)
+                                break
+        except Exception:
+            pass  # Never block UI due to autofill failure
 
     # ── Session preview ───────────────────────────────────────────────────────
 
@@ -738,6 +811,9 @@ class MultiSessionWindow(QMainWindow):
             setter = getattr(s, "set_base_dir", None)
             if callable(setter):
                 setter(self._base_dir)
+
+        # Ensure API keys are filled before collecting config
+        self._autofill_keys()
 
         config = step.collect_config()
         card = self._card_for(step)

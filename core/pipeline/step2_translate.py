@@ -374,12 +374,19 @@ class TranslateStep(BaseStep):
           - Retry với exponential backoff khi gặp 429
           - Kết quả reassemble theo đúng thứ tự ban đầu
         """
-        key = api_key or os.environ.get("GEMINI_API_KEY", "")
+        key = api_key or ""
+        if not key:
+            try:
+                from core.api_keys import get_key
+
+                key = get_key("gemini") or os.environ.get("GEMINI_API_KEY", "")
+            except Exception:
+                key = os.environ.get("GEMINI_API_KEY", "")
         if not key:
             raise RuntimeError(
                 "Gemini API key required.\n"
                 "Get FREE key at: aistudio.google.com → Get API Key\n"
-                "Then enter it in the UI or set GEMINI_API_KEY env var."
+                "Then enter via API Keys Manager."
             )
 
         client, types = self._gemini_client(key)
@@ -537,9 +544,16 @@ class TranslateStep(BaseStep):
         except ImportError:
             raise RuntimeError("Run: pip install openai")
 
-        key = api_key or os.environ.get("OPENAI_API_KEY", "")
+        key = api_key or ""
         if not key:
-            raise RuntimeError("Set OPENAI_API_KEY env var or enter key in UI.")
+            try:
+                from core.api_keys import get_key
+
+                key = get_key("openai") or os.environ.get("OPENAI_API_KEY", "")
+            except Exception:
+                key = os.environ.get("OPENAI_API_KEY", "")
+        if not key:
+            raise RuntimeError("Enter OpenAI API key via API Keys Manager.")
 
         client = OpenAI(api_key=key)
         lang_name = LANG_NAMES.get(target, target)
