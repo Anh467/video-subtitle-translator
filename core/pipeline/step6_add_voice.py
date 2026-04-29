@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
     QSlider,
     QVBoxLayout,
     QWidget,
+    QPushButton,
 )
 
 from core.pipeline.base import BaseStep, CancelledError
@@ -342,6 +343,32 @@ class AddVoiceStep(BaseStep):
         v = QVBoxLayout(w)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(6)
+        # ── TTS manifest selector (replaces Source mode + path input) ────────
+        r_manifest = QHBoxLayout()
+        r_manifest.addWidget(QLabel("TTS voice:"))
+        self._manifest_combo = QComboBox()
+        self._manifest_combo.setToolTip(
+            "Chọn TTS run để ghép vào video.\n"
+            "Danh sách tự động load từ step5_tts_assets/.\n"
+            "Mới nhất ở trên cùng."
+        )
+        self._manifest_combo.setMinimumWidth(220)
+        self._manifest_combo.addItem("(No TTS assets yet — run Step 5 first)", userData=None)
+        r_manifest.addWidget(self._manifest_combo)
+
+        btn_refresh = QPushButton("↻")
+        btn_refresh.setFixedSize(28, 26)
+        btn_refresh.setToolTip("Reload manifest list from disk")
+        btn_refresh.setStyleSheet(
+            "QPushButton{background:#1a2a3a;color:#60aaff;border:1px solid #2a4a6a;"
+            "border-radius:4px;font-size:13px;}"
+            "QPushButton:hover{background:#2a4a6a;}"
+        )
+        btn_refresh.clicked.connect(self._refresh_manifests)
+        r_manifest.addWidget(btn_refresh)
+        r_manifest.addStretch()
+        v.addLayout(r_manifest)
+
 
         row = QHBoxLayout()
         row.addWidget(QLabel("Source mode:"))
@@ -436,6 +463,59 @@ class AddVoiceStep(BaseStep):
         row.addWidget(val_lbl)
         parent_layout.addLayout(row)
         return slider
+
+
+    def _refresh_manifests(self):
+        """Reload manifests from disk — called by refresh button."""
+        if hasattr(self, '_current_session_for_manifests') and self._current_session_for_manifests:
+            self.populate_manifest_picker(self._current_session_for_manifests)
+
+    def populate_manifest_picker(self, session):
+        """
+        Scan step5_tts_assets/ and populate the manifest dropdown.
+        Called by MainWindow on session load and after Step 5 completes.
+        Multi session: not called — _latest_manifest_path() used directly.
+        """
+        self._current_session_for_manifests = session
+        if not self._manifest_combo:
+            return
+        self._manifest_combo.blockSignals(True)
+        self._manifest_combo.clear()
+        if session is None:
+            self._manifest_combo.addItem("(No session loaded)", userData=None)
+            self._manifest_combo.blockSignals(False)
+            return
+        assets_dir = session.step5_tts_assets_dir
+        if not assets_dir.exists() or not any(assets_dir.glob("*.json")):
+            self._manifest_combo.addItem("(No TTS assets yet — run Step 5 first)", userData=None)
+            self._manifest_combo.blockSignals(False)
+            return
+        manifests = sorted(
+            assets_dir.glob("*.json"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,  # newest first
+        )
+        for m in manifests:
+            # Build human-readable label: backend / voice / lang / date
+            stem = m.stem  # e.g. "google_cloud_tts_vi-VN-Neural2-A_vi_20260429_110000_123456"
+            parts = stem.split("_")
+            try:
+                # backend = first part(s) until voice name
+                # Format: {backend}_{voice}_{lang}_{ts}
+                import datetime
+                mtime = m.stat().st_mtime
+                dt = datetime.datetime.fromtimestamp(mtime).strftime("%m/%d %H:%M")
+                # Shorten: just show backend + voice + date
+                if len(parts) >= 4:
+                    backend = parts[0].replace("google", "GCloud").replace("openai", "OpenAI").replace("fpt", "FPT").replace("gtts", "gTTS").replace("elevenlabs", "EL").replace("zalo", "Zalo")
+                    voice = parts[1] if len(parts) > 1 else ""
+                    label = f"{backend} / {voice}  [{dt}]"
+                else:
+                    label = f"{m.stem[:40]}  [{dt}]"
+            except Exception:
+                label = m.stem[:50]
+            self._manifest_combo.addItem(label, userData=str(m))
+        self._manifest_combo.blockSignals(False)
 
     def collect_config(self):
         mode_text = (

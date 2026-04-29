@@ -825,6 +825,11 @@ class MainWindow(QMainWindow):
         # Load subtitle editor
         self._subtitle_editor.load_session(session)
 
+        # Populate Step 6 manifest picker
+        for step in self._steps:
+            if hasattr(step, 'populate_manifest_picker'):
+                step.populate_manifest_picker(session)
+
         # Load session info editor
         self._info_editor.load_session(session)
 
@@ -1091,6 +1096,11 @@ class MainWindow(QMainWindow):
         self._pool.start(worker)
 
     def _update_previews(self, step, result):
+        # Refresh Step 6 manifest picker after Step 5 completes
+        if step.STEP_ID == "step5_tts" and self._session:
+            for s in self._steps:
+                if hasattr(s, 'populate_manifest_picker'):
+                    s.populate_manifest_picker(self._session)
         # Refresh TTS char count whenever step2 finishes
         if step.STEP_ID == "step2_translate" and self._session:
             for s in self._steps:

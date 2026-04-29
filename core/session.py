@@ -195,11 +195,30 @@ class Session:
 
     @property
     def step6_video(self):
+        # Check result/ subfolder first (new naming with manifest stem)
+        result_dir = self.folder / "result"
+        if result_dir.exists():
+            # Return most recently modified step6_output in result/
+            candidates = sorted(
+                result_dir.glob("step6_output_*.*"),
+                key=lambda f: f.stat().st_mtime,
+                reverse=True,
+            )
+            if candidates:
+                return candidates[0]
+        # Fallback: legacy location in session root
         for f in self.folder.glob("step6_output.*"):
             return f
         for f in self.folder.glob("step5_output.*"):
             return f
-        return self.folder / f"step6_output{Path(self.source_file).suffix}"
+        return self.folder / "result" / f"step6_output{Path(self.source_file).suffix}"
+
+    @property
+    def result_dir(self) -> Path:
+        """Folder for final output files."""
+        d = self.folder / "result"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
 
     # ── completion checks ─────────────────────────────────────────────────────
     @property
@@ -224,6 +243,10 @@ class Session:
 
     @property
     def step6_done(self):
+        # Check result/ folder first
+        result_dir = self.folder / "result"
+        if result_dir.exists() and any(result_dir.glob("step6_output_*.*")):
+            return True
         return self.step6_video.exists()
 
     def done_steps(self) -> list[str]:
