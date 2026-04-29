@@ -739,6 +739,8 @@ class MainWindow(QMainWindow):
                         step._api_edit.blockSignals(True)
                         step._api_edit.setText(key)
                         step._api_edit.blockSignals(False)
+                        if hasattr(step, "_selected_api_key"):
+                            step._selected_api_key = key.strip()
                         break
                 else:
                     # No key found for this backend — clear field so user knows
@@ -827,7 +829,7 @@ class MainWindow(QMainWindow):
 
         # Populate Step 6 manifest picker
         for step in self._steps:
-            if hasattr(step, 'populate_manifest_picker'):
+            if hasattr(step, "populate_manifest_picker"):
                 step.populate_manifest_picker(session)
 
         # Load session info editor
@@ -1099,7 +1101,7 @@ class MainWindow(QMainWindow):
         # Refresh Step 6 manifest picker after Step 5 completes
         if step.STEP_ID == "step5_tts" and self._session:
             for s in self._steps:
-                if hasattr(s, 'populate_manifest_picker'):
+                if hasattr(s, "populate_manifest_picker"):
                     s.populate_manifest_picker(self._session)
         # Refresh TTS char count whenever step2 finishes
         if step.STEP_ID == "step2_translate" and self._session:

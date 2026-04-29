@@ -99,6 +99,7 @@ class AddVoiceStep(BaseStep):
 
         input_media = session.latest_video()
         out_video = str(session.step6_video)
+        Path(out_video).parent.mkdir(parents=True, exist_ok=True)
         if input_media == str(session.step3_video):
             log("🔗 Chaining: using Step 3 (subtitled) video as base")
 
@@ -256,6 +257,7 @@ class AddVoiceStep(BaseStep):
         return out.name if r.returncode == 0 else audio_path
 
     def _mux(self, video_path, audio_path, out_path, log):
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
         in_place = os.path.abspath(video_path) == os.path.abspath(out_path)
         actual_out = out_path
         if in_place:
