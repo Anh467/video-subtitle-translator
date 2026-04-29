@@ -930,7 +930,30 @@ class TTSStep(BaseStep):
     def _on_backend_changed(self, idx):
         key_text = self._backend_combo.currentText() if self._backend_combo else ""
         backend = tts_backend_from_label(key_text)
-        needs_key = backend in ("fpt", "zalo", "openai_tts", "elevenlabs")
+        needs_key = backend in (
+            "fpt",
+            "zalo",
+            "openai_tts",
+            "elevenlabs",
+            "google_cloud_tts",
+        )
+
+        # Auto-fill API key from manager when backend changes
+        if needs_key and self._api_edit and not self._api_edit.text().strip():
+            try:
+                from core.api_keys import get_manager
+                from core.pipeline.selection import tts_key_candidates
+
+                service_keys = get_manager().to_dict_by_service()
+                for service in tts_key_candidates(backend):
+                    key = service_keys.get(service, "")
+                    if key:
+                        self._api_edit.blockSignals(True)
+                        self._api_edit.setText(key)
+                        self._api_edit.blockSignals(False)
+                        break
+            except Exception:
+                pass
         needs_combo = backend in ("fpt", "zalo", "google_cloud_tts")
         needs_el_id = backend == "elevenlabs"
         placeholders = {

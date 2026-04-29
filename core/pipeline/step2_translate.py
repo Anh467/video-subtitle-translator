@@ -387,20 +387,24 @@ class TranslateStep(BaseStep):
         total = len(segments)
         log(f"   Source lang: {src_lang} → Target: {lang_name} ({target})")
 
-        preview = " ".join(s.text for s in segments[:20])
+        log(f"   📖 Building full-script context summary ({len(segments)} segs)…")
+        script_sample = self._sample_script_for_summary(segments, max_chars=5000)
         summary = self._extract_summary_gemini(
-            client, types, preview, lang_name, src_lang
+            client, types, script_sample, lang_name, src_lang
         )
-        log(f"   📖 Context: {summary[:100]}…")
+        log(f"   📖 Context brief: {summary[:120]}…")
 
         examples = self._build_examples(src_lang, target)
         system_ctx = (
-            f"You are a subtitle translator.\n"
+            f"You are a professional subtitle translator.\n"
             f"Translate {src_lang.upper()} subtitles into {lang_name}.\n\n"
             f"IMPORTANT: Input is {src_lang.upper()}. Output MUST be {lang_name}.\n"
             f"DO NOT copy the original text. ALWAYS translate.\n\n"
             f"EXAMPLES ({src_lang} → {lang_name}):\n{examples}\n\n"
-            f"CONTENT CONTEXT:\n{summary}\n\n"
+            f"=== FULL SCRIPT CONTEXT BRIEF ===\n"
+            f"{summary}\n"
+            f"=== END CONTEXT BRIEF ===\n\n"
+            f"Use EXACTLY the character names and pronouns from the context brief above.\n"
             f"OUTPUT FORMAT: numbered list in {lang_name} only.\n"
             f"No explanations. No original text. {lang_name} only."
         )
@@ -541,20 +545,27 @@ class TranslateStep(BaseStep):
         lang_name = LANG_NAMES.get(target, target)
         total = len(segments)
 
-        preview = " ".join(s.text for s in segments[:20])
-        summary = self._extract_summary_openai(client, preview, lang_name)
-        log(f"   📖 Context: {summary[:100]}…")
+        # Build full-script summary — sample beginning+middle+end for context
+        log(f"   📖 Building full-script context summary ({len(segments)} segs)…")
+        script_sample = self._sample_script_for_summary(segments, max_chars=6000)
+        summary = self._extract_summary_openai(
+            client, script_sample, lang_name, model=model
+        )
+        log(f"   📖 Context brief: {summary[:120]}…")
 
         system_prompt = (
             f"You are a professional subtitle translator.\n"
             f"Translate subtitles to {lang_name}.\n\n"
-            f"CONTENT CONTEXT:\n{summary}\n\n"
-            f"RULES:\n"
-            f"- Keep tone consistent\n"
-            f"- Use correct pronouns based on context\n"
-            f"- Return ONLY the translated line\n"
-            f"- Keep [music], [laughter] etc. as-is\n"
-            f"- Do NOT translate proper nouns/names"
+            f"=== FULL SCRIPT CONTEXT BRIEF ===\n"
+            f"{summary}\n"
+            f"=== END CONTEXT BRIEF ===\n\n"
+            f"TRANSLATION RULES:\n"
+            f"- Use EXACTLY the character names and pronouns listed in the context brief above\n"
+            f"- Keep tone and register consistent throughout\n"
+            f"- Return ONLY the translated text — no explanations\n"
+            f"- Keep [music], [laughter], [applause] etc. as-is\n"
+            f"- Do NOT translate proper nouns, brand names, or character names\n"
+            f"- Maintain the same sentence count as the input"
         )
 
         batch_size = 20
@@ -765,16 +776,20 @@ class TranslateStep(BaseStep):
         return "\n".join(lines)
 
     def _extract_summary_gemini(
-        self, client, types, preview_text, lang_name, src_lang="unknown"
-    ):
+        self, client, types, script_text: str, lang_name: str, src_lang: str = "unknown"
+    ) -> str:
+        """Full-script context summary for Gemini — same approach as OpenAI version."""
         try:
             prompt = (
-                f"This is a subtitle excerpt in {src_lang}.\n"
-                f"Briefly identify in 2-3 sentences (write in English):\n"
-                f"1. Main characters and their relationships\n"
-                f"2. Topic/setting\n"
-                f"3. What pronouns to use when translating to {lang_name}\n\n"
-                f"Subtitle text:\n{preview_text}"
+                f"You are a translation consultant analyzing a FULL subtitle script "
+                f"in {src_lang.upper()} to be translated into {lang_name}.\n\n"
+                f"Produce a structured translation brief:\n"
+                f"1. CHARACTERS: Name + role + Vietnamese pronoun to use (anh/chị/em/ông/bà/tôi etc.)\n"
+                f"2. SETTING: Genre, location, time period, formality\n"
+                f"3. TONE: Emotional register, formal/informal, humor\n"
+                f"4. KEY TERMS: Domain terms, catchphrases, names to keep consistent\n"
+                f"5. REGISTER: How characters address each other in Vietnamese\n\n"
+                f"SUBTITLE SCRIPT ({src_lang.upper()}):\n{script_text}"
             )
             return self._gemini_generate(client, types, prompt).strip()
         except Exception:
@@ -801,28 +816,102 @@ class TranslateStep(BaseStep):
                 results.append(seg.text)
         return results
 
-    def _extract_summary_openai(self, client, preview_text, lang_name):
+    def _extract_summary_openai(
+        self, client, script_text: str, lang_name: str, model: str = "gpt-4o-mini"
+    ) -> str:
+        """
+        Build a rich context summary from the FULL script.
+
+        Reads the entire subtitle script (sampled if very long) and extracts:
+        - Character names, relationships, pronouns
+        - Setting / genre / tone
+        - Domain-specific terms to keep consistent
+        - Vietnamese-specific guidance (xưng hô, register)
+
+        This summary is injected into the system_prompt of EVERY batch call,
+        giving the model full-script awareness even when translating 20 segs at a time.
+        """
         try:
             r = client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=model,
                 messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a translation consultant. Analyze this subtitle script "
+                            "and produce a structured context brief for the translator. "
+                            "Be specific and concrete — names, terms, relationships matter."
+                        ),
+                    },
                     {
                         "role": "user",
                         "content": (
-                            f"From this subtitle excerpt, briefly identify in 2-3 sentences:\n"
-                            f"1. Main characters and relationships\n"
-                            f"2. Topic/setting\n"
-                            f"3. Correct pronouns to use in {lang_name}\n\n"
-                            f"Text:\n{preview_text}"
+                            f"Analyze this FULL subtitle script and produce a translation brief "
+                            f"for translating into {lang_name}.\n\n"
+                            f"Return a structured brief with these sections:\n"
+                            f"1. CHARACTERS: List each character name + their role/relationship + "
+                            f"which Vietnamese pronoun to use for them (anh/chị/em/ông/bà/tôi etc.)\n"
+                            f"2. SETTING: Genre, time period, location, formality level\n"
+                            f"3. TONE: Formal/informal, emotional register, humor level\n"
+                            f"4. KEY TERMS: Domain-specific words, names, catchphrases to keep consistent\n"
+                            f"5. REGISTER: How characters address each other "
+                            f"(e.g. bạn/tôi for casual, anh/em for family, etc.)\n\n"
+                            f"SUBTITLE SCRIPT:\n{script_text}"
                         ),
-                    }
+                    },
                 ],
-                temperature=0.3,
-                max_tokens=150,
+                temperature=0.2,
+                max_tokens=600,
             )
             return r.choices[0].message.content.strip()
         except Exception:
-            return f"General subtitle. Translate naturally to {lang_name}."
+            return f"General subtitle content. Translate naturally to {lang_name}."
+
+    def _sample_script_for_summary(self, segments, max_chars: int = 6000) -> str:
+        """
+        Build a representative script sample for the summary call.
+        Strategy: take beginning (40%), middle (30%), end (30%) of script.
+        This gives the model character/setting intro + development + conclusion.
+        """
+        total = len(segments)
+        if total == 0:
+            return ""
+
+        all_text = " | ".join(
+            f"[{s.start:.0f}s] {s.text.strip()}" for s in segments if s.text.strip()
+        )
+
+        # If short enough, use full script
+        if len(all_text) <= max_chars:
+            return all_text
+
+        # Sample: beginning + middle + end
+        n_begin = int(total * 0.40)
+        n_mid_start = int(total * 0.45)
+        n_mid_end = int(total * 0.60)
+        n_end_start = int(total * 0.75)
+
+        parts = [
+            "=== BEGINNING ===\n"
+            + " | ".join(
+                f"[{s.start:.0f}s] {s.text.strip()}" for s in segments[:n_begin]
+            ),
+            "\n=== MIDDLE ===\n"
+            + " | ".join(
+                f"[{s.start:.0f}s] {s.text.strip()}"
+                for s in segments[n_mid_start:n_mid_end]
+            ),
+            "\n=== END ===\n"
+            + " | ".join(
+                f"[{s.start:.0f}s] {s.text.strip()}" for s in segments[n_end_start:]
+            ),
+        ]
+        sampled = "\n".join(parts)
+
+        # Trim if still too long
+        if len(sampled) > max_chars:
+            sampled = sampled[:max_chars] + "\n...(truncated)"
+        return sampled
 
     # ── Verify pass ───────────────────────────────────────────────────────────
 

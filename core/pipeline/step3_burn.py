@@ -447,7 +447,21 @@ class BurnStep(BaseStep):
         if delogo_cfg and delogo_cfg.get("enabled"):
             dx, dy = delogo_cfg["x"], delogo_cfg["y"]
             dw, dh = delogo_cfg["w"], delogo_cfg["h"]
-            log(f"🧹 Remove existing sub: delogo x={dx} y={dy} w={dw} h={dh}")
+            # Clamp to video bounds — delogo crashes if region extends outside frame
+            dx = max(0, min(dx, w - 1))
+            dy = max(0, min(dy, h - 1))
+            dw = max(1, min(dw, w - dx))
+            dh = max(1, min(dh, h - dy))
+            # Minimum size check — delogo needs at least 3x3 region
+            if dw < 3 or dh < 3:
+                log(f"⚠️  Delogo region too small after clamping ({dw}x{dh}) — skipping")
+                delogo_cfg = None
+            else:
+                # Update config with clamped values
+                delogo_cfg = {**delogo_cfg, "x": dx, "y": dy, "w": dw, "h": dh}
+                log(
+                    f"🧹 Remove existing sub: delogo x={dx} y={dy} w={dw} h={dh} (clamped to {w}x{h})"
+                )
 
         log(f"{'📎' if mode=='soft' else '🔥'} Burning subtitles ({mode})…")
 
@@ -563,7 +577,7 @@ class BurnStep(BaseStep):
         v.addWidget(self._sep_label("🧹 Remove Existing Subtitle"))
 
         self._delogo_chk = QCheckBox("Remove hardcoded subtitle with delogo filter")
-        self._delogo_chk.setChecked(True)
+        self._delogo_chk.setChecked(False)
         self._delogo_chk.setToolTip(
             "FFmpeg delogo: reconstructs background pixels in the specified region.\n"
             "Better than blur — uses border pixel interpolation, not smearing.\n"
@@ -871,7 +885,15 @@ def _hard_cmd(
     if delogo and delogo.get("enabled"):
         dx, dy = delogo["x"], delogo["y"]
         dw, dh = delogo["w"], delogo["h"]
-        vf_base = f"{_delogo_filter(dx, dy, dw, dh)},{sub_filter}"
+        # Defensive clamp — values may come from user spinboxes without validation
+        dx = max(0, min(dx, video_w - 1))
+        dy = max(0, min(dy, video_h - 1))
+        dw = max(3, min(dw, video_w - dx))
+        dh = max(3, min(dh, video_h - dy))
+        if dw >= 3 and dh >= 3:
+            vf_base = f"{_delogo_filter(dx, dy, dw, dh)},{sub_filter}"
+        else:
+            vf_base = sub_filter  # skip delogo if region invalid
     else:
         vf_base = sub_filter
 

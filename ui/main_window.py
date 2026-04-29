@@ -723,24 +723,27 @@ class MainWindow(QMainWindow):
                             step._api_edit.setText(key)
                             break
 
-            # Step 5 TTS
+            # Step 5 TTS — always sync from manager so backend change triggers refill
             if (
                 getattr(step, "STEP_ID", "") == "step5_tts"
                 and hasattr(step, "_api_edit")
                 and step._api_edit
                 and hasattr(step, "_backend_combo")
+                and step._backend_combo
             ):
-                if not step._api_edit.text().strip() and step._backend_combo:
-                    backend_key = tts_backend_from_label(
-                        step._backend_combo.currentText()
-                    )
-                    candidates = tts_key_candidates(backend_key)
-
-                    for service in candidates:
-                        key = service_keys.get(service, "")
-                        if key:
-                            step._api_edit.setText(key)
-                            break
+                backend_key = tts_backend_from_label(step._backend_combo.currentText())
+                candidates = tts_key_candidates(backend_key)
+                for service in candidates:
+                    key = service_keys.get(service, "")
+                    if key:
+                        step._api_edit.blockSignals(True)
+                        step._api_edit.setText(key)
+                        step._api_edit.blockSignals(False)
+                        break
+                else:
+                    # No key found for this backend — clear field so user knows
+                    if not step._api_edit.text().strip():
+                        pass  # leave empty, don't clear user-typed keys
 
     def _open_api_keys_dialog(self):
         """Open dialog to manage API keys."""
