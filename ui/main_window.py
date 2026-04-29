@@ -749,6 +749,20 @@ class MainWindow(QMainWindow):
                     if not step._api_edit.text().strip():
                         pass  # leave empty, don't clear user-typed keys
 
+            # Step 7 Publish Info (Gemini) — keep in sync with API manager
+            if (
+                getattr(step, "STEP_ID", "") == "step7_publish_info"
+                and hasattr(step, "_api_edit")
+                and step._api_edit
+            ):
+                key = service_keys.get("gemini", "")
+                if key:
+                    step._api_edit.blockSignals(True)
+                    step._api_edit.setText(key)
+                    step._api_edit.blockSignals(False)
+                    if hasattr(step, "_selected_api_key"):
+                        step._selected_api_key = key.strip()
+
     def _open_api_keys_dialog(self):
         """Open dialog to manage API keys."""
         base = self._sess_dir_edit.text().strip()

@@ -674,6 +674,17 @@ class MultiSessionWindow(QMainWindow):
                                 if hasattr(step, "_selected_api_key"):
                                     step._selected_api_key = key.strip()
                                 break
+
+                # Step 7: Publish Info (Gemini API key)
+                elif sid == "step7_publish_info":
+                    if hasattr(step, "_api_edit") and step._api_edit:
+                        key = service_keys.get("gemini", "")
+                        if key:
+                            step._api_edit.blockSignals(True)
+                            step._api_edit.setText(key)
+                            step._api_edit.blockSignals(False)
+                            if hasattr(step, "_selected_api_key"):
+                                step._selected_api_key = key.strip()
         except Exception:
             pass  # Never block UI due to autofill failure
 
@@ -850,6 +861,7 @@ class MultiSessionWindow(QMainWindow):
         card.set_status("✅ Done", "done", out_path)
 
         self._session_panel.set_session_status(folder, "done", step.STEP_ID)
+
         if step.STEP_ID == "step7_publish_info":
             try:
                 self._current_session = Session.load(folder)

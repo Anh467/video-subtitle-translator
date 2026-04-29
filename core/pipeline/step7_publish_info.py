@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 import unicodedata
 import urllib.error
 import urllib.request
@@ -23,12 +24,14 @@ from PyQt6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
+from core.api_keys import get_key
 from core.pipeline.base import BaseStep, CancelledError
 
 STOP_WORDS = {
@@ -103,6 +106,10 @@ class PublishInfoStep(BaseStep):
     def __init__(self):
         self._gen_backend_combo = None
         self._ollama_model_combo = None
+        self._gemini_model_combo = None
+        self._api_lbl = None
+        self._api_edit = None
+        self._selected_api_key = ""
         self._style_combo = None
         self._max_tags_spin = None
         self._thumb_mode_combo = None
@@ -157,6 +164,8 @@ class PublishInfoStep(BaseStep):
         # Reset per-run Ollama health flag.
         self._ollama_last_failed = False
         ollama_model = config.get("ollama_model", "qwen2")
+        gemini_model = config.get("gemini_model", "gemini-2.0-flash")
+        api_key = (config.get("api_key") or "").strip() or None
         max_tags = int(config.get("max_tags", 8) or 8)
         thumb_mode = config.get("thumb_mode", "keep")
         thumb_at_sec = float(config.get("thumb_at_sec", 12.0) or 12.0)
@@ -173,6 +182,15 @@ class PublishInfoStep(BaseStep):
                 hashtags=hashtags,
                 style=style,
                 model=ollama_model,
+                log=log,
+            )
+        elif gen_backend == "gemini":
+            title, description = self._generate_title_description_gemini(
+                lines=lines,
+                hashtags=hashtags,
+                style=style,
+                model=gemini_model,
+                api_key=api_key,
                 log=log,
             )
         else:
@@ -228,6 +246,8 @@ class PublishInfoStep(BaseStep):
                 style=style,
                 gen_backend=thumb_gen_backend,
                 ollama_model=ollama_model,
+                gemini_model=gemini_model,
+                api_key=api_key,
                 foreground_bg=bg_layer,
                 log=log,
             )
@@ -318,30 +338,81 @@ class PublishInfoStep(BaseStep):
     def _ollama_generate(self, prompt: str, model: str = "qwen2") -> str:
         if self._ollama_last_failed:
             raise RuntimeError("Ollama temporarily disabled in this run")
-        payload = json.dumps(
-            {
-                "model": model,
-                "prompt": prompt,
-                "stream": False,
-                "options": {
-                    "temperature": 0.65,
-                    "num_predict": 700,
-                },
-            }
-        ).encode("utf-8")
-        req = urllib.request.Request(
-            "http://localhost:11434/api/generate",
-            data=payload,
-            headers={"Content-Type": "application/json"},
-        )
+        last_err = None
+        for attempt in range(1, 4):
+            payload = json.dumps(
+                {
+                    "model": model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.45,
+                        "top_p": 0.9,
+                        "num_predict": 700,
+                        "repeat_penalty": 1.1,
+                    },
+                }
+            ).encode("utf-8")
+            req = urllib.request.Request(
+                "http://localhost:11434/api/generate",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=135) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    self._ollama_last_failed = False
+                    txt = (data.get("response") or "").strip()
+                    if not txt:
+                        raise RuntimeError("empty response")
+                    return txt
+            except Exception as e:
+                last_err = e
+                time.sleep(0.45 * attempt)
+        self._ollama_last_failed = True
+        raise RuntimeError(f"Ollama failed after retries: {last_err}")
+
+    def _gemini_client(self, api_key: str):
         try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                self._ollama_last_failed = False
-                return (data.get("response") or "").strip()
-        except Exception:
-            self._ollama_last_failed = True
-            raise
+            from google import genai
+        except Exception as e:
+            raise RuntimeError(
+                "Google GenAI SDK missing. Run: pip install google-genai"
+            ) from e
+        return genai.Client(api_key=api_key)
+
+    def _gemini_generate(
+        self,
+        prompt: str,
+        model: str,
+        log,
+        retries: int = 3,
+        api_key: str | None = None,
+    ) -> str:
+        key = (
+            (api_key or "").strip()
+            or get_key("gemini")
+            or os.environ.get("GEMINI_API_KEY", "")
+        )
+        if not key:
+            raise RuntimeError(
+                "Gemini API key missing. Add GEMINI_API_KEY in API Keys Manager."
+            )
+        client = self._gemini_client(key)
+        last_err = None
+        for attempt in range(1, retries + 1):
+            try:
+                resp = client.models.generate_content(model=model, contents=prompt)
+                txt = (getattr(resp, "text", None) or "").strip()
+                if txt:
+                    return txt
+                raise RuntimeError("empty response")
+            except Exception as e:
+                last_err = e
+                if log:
+                    log(f"⚠️  Gemini retry {attempt}/{retries}: {e}")
+                time.sleep(0.6 * attempt)
+        raise RuntimeError(f"Gemini failed after retries: {last_err}")
 
     def _generate_title_description_ollama(
         self,
@@ -408,6 +479,54 @@ class PublishInfoStep(BaseStep):
             title = self._build_title(lines, style=style)
             desc = self._build_description(lines, hashtags)
             return title, desc
+
+    def _generate_title_description_gemini(
+        self,
+        lines: list[str],
+        hashtags: list[str],
+        style: str,
+        model: str,
+        api_key: str | None,
+        log,
+    ) -> tuple[str, str]:
+        excerpt = "\n".join(lines[:90])[:10000]
+        hashtag_line = " ".join(hashtags[:10])
+        style_hint = {
+            "dramatic": "tone dramatic, high tension",
+            "short": "tone concise, direct",
+            "story": "tone storytelling, emotional",
+        }.get(style, "tone storytelling")
+        prompt = (
+            "You are a Vietnamese YouTube content strategist.\n"
+            "Create HIGH-CTR but truthful metadata in Vietnamese only.\n"
+            f"Style: {style_hint}.\n"
+            "Rules:\n"
+            '- Output JSON only: {"title":"...","description":"..."}\n'
+            "- Title: 48-78 chars, concrete and emotional, no fake promise\n"
+            "- Description: 4-6 short lines with arc: hook -> escalation -> suspense question -> CTA\n"
+            "- No generic boilerplate sentence\n"
+            "- If hashtags provided, append them at the end\n\n"
+            f"SCRIPT:\n{excerpt}\n\n"
+            f"SUGGESTED_HASHTAGS: {hashtag_line}\n"
+        )
+        try:
+            log(f"✨ Generating title/description via Gemini ({model})...")
+            raw = self._gemini_generate(prompt, model=model, log=log, api_key=api_key)
+            obj = self._extract_json_object(raw)
+            title = str(obj.get("title", "")).strip()
+            desc = str(obj.get("description", "")).strip()
+            if not title or not desc:
+                raise RuntimeError("Gemini JSON missing title/description")
+            if hashtags:
+                hline = " ".join(hashtags)
+                if hline not in desc:
+                    desc = f"{desc}\n\n{hline}"
+            return title[:90], desc
+        except Exception as e:
+            log(f"⚠️  Gemini generation failed, fallback to rule-based: {e}")
+            return self._build_title(lines, style=style), self._build_description(
+                lines, hashtags
+            )
 
     def _build_hashtags(self, script_text: str, max_tags: int = 8) -> list[str]:
         raw_words = re.findall(r"[A-Za-zÀ-ỹà-ỹ0-9_]{2,}", script_text.lower())
@@ -547,6 +666,47 @@ class PublishInfoStep(BaseStep):
             log(f"⚠️  Ollama hook fallback: {e}")
             return self._pick_hook_text(hook_title, lines, style)
 
+    def _generate_hook_text_gemini(
+        self,
+        hook_title: str,
+        lines: list[str],
+        style: str,
+        model: str,
+        api_key: str | None,
+        log,
+    ) -> str:
+        seed = " ".join((lines or [])[:8])[:1400]
+        style_hint = {
+            "dramatic": "dramatic",
+            "short": "very short",
+            "story": "storytelling",
+        }.get(style, "storytelling")
+        prompt = (
+            "Write ONE Vietnamese YouTube thumbnail hook.\n"
+            "Rules:\n"
+            "- Exactly 4 to 5 words\n"
+            "- UPPERCASE\n"
+            "- Emotional and truthful\n"
+            "- No emoji, no hashtag, no quote\n"
+            "- Output plain text only\n"
+            f"Style: {style_hint}\n"
+            f"VIDEO_CONTEXT: {hook_title}\n"
+            f"SCRIPT_SAMPLE: {seed}\n"
+        )
+        try:
+            raw = self._gemini_generate(prompt, model=model, log=log, api_key=api_key)
+            txt = re.sub(r"\s+", " ", (raw or "").strip())
+            txt = re.sub(r"[^A-Za-z0-9À-ỹà-ỹ\s:!?-]", "", txt)
+            words = [w for w in txt.split() if w]
+            if len(words) < 4:
+                raise RuntimeError("hook too short")
+            if len(words) > 5:
+                words = words[:5]
+            return " ".join(words).upper()
+        except Exception as e:
+            log(f"⚠️  Gemini hook fallback: {e}")
+            return self._pick_hook_text(hook_title, lines, style)
+
     def _pick_thumb_timestamp_ollama(
         self,
         segments,
@@ -584,6 +744,42 @@ class PublishInfoStep(BaseStep):
             return sec
         except Exception as e:
             log(f"⚠️  AI thumb timing fallback: {e}")
+            return max(0.0, float(fallback_sec or 0.0))
+
+    def _pick_thumb_timestamp_gemini(
+        self,
+        segments,
+        fallback_sec: float,
+        model: str,
+        api_key: str | None,
+        log,
+    ) -> float:
+        items = []
+        for s in segments[:120]:
+            txt = (getattr(s, "translated", "") or "").strip()
+            if not txt:
+                continue
+            st = float(getattr(s, "start", 0.0) or 0.0)
+            en = float(getattr(s, "end", st) or st)
+            items.append(f"{st:.1f}-{en:.1f}: {txt}")
+        if not items:
+            return max(0.0, float(fallback_sec or 0.0))
+        prompt = (
+            "Choose the best thumbnail timestamp from timed Vietnamese script segments.\n"
+            "Pick a moment likely to have strongest visual action and content relevance.\n"
+            'Output JSON only: {"second": number, "reason": string}\n\n'
+            "SEGMENTS:\n" + "\n".join(items)
+        )
+        try:
+            raw = self._gemini_generate(prompt, model=model, log=log, api_key=api_key)
+            obj = self._extract_json_object(raw)
+            sec = float(obj.get("second", fallback_sec))
+            if sec < 0:
+                sec = 0.0
+            log(f"🧭 Gemini picked thumbnail time: {sec:.1f}s")
+            return sec
+        except Exception as e:
+            log(f"⚠️  Gemini thumb timing fallback: {e}")
             return max(0.0, float(fallback_sec or 0.0))
 
     def _extract_representative_frame(
@@ -762,6 +958,8 @@ class PublishInfoStep(BaseStep):
         style: str,
         gen_backend: str,
         ollama_model: str,
+        gemini_model: str,
+        api_key: str | None,
         foreground_bg: str,
         log,
     ) -> str:
@@ -786,6 +984,22 @@ class PublishInfoStep(BaseStep):
                 segments=segments,
                 fallback_sec=at_sec,
                 model=ollama_model,
+                log=log,
+            )
+        elif gen_backend == "gemini":
+            hook = self._generate_hook_text_gemini(
+                hook_title=hook_title,
+                lines=lines,
+                style=style,
+                model=gemini_model,
+                api_key=api_key,
+                log=log,
+            )
+            pick_sec = self._pick_thumb_timestamp_gemini(
+                segments=segments,
+                fallback_sec=at_sec,
+                model=gemini_model,
+                api_key=api_key,
                 log=log,
             )
         else:
@@ -823,11 +1037,14 @@ class PublishInfoStep(BaseStep):
         self._gen_backend_combo = QComboBox()
         self._gen_backend_combo.addItems(
             [
-                "Ollama (better quality, slower)",
+                "Ollama (local)",
+                "Gemini (Google API)",
                 "Rule-based (fast)",
             ]
         )
         self._gen_backend_combo.setCurrentIndex(0)
+        self._gen_backend_combo.currentIndexChanged.connect(self._on_backend_changed)
+        self._gen_backend_combo.currentTextChanged.connect(self._on_backend_changed)
         rg.addWidget(self._gen_backend_combo)
         rg.addStretch()
         v.addLayout(rg)
@@ -848,6 +1065,33 @@ class PublishInfoStep(BaseStep):
         rm.addWidget(self._ollama_model_combo)
         rm.addStretch()
         v.addLayout(rm)
+
+        rgm = QHBoxLayout()
+        rgm.addWidget(QLabel("Gemini model:"))
+        self._gemini_model_combo = QComboBox()
+        self._gemini_model_combo.addItems(
+            [
+                "gemini-2.0-flash",
+                "gemini-1.5-flash",
+                "gemini-1.5-pro",
+            ]
+        )
+        self._gemini_model_combo.setCurrentText("gemini-2.0-flash")
+        rgm.addWidget(self._gemini_model_combo)
+        rgm.addStretch()
+        v.addLayout(rgm)
+
+        self._api_lbl = QLabel("API Key:")
+        self._api_edit = QLineEdit()
+        self._api_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self._api_edit.setPlaceholderText("Gemini API key — aistudio.google.com")
+        self._api_edit.textChanged.connect(
+            lambda t: setattr(self, "_selected_api_key", t.strip())
+        )
+        self._api_lbl.setVisible(False)
+        self._api_edit.setVisible(False)
+        v.addWidget(self._api_lbl)
+        v.addWidget(self._api_edit)
 
         r1 = QHBoxLayout()
         r1.addWidget(QLabel("Title style:"))
@@ -941,8 +1185,35 @@ class PublishInfoStep(BaseStep):
         v.addWidget(hint)
 
         self._load_shared_thumb_background()
+        self._on_backend_changed()
         self._refresh_thumb_bg_preview()
         return w
+
+    def _on_backend_changed(self, *_args):
+        text = self._gen_backend_combo.currentText() if self._gen_backend_combo else ""
+        is_gemini = "Gemini" in text
+        is_ollama = "Ollama" in text
+
+        if self._ollama_model_combo is not None:
+            self._ollama_model_combo.setEnabled(is_ollama)
+        if self._gemini_model_combo is not None:
+            self._gemini_model_combo.setEnabled(is_gemini)
+
+        if self._api_lbl is not None:
+            self._api_lbl.setVisible(is_gemini)
+        if self._api_edit is not None:
+            self._api_edit.setVisible(is_gemini)
+        if (
+            is_gemini
+            and self._api_edit is not None
+            and not self._api_edit.text().strip()
+        ):
+            key = get_key("gemini") or os.environ.get("GEMINI_API_KEY", "")
+            if key:
+                self._api_edit.blockSignals(True)
+                self._api_edit.setText(key)
+                self._api_edit.blockSignals(False)
+                self._selected_api_key = key.strip()
 
     def _refresh_thumb_bg_preview(self):
         if self._thumb_bg_label is not None:
@@ -1029,6 +1300,11 @@ class PublishInfoStep(BaseStep):
         gen_backend = "ollama"
         if (
             self._gen_backend_combo
+            and "Gemini" in self._gen_backend_combo.currentText()
+        ):
+            gen_backend = "gemini"
+        elif (
+            self._gen_backend_combo
             and "Rule-based" in self._gen_backend_combo.currentText()
         ):
             gen_backend = "rule"
@@ -1040,6 +1316,12 @@ class PublishInfoStep(BaseStep):
                 if self._ollama_model_combo
                 else "qwen2"
             ),
+            "gemini_model": (
+                self._gemini_model_combo.currentText()
+                if self._gemini_model_combo
+                else "gemini-2.0-flash"
+            ),
+            "api_key": (self._selected_api_key or "").strip() or None,
             "style": style_key,
             "max_tags": self._max_tags_spin.value() if self._max_tags_spin else 8,
             "thumb_mode": thumb_mode,
