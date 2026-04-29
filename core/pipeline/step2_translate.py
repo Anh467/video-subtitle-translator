@@ -222,8 +222,9 @@ class TranslateStep(BaseStep):
                 segments, target, api_key, ctx_window, log, cancel, src_lang=src_lang
             )
         elif backend == "openai":
+            openai_model = config.get("openai_model", "gpt-4o-mini")
             out = self._translate_openai(
-                segments, target, api_key, ctx_window, log, cancel
+                segments, target, api_key, ctx_window, log, cancel, model=openai_model
             )
         else:
             raise RuntimeError(f"Unknown backend: {backend}")
@@ -509,13 +510,23 @@ class TranslateStep(BaseStep):
 
     # ── OpenAI: Concurrent (optimized) ───────────────────────────────────────
 
-    def _translate_openai(self, segments, target, api_key, ctx_window, log, cancel):
+    def _translate_openai(
+        self,
+        segments,
+        target,
+        api_key,
+        ctx_window,
+        log,
+        cancel,
+        model: str = "gpt-4o-mini",
+    ):
         """
         Concurrent OpenAI translation.
 
-        GPT-4o-mini rate limit: tier 1 = 500 RPM, tier 2+ = 5000 RPM.
-        5 workers × batch_size=20 = 100 segs in-flight → ~25 RPM, rất an toàn.
-        Không cần sleep giữa các batch.
+        model: "gpt-4o" (higher quality) or "gpt-4o-mini" (cheaper, faster)
+        GPT-4o-mini rate limit: ~500 RPM tier 1
+        GPT-4o rate limit: ~500 RPM tier 1 (same RPM, higher quality per request)
+        5 workers × batch_size=20 in-flight, ~25 RPM — safe for both models.
         """
         try:
             from openai import OpenAI
@@ -556,7 +567,7 @@ class TranslateStep(BaseStep):
             ]
             batches.append((bi, batch, ctx_before, ctx_after))
 
-        log(f"   ⚡ Concurrent OpenAI: {len(batches)} batches | 5 workers")
+        log(f"   ⚡ Concurrent OpenAI [{model}]: {len(batches)} batches | 5 workers")
 
         results: dict[int, list[str]] = {}
 
@@ -574,7 +585,7 @@ class TranslateStep(BaseStep):
                     return
                 try:
                     r = client.chat.completions.create(
-                        model="gpt-4o-mini",
+                        model=model,
                         messages=[
                             {"role": "system", "content": system_prompt},
                             {"role": "user", "content": user_msg},
@@ -969,6 +980,7 @@ class TranslateStep(BaseStep):
             [
                 "Gemini Flash (free ⭐)",
                 "Google Translate (free)",
+                "OpenAI GPT-4o",
                 "OpenAI GPT-4o-mini",
             ]
         )
@@ -1092,10 +1104,10 @@ class TranslateStep(BaseStep):
         self._ollama_opts.setVisible(False)
         v.addWidget(self._ollama_opts)
 
-        self._backend_combo.setCurrentIndex(1)
+        self._backend_combo.setCurrentIndex(2)  # Default: GPT-4o
         self._verify_combo.setCurrentIndex(0)
         self._rule_fix_chk.setChecked(True)
-        self._on_backend_changed(1)
+        self._on_backend_changed(2)
         return w
 
     def _on_backend_changed(self, idx):
@@ -1110,7 +1122,7 @@ class TranslateStep(BaseStep):
             self._api_edit.setPlaceholderText(
                 "Gemini API key — free at aistudio.google.com"
             )
-        elif backend == "openai":
+        elif backend in ("openai", "openai_gpt4o"):
             self._api_edit.setPlaceholderText("OpenAI API key — platform.openai.com")
 
     def _on_verify_changed(self, idx):
@@ -1119,6 +1131,10 @@ class TranslateStep(BaseStep):
     def collect_config(self):
         idx = self._backend_combo.currentIndex() if self._backend_combo else 0
         backend = translate_backend_from_index(idx)
+        # openai_gpt4o uses the same openai backend but with gpt-4o model
+        openai_model = "gpt-4o" if backend == "openai_gpt4o" else "gpt-4o-mini"
+        if backend == "openai_gpt4o":
+            backend = "openai"
 
         v_idx = self._verify_combo.currentIndex() if self._verify_combo else 0
         verify_backend = verify_backend_from_index(v_idx)
@@ -1136,6 +1152,7 @@ class TranslateStep(BaseStep):
                 "vi",
             ),
             "api_key": self._api_edit.text().strip() or None,
+            "openai_model": openai_model,
             "chunk_size": self._chunk_spin.value() if self._chunk_spin else 15,
             "ctx_window": self._ctx_spin.value() if self._ctx_spin else 5,
             "verify": verify_backend != "none",

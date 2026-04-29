@@ -681,6 +681,17 @@ class MainWindow(QMainWindow):
 
         service_keys = mgr.to_dict_by_service()
         for step, _card in zip(self._steps, self._cards):
+            # Step 1 transcribe (Whisper API uses OpenAI key)
+            if (
+                getattr(step, "STEP_ID", "") == "step1_transcribe"
+                and hasattr(step, "_api_key_edit")
+                and step._api_key_edit
+            ):
+                if not step._api_key_edit.text().strip():
+                    key = service_keys.get("openai", "")
+                    if key:
+                        step._api_key_edit.setText(key)
+
             # Step 2 translate
             if (
                 getattr(step, "STEP_ID", "") == "step2_translate"

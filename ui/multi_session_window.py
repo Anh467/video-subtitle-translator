@@ -134,7 +134,7 @@ class SessionListPanel(QWidget):
         if not self._base_dir:
             return
         self._sessions = Session.list_sessions(self._base_dir)
-        self._rebuild_list()
+        self._rebuild_list(preserve_checked=True)
 
     def get_selected_sessions(self) -> list[dict]:
         result = []
@@ -159,7 +159,7 @@ class SessionListPanel(QWidget):
     def reset_all_status(self):
         self._session_status.clear()
         self._session_step_status.clear()
-        self._rebuild_list()
+        self._rebuild_list(preserve_checked=True)
 
     def mark_queued(self, folders: list[str]):
         for f in folders:
@@ -168,7 +168,23 @@ class SessionListPanel(QWidget):
 
     # ── Internal ─────────────────────────────────────────────────────────────
 
-    def _rebuild_list(self):
+    def _get_checked_folders(self) -> set[str]:
+        """Snapshot which folders are currently checked."""
+        checked = set()
+        for i in range(self._list.count()):
+            item = self._list.item(i)
+            w = self._list.itemWidget(item)
+            if not w:
+                continue
+            chk = w.findChild(QCheckBox)
+            if chk and chk.isChecked():
+                idx = item.data(Qt.ItemDataRole.UserRole)
+                if idx is not None and 0 <= idx < len(self._sessions):
+                    checked.add(self._sessions[idx]["folder"])
+        return checked
+
+    def _rebuild_list(self, preserve_checked: bool = False):
+        checked_folders = self._get_checked_folders() if preserve_checked else set()
         self._list.clear()
         if not self._sessions:
             item = QListWidgetItem("  (No sessions — choose base folder)")
@@ -180,6 +196,10 @@ class SessionListPanel(QWidget):
             item.setData(Qt.ItemDataRole.UserRole, idx)
             item.setSizeHint(QSize(0, 62))
             w = self._make_row(s, idx)
+            if preserve_checked:
+                chk = w.findChild(QCheckBox)
+                if chk:
+                    chk.setChecked(s["folder"] in checked_folders)
             self._list.addItem(item)
             self._list.setItemWidget(item, w)
 

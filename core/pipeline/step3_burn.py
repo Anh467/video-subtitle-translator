@@ -4,6 +4,7 @@ Improvements:
 - Font size auto-scale theo video resolution (% chiều cao video)
 - Background box blur đằng sau subtitle
 - Giọng TTS khớp đúng subtitle timing
+- Remove existing hardcoded subtitle via FFmpeg delogo filter
 """
 
 import json
@@ -108,7 +109,7 @@ def _get_video_size(video_path: str) -> tuple[int, int]:
         stream = data["streams"][0]
         return int(stream["width"]), int(stream["height"])
     except Exception:
-        return 1920, 1080  # fallback
+        return 1920, 1080
 
 
 def _profiles_root(base_dir: str) -> Path:
@@ -127,7 +128,6 @@ def _find_avatar_in_dir(profile_dir: Path) -> Path | None:
     ]
     if not candidates:
         return None
-    # Prefer a normalized avatar file name when available.
     candidates.sort(
         key=lambda p: (0 if p.stem.lower() == "avatar" else 1, p.name.lower())
     )
@@ -137,11 +137,9 @@ def _find_avatar_in_dir(profile_dir: Path) -> Path | None:
 def _load_channel_profiles(base_dir: str) -> dict:
     if not base_dir:
         return {}
-
     root = _profiles_root(base_dir)
     if not root.exists():
         return {}
-
     profiles = {}
     for entry in sorted(root.iterdir(), key=lambda p: p.name.lower()):
         if not entry.is_dir():
@@ -155,7 +153,6 @@ def _load_channel_profiles(base_dir: str) -> dict:
             display_name = entry.name
         if not display_name:
             continue
-
         avatar_file = _find_avatar_in_dir(entry)
         profiles[display_name] = {
             "avatar": str(avatar_file) if avatar_file else "",
@@ -169,16 +166,12 @@ def _store_profile_image(base_dir: str, src_path: str, profile_name: str) -> str
     root.mkdir(parents=True, exist_ok=True)
     profile_dir = root / _safe_profile_dir_name(profile_name)
     profile_dir.mkdir(parents=True, exist_ok=True)
-
     src = Path(src_path)
     ext = src.suffix.lower() or ".png"
     dst = profile_dir / f"avatar{ext}"
-
-    # Keep only one avatar file per profile folder.
     for old in profile_dir.glob("avatar.*"):
         if old.resolve() != dst.resolve():
             old.unlink(missing_ok=True)
-
     shutil.copy2(src, dst)
     (profile_dir / "channel_name.txt").write_text(
         profile_name.strip(), encoding="utf-8"
@@ -197,6 +190,92 @@ def _escape_drawtext_text(text: str) -> str:
     )
 
 
+# ── Delogo: build the removal filter string ───────────────────────────────────
+
+
+def _delogo_filter(x: int, y: int, w: int, h: int) -> str:
+    """
+    FFmpeg delogo filter — interpolates border pixels to fill the region.
+    Much better than blur because it reconstructs background rather than smearing.
+
+    x, y = top-left corner of subtitle region
+    w, h = width and height of region
+    show=0 means don't show debug border
+    """
+    return f"delogo=x={x}:y={y}:w={w}:h={h}:show=0"
+
+
+def _auto_detect_sub_region(
+    video_path: str, video_w: int, video_h: int
+) -> tuple[int, int, int, int] | None:
+    """
+    Auto-detect subtitle region using ffprobe + a heuristic:
+    sample frame at 10s, run ffmpeg cropdetect on bottom 25% of frame.
+    Returns (x, y, w, h) or None if detection fails.
+
+    This is a best-effort heuristic — user-defined region is more reliable.
+    """
+    try:
+        bottom_y = int(video_h * 0.72)
+        crop_h = int(video_h * 0.25)
+
+        tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+        tmp.close()
+
+        # Extract frame at 10s
+        r = subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-ss",
+                "10",
+                "-i",
+                video_path,
+                "-vframes",
+                "1",
+                "-vf",
+                f"crop={video_w}:{crop_h}:0:{bottom_y}",
+                tmp.name,
+            ],
+            capture_output=True,
+        )
+        if r.returncode != 0:
+            return None
+
+        # Run cropdetect on the cropped bottom strip
+        r2 = subprocess.run(
+            ["ffmpeg", "-i", tmp.name, "-vf", "cropdetect=24:2:0", "-f", "null", "-"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        os.unlink(tmp.name)
+
+        # Parse cropdetect output: crop=W:H:X:Y
+        import re
+
+        matches = re.findall(r"crop=(\d+):(\d+):(\d+):(\d+)", r2.stderr)
+        if not matches:
+            return None
+
+        # Take the most common crop result
+        cw, ch, cx, cy = map(int, matches[-1])
+        # Translate cy back to full-video coordinates
+        full_y = bottom_y + cy
+        # Add padding
+        pad = 4
+        return (
+            max(0, cx - pad),
+            max(0, full_y - pad),
+            min(cw + pad * 2, video_w),
+            min(ch + pad * 2, video_h - full_y),
+        )
+
+    except Exception:
+        return None
+
+
 class BurnStep(BaseStep):
     STEP_ID = "step3_burn"
     LABEL = "③ Burn Subtitles"
@@ -205,12 +284,20 @@ class BurnStep(BaseStep):
 
     def __init__(self):
         self._radio_soft = self._radio_hard = None
-        self._font_pct_spin = None  # font size as % of video height
+        self._font_pct_spin = None
         self._color_combo = self._outline_combo = self._pos_combo = None
-        self._bg_box_chk = None  # background box behind subtitle
+        self._bg_box_chk = None
         self._base_dir = ""
         self._profiles = {}
 
+        # Delogo controls
+        self._delogo_chk = None
+        self._delogo_x_spin = self._delogo_y_spin = None
+        self._delogo_w_spin = self._delogo_h_spin = None
+        self._delogo_frame = None
+        self._btn_auto_detect = None
+
+        # Branding controls
         self._brand_enable_chk = None
         self._brand_profile_combo = None
         self._brand_name_edit = None
@@ -287,25 +374,80 @@ class BurnStep(BaseStep):
         if self._brand_profile_combo:
             self._brand_profile_combo.setCurrentText(name)
 
+    def _on_delogo_toggled(self, checked: bool):
+        if self._delogo_frame:
+            self._delogo_frame.setEnabled(checked)
+
+    def _auto_detect_region(self):
+        """Try to auto-detect sub region from current session source file."""
+        # Try to get source file path from the session dir edit in parent window
+        # We do this by scanning the session base dir for recent sessions
+        src = self._get_current_source()
+        if not src:
+            QMessageBox.information(
+                None,
+                "No source file",
+                "Cannot auto-detect: no source video loaded.\n"
+                "Run Step 1 first or set the region manually.",
+            )
+            return
+
+        w, h = _get_video_size(src)
+        result = _auto_detect_sub_region(src, w, h)
+        if result:
+            x, y, rw, rh = result
+            self._delogo_x_spin.setValue(x)
+            self._delogo_y_spin.setValue(y)
+            self._delogo_w_spin.setValue(rw)
+            self._delogo_h_spin.setValue(rh)
+            QMessageBox.information(
+                None,
+                "Auto-detect result",
+                f"Detected region: x={x}, y={y}, w={rw}, h={rh}\n"
+                "Check and adjust if needed before running.",
+            )
+        else:
+            QMessageBox.warning(
+                None,
+                "Auto-detect failed",
+                "Could not auto-detect subtitle region.\n"
+                "Set the region manually using x, y, w, h fields.\n\n"
+                "Tip: Use a media player to find the pixel coordinates of the subtitle area.",
+            )
+
+    def _get_current_source(self) -> str | None:
+        """Best-effort: find source file from recent session or parent widget."""
+        # Walk up to find MainWindow via parent chain
+        widget = self._delogo_frame
+        while widget is not None:
+            if hasattr(widget, "_file") and widget._file:
+                return widget._file
+            widget = widget.parent() if widget else None
+        return None
+
     def run(self, session, config, log, cancel):
         translated = session.load_translated()
         out = str(session.step3_video)
         mode = config["mode"]
-        # Always burn from original source to avoid stacking subtitles from previous Step 3/6 outputs.
         input_video = session.source_file
         if getattr(session, "step3_done", False):
             log(
                 "♻️  Rebuilding subtitles from original source (overwrite previous Step 3)"
             )
 
-        # Get actual video resolution for auto font size
         w, h = _get_video_size(input_video)
         log(f"   Video resolution: {w}x{h}")
 
-        # Auto-scale font size: % of video height
-        font_pct = config.get("font_pct", 2.0)  # default 2% of height
+        font_pct = config.get("font_pct", 2.0)
         font_size = max(12, int(h * font_pct / 100))
         log(f"   Font size: {font_pct}% of {h}px = {font_size}px")
+
+        # Delogo config
+        delogo_cfg = config.get("delogo")
+        if delogo_cfg and delogo_cfg.get("enabled"):
+            dx, dy = delogo_cfg["x"], delogo_cfg["y"]
+            dw, dh = delogo_cfg["w"], delogo_cfg["h"]
+            log(f"🧹 Remove existing sub: delogo x={dx} y={dy} w={dw} h={dh}")
 
         log(f"{'📎' if mode=='soft' else '🔥'} Burning subtitles ({mode})…")
 
@@ -330,6 +472,7 @@ class BurnStep(BaseStep):
                     bg_box=config.get("bg_box", True),
                     video_w=w,
                     video_h=h,
+                    delogo=delogo_cfg,
                     branding={
                         "enabled": config.get("brand_enabled", True),
                         "name": config.get("brand_name", ""),
@@ -341,7 +484,7 @@ class BurnStep(BaseStep):
                         "name_pct": config.get("brand_name_pct", 2.0),
                     },
                 )
-            log(f"   $ {' '.join(cmd)}")
+            log(f"   $ {' '.join(str(c) for c in cmd)}")
             r = subprocess.run(
                 cmd, capture_output=True, text=True, encoding="utf-8", errors="replace"
             )
@@ -374,7 +517,7 @@ class BurnStep(BaseStep):
         r_mode.addStretch()
         v.addLayout(r_mode)
 
-        # Font size (% of video height)
+        # Font size
         r_fs = QHBoxLayout()
         r_fs.addWidget(QLabel("Font size:"))
         self._font_pct_spin = QDoubleSpinBox()
@@ -383,13 +526,6 @@ class BurnStep(BaseStep):
         self._font_pct_spin.setRange(0.5, 15)
         self._font_pct_spin.setValue(2)
         self._font_pct_spin.setFixedWidth(60)
-        self._font_pct_spin.setToolTip(
-            "% chiều cao video\n"
-            "720p  → 2% = 14px\n"
-            "1080p → 2% = 21px\n"
-            "1920p → 2% = 38px\n"
-            "Tự động scale theo độ phân giải video"
-        )
         r_fs.addWidget(self._font_pct_spin)
         r_fs.addWidget(QLabel("% of height"))
         r_fs.addStretch()
@@ -409,12 +545,9 @@ class BurnStep(BaseStep):
         r_col.addStretch()
         v.addLayout(r_col)
 
-        # Background box (blur)
+        # Background box
         self._bg_box_chk = QCheckBox("Background box (blur behind text)")
         self._bg_box_chk.setChecked(True)
-        self._bg_box_chk.setToolTip(
-            "Thêm nền mờ blur đằng sau subtitle\n" "Giúp đọc dễ hơn trên mọi nền video"
-        )
         v.addWidget(self._bg_box_chk)
 
         # Position
@@ -426,7 +559,84 @@ class BurnStep(BaseStep):
         r_pos.addStretch()
         v.addLayout(r_pos)
 
-        # Channel branding overlay
+        # ── Remove existing subtitle (delogo) ─────────────────────────────
+        v.addWidget(self._sep_label("🧹 Remove Existing Subtitle"))
+
+        self._delogo_chk = QCheckBox("Remove hardcoded subtitle with delogo filter")
+        self._delogo_chk.setChecked(True)
+        self._delogo_chk.setToolTip(
+            "FFmpeg delogo: reconstructs background pixels in the specified region.\n"
+            "Better than blur — uses border pixel interpolation, not smearing.\n"
+            "Set x,y,w,h to cover the old subtitle area."
+        )
+        self._delogo_chk.toggled.connect(self._on_delogo_toggled)
+        v.addWidget(self._delogo_chk)
+
+        # Delogo region controls
+        self._delogo_frame = QWidget()
+        self._delogo_frame.setEnabled(False)
+        dv = QVBoxLayout(self._delogo_frame)
+        dv.setContentsMargins(0, 0, 0, 0)
+        dv.setSpacing(4)
+
+        # Auto-detect button
+        auto_row = QHBoxLayout()
+        self._btn_auto_detect = QPushButton("Auto-detect region")
+        self._btn_auto_detect.setToolTip(
+            "Tries to detect subtitle region automatically by\n"
+            "analyzing a sample frame from the source video.\n"
+            "Result may need manual adjustment."
+        )
+        self._btn_auto_detect.setStyleSheet(
+            "QPushButton{background:#1a3a5a;color:#60aaff;border:1px solid #2a5a8a;"
+            "border-radius:5px;padding:4px 10px;font-size:11px;}"
+            "QPushButton:hover{background:#2a5a8a;}"
+        )
+        self._btn_auto_detect.clicked.connect(self._auto_detect_region)
+        auto_row.addWidget(self._btn_auto_detect)
+        hint = QLabel("or set manually:")
+        hint.setStyleSheet("color:#666;font-size:11px;")
+        auto_row.addWidget(hint)
+        auto_row.addStretch()
+        dv.addLayout(auto_row)
+
+        # x, y, w, h spinboxes
+        coord_row = QHBoxLayout()
+        for label, attr, default, maxv in [
+            ("x:", "_delogo_x_spin", 0, 7680),
+            ("y:", "_delogo_y_spin", 0, 4320),
+            ("w:", "_delogo_w_spin", 400, 7680),
+            ("h:", "_delogo_h_spin", 60, 4320),
+        ]:
+            coord_row.addWidget(QLabel(label))
+            spin = QSpinBox()
+            spin.setRange(0, maxv)
+            spin.setValue(default)
+            spin.setFixedWidth(72)
+            spin.setToolTip(
+                "x = left edge of subtitle region (pixels from left)\n"
+                "y = top edge (pixels from top)\n"
+                "w = width of region\n"
+                "h = height of region\n\n"
+                "Tip: Use VLC → Tools → Media Info to find subtitle pixel position."
+            )
+            setattr(self, attr, spin)
+            coord_row.addWidget(spin)
+            coord_row.addSpacing(4)
+        coord_row.addStretch()
+        dv.addLayout(coord_row)
+
+        # Helpful hint
+        hint2 = QLabel(
+            "Tip: In VLC → View → Advanced Controls → frame by frame to find coordinates."
+        )
+        hint2.setStyleSheet("color:#555;font-size:10px;")
+        hint2.setWordWrap(True)
+        dv.addWidget(hint2)
+
+        v.addWidget(self._delogo_frame)
+
+        # ── Channel branding ──────────────────────────────────────────────
         v.addWidget(self._sep_label("📌 Channel Branding"))
         self._brand_enable_chk = QCheckBox("Enable channel avatar + name")
         self._brand_enable_chk.setChecked(True)
@@ -473,7 +683,6 @@ class BurnStep(BaseStep):
         self._brand_avatar_pct_spin.setFixedWidth(70)
         r_a.addWidget(self._brand_avatar_pct_spin)
         r_a.addWidget(QLabel("% of video width"))
-
         r_a.addSpacing(12)
         r_a.addWidget(QLabel("Opacity:"))
         self._brand_opacity_spin = QSpinBox()
@@ -495,14 +704,12 @@ class BurnStep(BaseStep):
         self._brand_name_pct_spin.setFixedWidth(70)
         r_b.addWidget(self._brand_name_pct_spin)
         r_b.addWidget(QLabel("% of video height"))
-
         r_b.addSpacing(12)
         r_b.addWidget(QLabel("Position:"))
         self._brand_pos_combo = QComboBox()
         self._brand_pos_combo.addItems(BRAND_POSITIONS.keys())
         self._brand_pos_combo.setCurrentText("Random")
         r_b.addWidget(self._brand_pos_combo)
-
         r_b.addSpacing(12)
         r_b.addWidget(QLabel("Margin:"))
         self._brand_margin_pct_spin = QDoubleSpinBox()
@@ -526,6 +733,17 @@ class BurnStep(BaseStep):
 
     def collect_config(self):
         outline = self._outline_combo.currentText() if self._outline_combo else "black"
+
+        delogo_cfg = None
+        if self._delogo_chk and self._delogo_chk.isChecked():
+            delogo_cfg = {
+                "enabled": True,
+                "x": self._delogo_x_spin.value() if self._delogo_x_spin else 0,
+                "y": self._delogo_y_spin.value() if self._delogo_y_spin else 0,
+                "w": self._delogo_w_spin.value() if self._delogo_w_spin else 400,
+                "h": self._delogo_h_spin.value() if self._delogo_h_spin else 60,
+            }
+
         return {
             "mode": (
                 "hard"
@@ -541,6 +759,7 @@ class BurnStep(BaseStep):
                 SUB_POSITIONS[self._pos_combo.currentText()] if self._pos_combo else 2
             ),
             "bg_box": self._bg_box_chk.isChecked() if self._bg_box_chk else True,
+            "delogo": delogo_cfg,
             "brand_enabled": (
                 self._brand_enable_chk.isChecked() if self._brand_enable_chk else True
             ),
@@ -579,6 +798,9 @@ class BurnStep(BaseStep):
         }
 
 
+# ── FFmpeg command builders ───────────────────────────────────────────────────
+
+
 def _soft_cmd(video, srt, out):
     codec = "srt" if Path(out).suffix.lower() == ".mkv" else "mov_text"
     return [
@@ -609,18 +831,13 @@ def _hard_cmd(
     bg_box=True,
     video_w=1920,
     video_h=1080,
+    delogo=None,
     branding=None,
 ):
-    """
-    Burn subtitles with:
-    - Auto-scaled font size
-    - Optional blurred background box behind text
-    """
     escaped = srt.replace("\\", "/").replace(":", "\\:")
 
+    # Build subtitle style
     if bg_box:
-        # Strategy: use ASS style with BorderStyle=4 (opaque box)
-        # BoxColour = semi-transparent black (AABBGGRR: 80 = 50% opacity)
         outline_str = (
             f"Outline=2,OutlineColour=&H00{_bgr(outline_color)},"
             if outline_color
@@ -630,13 +847,10 @@ def _hard_cmd(
             f"FontSize={font_size},"
             f"PrimaryColour=&H00{_bgr(font_color)},"
             f"{outline_str}"
-            f"Shadow=0,"
-            f"BorderStyle=4,"  # opaque box
-            f"BackColour=&H80000000,"  # 50% transparent black box
-            f"Alignment={alignment},"
-            f"MarginV=6"
+            f"Shadow=0,BorderStyle=4,"
+            f"BackColour=&H80000000,"
+            f"Alignment={alignment},MarginV=6"
         )
-        vf = f"subtitles='{escaped}':force_style='{force_style}'"
     else:
         outline_str = (
             f"Outline=2,OutlineColour=&H00{_bgr(outline_color)},"
@@ -647,12 +861,21 @@ def _hard_cmd(
             f"FontSize={font_size},"
             f"PrimaryColour=&H00{_bgr(font_color)},"
             f"{outline_str}"
-            f"Shadow=1,"
-            f"Alignment={alignment},"
-            f"MarginV=6"
+            f"Shadow=1,Alignment={alignment},MarginV=6"
         )
-        vf = f"subtitles='{escaped}':force_style='{force_style}'"
 
+    sub_filter = f"subtitles='{escaped}':force_style='{force_style}'"
+
+    # ── Chain delogo BEFORE subtitles ──────────────────────────────────────
+    # Order matters: remove old sub first, then burn new one on clean frame.
+    if delogo and delogo.get("enabled"):
+        dx, dy = delogo["x"], delogo["y"]
+        dw, dh = delogo["w"], delogo["h"]
+        vf_base = f"{_delogo_filter(dx, dy, dw, dh)},{sub_filter}"
+    else:
+        vf_base = sub_filter
+
+    # No branding — simple case
     if not branding or not branding.get("enabled"):
         return [
             "ffmpeg",
@@ -660,7 +883,7 @@ def _hard_cmd(
             "-i",
             video,
             "-vf",
-            vf,
+            vf_base,
             "-c:v",
             "libx264",
             "-crf",
@@ -670,13 +893,14 @@ def _hard_cmd(
             out,
         ]
 
+    # With branding
     name = _escape_drawtext_text(branding.get("name", "").strip())
     avatar = branding.get("avatar", "").strip()
     avatar_exists = bool(avatar) and Path(avatar).exists()
 
     opacity = max(0.0, min(1.0, float(branding.get("opacity", 30)) / 100.0))
-    avatar_w = max(24, int(video_w * float(branding.get("avatar_pct", 12.0)) / 100.0))
-    name_size = max(12, int(video_h * float(branding.get("name_pct", 2.4)) / 100.0))
+    avatar_w = max(24, int(video_w * float(branding.get("avatar_pct", 9.0)) / 100.0))
+    name_size = max(12, int(video_h * float(branding.get("name_pct", 2.0)) / 100.0))
     margin = max(
         0, int(min(video_w, video_h) * float(branding.get("margin_pct", 2.0)) / 100.0)
     )
@@ -684,25 +908,19 @@ def _hard_cmd(
     gap = max(6, int(name_size * 0.35))
     est_text_h = int(name_size * 1.4)
 
-    # Determine if we should use animated movement or fixed position
     use_random_movement = pos == "random"
 
     if use_random_movement:
-        # Use comma-free expressions (sin/cos) so FFmpeg parser stays stable.
-        # Movement is slow and continuous; text uses the same motion base as avatar.
         x_span_overlay = max(0, video_w - avatar_w - 2 * margin)
         y_span_overlay = max(0, video_h - avatar_w - est_text_h - gap - 2 * margin)
         x_span_text = max(0, video_w - avatar_w - 2 * margin)
         y_span_text = max(0, video_h - avatar_w - est_text_h - gap - 2 * margin)
-
         x_avatar_overlay = f"{margin}+({x_span_overlay})*(0.5+0.5*sin(t/6))"
         y_avatar_overlay = f"{margin}+({y_span_overlay})*(0.5+0.5*cos(t/7))"
         x_avatar_text = f"{margin}+({x_span_text})*(0.5+0.5*sin(t/6))"
         y_avatar_text = f"{margin}+({y_span_text})*(0.5+0.5*cos(t/7))"
-
         y_text_name = f"({y_avatar_text})+{avatar_w}+{gap}"
     else:
-        # Fixed position (static)
         if pos == "top_right":
             x_avatar_overlay = f"W-overlay_w-{margin}"
             y_avatar_overlay = margin
@@ -718,35 +936,30 @@ def _hard_cmd(
             y_avatar_overlay = max(0, video_h - avatar_w - est_text_h - gap - margin)
             x_avatar_text = f"W-{avatar_w}-{margin}"
             y_avatar_text = max(0, video_h - avatar_w - est_text_h - gap - margin)
-        else:  # top_left
+        else:
             x_avatar_overlay = str(margin)
             y_avatar_overlay = margin
             x_avatar_text = str(margin)
             y_avatar_text = margin
-
         y_text_name = f"{y_avatar_text}+{avatar_w}+{gap}"
 
-    # Tên được centered dựa vào avatar (không từ center screen)
-    # Tính x position để center text relative to avatar
     text_width_approx = max(50, len(name) * name_size * 0.5)
-    # Center offset = (avatar_width - text_width) / 2
     center_offset = (avatar_w - int(text_width_approx)) / 2
 
-    filters = [f"[0:v]{vf}[sub]"]
+    # vf_base already includes delogo+sub chain
+    filters = [f"[0:v]{vf_base}[sub]"]
     map_label = "sub"
 
     if avatar_exists:
         filters.append(
             f"[1:v]scale={avatar_w}:-1,format=rgba,colorchannelmixer=aa={opacity:.3f}[logo]"
         )
-        # Avatar với movement hoặc fixed position
         filters.append(
             f"[sub][logo]overlay=x={x_avatar_overlay}:y={y_avatar_overlay}[vlogo]"
         )
         map_label = "vlogo"
 
     if name:
-        # Tên nằm dưới avatar và CENTERED relative to avatar position
         filters.append(
             f"[{map_label}]drawtext=text='{name}':"
             f"fontcolor=white@{opacity:.3f}:fontsize={name_size}:"
