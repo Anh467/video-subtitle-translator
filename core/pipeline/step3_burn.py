@@ -77,6 +77,8 @@ PREVIEW_ASPECTS = {
     "1:1 (Square)": 1.0,
     "4:3": 4 / 3,
 }
+PRESET_OPTIONS = ["ultrafast", "veryfast", "fast", "medium", "slow"]
+CRF_RANGE = (18, 28)
 COLOR_MAP = {
     "white": "FFFFFF",
     "yellow": "00FFFF",
@@ -342,6 +344,14 @@ class BurnStep(BaseStep):
         self._preview_timer = None
         self._preview_text_edit = None
         self._preview_ratio_combo = None
+        self._preview_meta_lbl = None
+
+        # Encoding optimization
+        self._crf_spin = None
+        self._preset_combo = None
+
+        # Source file tracking (for preview aspect ratio detection)
+        self._source_file = None
 
         # Delogo controls
         self._delogo_chk = None
@@ -365,6 +375,15 @@ class BurnStep(BaseStep):
         self._base_dir = base_dir or ""
         self._profiles = _load_channel_profiles(self._base_dir)
         self._refresh_profiles_ui()
+
+    def set_source_file(self, source_file: str | None):
+        """Set source media for preview auto-aspect and force refresh."""
+        self._source_file = source_file or None
+        if self._preview_timer:
+            self._preview_timer.stop()
+            self._preview_timer.start()
+        elif self._preview_lbl:
+            QTimer.singleShot(0, self._refresh_preview)
 
     def _refresh_profiles_ui(self):
         if not self._brand_profile_combo:
@@ -469,13 +488,21 @@ class BurnStep(BaseStep):
             )
 
     def _get_current_source(self) -> str | None:
-        """Best-effort: find source file from recent session or parent widget."""
-        # Walk up to find MainWindow via parent chain
+        """Best-effort: find source file from recent session or parent widget.
+        Priority: _source_file (set by run()) → parent widget chain → None
+        """
+        # 1. Check if source file was set during run()
+        if self._source_file and Path(self._source_file).exists():
+            return self._source_file
+
+        # 2. Walk up parent widget chain to find MainWindow._file
         widget = self._delogo_frame
         while widget is not None:
             if hasattr(widget, "_file") and widget._file:
-                return widget._file
+                if Path(widget._file).exists():
+                    return widget._file
             widget = widget.parent() if widget else None
+
         return None
 
     def run(self, session, config, log, cancel):
@@ -483,6 +510,8 @@ class BurnStep(BaseStep):
         out = str(session.step3_video)
         mode = config["mode"]
         input_video = session.source_file
+        # Store source file for preview aspect ratio detection
+        self._source_file = input_video
         if getattr(session, "step3_done", False):
             log(
                 "♻️  Rebuilding subtitles from original source (overwrite previous Step 3)"
@@ -547,6 +576,8 @@ class BurnStep(BaseStep):
                     margin_v=config.get("margin_v", 6),
                     video_w=w,
                     video_h=h,
+                    crf=config.get("crf", 24),
+                    preset=config.get("preset", "fast"),
                     delogo=delogo_cfg,
                     branding={
                         "enabled": config.get("brand_enabled", True),
@@ -592,7 +623,35 @@ class BurnStep(BaseStep):
         r_mode.addStretch()
         v.addLayout(r_mode)
 
-        # ── ① Subtitle Style ─────────────────────────────────────────────────
+        # ── ① Encoding & Performance ─────────────────────────────────────────
+        v.addWidget(self._sep_label("⚡ Encoding & Performance"))
+
+        enc_row = QHBoxLayout()
+        enc_row.addWidget(QLabel("CRF:"))
+        self._crf_spin = QSpinBox()
+        self._crf_spin.setRange(CRF_RANGE[0], CRF_RANGE[1])
+        self._crf_spin.setValue(24)
+        self._crf_spin.setFixedWidth(50)
+        self._crf_spin.setToolTip(
+            "CRF: 18=highest quality/slowest, 24-26=balanced, 28=fastest"
+        )
+        enc_row.addWidget(self._crf_spin)
+        enc_row.addSpacing(8)
+        enc_row.addWidget(QLabel("(18=slow/best, 28=fast/lower)"))
+        enc_row.addSpacing(16)
+        enc_row.addWidget(QLabel("Preset:"))
+        self._preset_combo = QComboBox()
+        self._preset_combo.addItems(PRESET_OPTIONS)
+        self._preset_combo.setCurrentText("fast")
+        self._preset_combo.setFixedWidth(95)
+        self._preset_combo.setToolTip(
+            "Speed: ultrafast → veryfast → fast → medium → slow"
+        )
+        enc_row.addWidget(self._preset_combo)
+        enc_row.addStretch()
+        v.addLayout(enc_row)
+
+        # ── ② Subtitle Style ─────────────────────────────────────────────────
         v.addWidget(self._sep_label("🔤 Subtitle Style"))
 
         # Row: Font family + size
@@ -693,7 +752,7 @@ class BurnStep(BaseStep):
         r_pos.addStretch()
         v.addLayout(r_pos)
 
-        # ── ② Subtitle Preview ───────────────────────────────────────────────
+        # ── ③ Subtitle Preview ───────────────────────────────────────────────
         v.addWidget(self._sep_label("👁  Subtitle Preview"))
 
         prev_row = QHBoxLayout()
@@ -722,6 +781,11 @@ class BurnStep(BaseStep):
             "background:#111;border:1px solid #333;border-radius:4px;"
         )
         v.addWidget(self._preview_lbl)
+
+        self._preview_meta_lbl = QLabel("Auto ratio: waiting for source video…")
+        self._preview_meta_lbl.setStyleSheet("color:#777;font-size:10px;")
+        self._preview_meta_lbl.setWordWrap(True)
+        v.addWidget(self._preview_meta_lbl)
 
         # Wire all style controls to trigger preview refresh
         self._preview_timer = QTimer()
@@ -758,7 +822,7 @@ class BurnStep(BaseStep):
         # Initial render
         QTimer.singleShot(0, self._refresh_preview)
 
-        # ── Remove existing subtitle (delogo) ─────────────────────────────
+        # ── ④ Remove existing subtitle (delogo) ─────────────────────────────
         v.addWidget(self._sep_label("🧹 Remove Existing Subtitle"))
 
         self._delogo_chk = QCheckBox("Remove hardcoded subtitle with delogo filter")
@@ -835,7 +899,7 @@ class BurnStep(BaseStep):
 
         v.addWidget(self._delogo_frame)
 
-        # ── Channel branding ──────────────────────────────────────────────
+        # ── ⑤ Channel branding ──────────────────────────────────────────────
         v.addWidget(self._sep_label("📌 Channel Branding"))
         self._brand_enable_chk = QCheckBox("Enable channel avatar + name")
         self._brand_enable_chk.setChecked(True)
@@ -944,13 +1008,30 @@ class BurnStep(BaseStep):
             else "Auto (from source video)"
         )
         ratio = PREVIEW_ASPECTS.get(ratio_label, None)
+        src = None
+        src_w = src_h = 0
         if ratio is None:
             src = self._get_current_source()
             if src:
-                w, h = _get_video_size(src)
-                ratio = (w / h) if w > 0 and h > 0 else (16 / 9)
+                src_w, src_h = _get_video_size(src)
+                ratio = (src_w / src_h) if src_w > 0 and src_h > 0 else (16 / 9)
             else:
                 ratio = 16 / 9
+
+        if self._preview_meta_lbl:
+            if PREVIEW_ASPECTS.get(ratio_label, None) is None:
+                if src and src_w > 0 and src_h > 0:
+                    self._preview_meta_lbl.setText(
+                        f"Source: {Path(src).name} | {src_w}x{src_h} | Auto ratio {ratio:.3f}"
+                    )
+                else:
+                    self._preview_meta_lbl.setText(
+                        "Source not found — Auto fallback to 16:9"
+                    )
+            else:
+                self._preview_meta_lbl.setText(
+                    f"Manual ratio: {ratio_label} ({ratio:.3f})"
+                )
 
         # Fit a video rectangle inside the preview canvas based on selected aspect ratio
         avail_w = max(10, lbl_w - 20)
@@ -965,7 +1046,8 @@ class BurnStep(BaseStep):
         vy = (lbl_h - video_h) // 2
 
         font_pct = self._font_pct_spin.value() if self._font_pct_spin else 2.0
-        font_size_px = max(8, int(video_h * font_pct / 100))
+        # Scale font size proportionally to preview render size (min 4px for visibility)
+        font_size_px = max(4, int(video_h * font_pct / 100))
 
         text = (
             self._preview_text_edit.text() if self._preview_text_edit else ""
@@ -1139,6 +1221,10 @@ class BurnStep(BaseStep):
             self._margin_v_spin.setValue(int(config["margin_v"]))
         if self._preview_ratio_combo and config.get("preview_aspect"):
             self._preview_ratio_combo.setCurrentText(str(config["preview_aspect"]))
+        if self._crf_spin and config.get("crf") is not None:
+            self._crf_spin.setValue(int(config["crf"]))
+        if self._preset_combo and config.get("preset"):
+            self._preset_combo.setCurrentText(str(config["preset"]))
         # delogo
         dl = config.get("delogo")
         if self._delogo_chk:
@@ -1233,6 +1319,10 @@ class BurnStep(BaseStep):
                 if self._preview_ratio_combo
                 else "Auto (from source video)"
             ),
+            "crf": self._crf_spin.value() if self._crf_spin else 24,
+            "preset": (
+                self._preset_combo.currentText() if self._preset_combo else "fast"
+            ),
             "delogo": delogo_cfg,
             "brand_enabled": (
                 self._brand_enable_chk.isChecked() if self._brand_enable_chk else True
@@ -1311,9 +1401,11 @@ def _hard_cmd(
     bg_opacity=50,
     alignment=2,
     margin_v=6,
-    bg_box=True,  # legacy compat
+    bg_box=True,
     video_w=1920,
     video_h=1080,
+    crf=24,
+    preset="fast",
     delogo=None,
     branding=None,
 ):
@@ -1383,8 +1475,10 @@ def _hard_cmd(
             vf_base,
             "-c:v",
             "libx264",
+            "-preset",
+            preset,
             "-crf",
-            "18",
+            str(crf),
             "-c:a",
             "copy",
             out,
@@ -1477,8 +1571,10 @@ def _hard_cmd(
         "0:a?",
         "-c:v",
         "libx264",
+        "-preset",
+        preset,
         "-crf",
-        "18",
+        str(crf),
         "-c:a",
         "copy",
         out,

@@ -6,6 +6,7 @@ Dùng chung step instances (config) từ MainWindow nhưng không đụng vào s
 
 from __future__ import annotations
 
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -414,6 +415,12 @@ class MultiSessionWindow(QMainWindow):
         self._worker = None
         self._stop_requested = False
         self._current_session: Session | None = None
+        self._multi_started_at = 0.0
+        self._multi_total_jobs = 0
+        self._multi_done_jobs = 0
+        self._multi_total_sessions = 0
+        self._multi_failed_sessions: set[str] = set()
+        self._multi_session_stats: dict[str, dict] = {}
 
         # Cards — create fresh cards that wrap the SAME step instances
         # so config edits here and in main window stay in sync
@@ -695,6 +702,15 @@ class MultiSessionWindow(QMainWindow):
         l.setStyleSheet("color:#666;font-size:10px;font-weight:600;")
         return l
 
+    def _set_step3_source_file(self, source_file: str | None):
+        for step in self._steps:
+            if getattr(step, "STEP_ID", "") != "step3_burn":
+                continue
+            setter = getattr(step, "set_source_file", None)
+            if callable(setter):
+                setter(source_file)
+            break
+
     def _on_session_clicked(self, sess_data: dict):
         """Load session into info editor, subtitle editor + restore step card statuses."""
         folder = sess_data["folder"]
@@ -708,6 +724,7 @@ class MultiSessionWindow(QMainWindow):
 
         # Load info editor
         self._info_editor.load_session(session)
+        self._set_step3_source_file(session.source_file)
 
         # Load subtitle preview + editor
         self._subtitle_editor.load_session(session)
@@ -762,6 +779,22 @@ class MultiSessionWindow(QMainWindow):
         ]
 
         total = len(self._job_queue)
+        self._multi_started_at = time.perf_counter()
+        self._multi_total_jobs = total
+        self._multi_done_jobs = 0
+        self._multi_total_sessions = len(sessions)
+        self._multi_failed_sessions = set()
+        self._multi_session_stats = {
+            s["folder"]: {
+                "name": s["name"],
+                "total_steps": len(enabled_steps),
+                "done_steps": 0,
+                "failed_steps": 0,
+                "start_at": 0.0,
+                "end_at": 0.0,
+            }
+            for s in sessions
+        }
         self._stop_requested = False
 
         self._log_edit.clear()
@@ -784,16 +817,59 @@ class MultiSessionWindow(QMainWindow):
         if self._stop_requested:
             self._stop_requested = False
             remaining = len(self._job_queue)
+            elapsed = time.perf_counter() - self._multi_started_at
+            processed_sessions = sum(
+                1
+                for st in self._multi_session_stats.values()
+                if st.get("start_at", 0) > 0
+            )
+            actions_per_min = (
+                (self._multi_done_jobs * 60.0 / elapsed) if elapsed > 0 else 0.0
+            )
+            sessions_per_min = (
+                (processed_sessions * 60.0 / elapsed) if elapsed > 0 else 0.0
+            )
             self._job_queue.clear()
             self._set_running(False)
             self._queue_lbl.setText("")
             self._log(f"⏹  Stopped — {remaining} job(s) skipped.")
+            self._log(
+                f"📊 Multi summary: sessions={processed_sessions}/{self._multi_total_sessions} processed, "
+                f"actions={self._multi_done_jobs}/{self._multi_total_jobs}, elapsed={elapsed:.2f}s, "
+                f"throughput={actions_per_min:.2f} actions/min, {sessions_per_min:.2f} sessions/min"
+            )
             return
 
         if not self._job_queue:
             self._set_running(False)
             self._queue_lbl.setText("")
+            elapsed = time.perf_counter() - self._multi_started_at
+            ok_sessions = self._multi_total_sessions - len(self._multi_failed_sessions)
+            actions_per_min = (
+                (self._multi_done_jobs * 60.0 / elapsed) if elapsed > 0 else 0.0
+            )
+            sessions_per_min = (
+                (self._multi_total_sessions * 60.0 / elapsed) if elapsed > 0 else 0.0
+            )
             self._log("🎉 All sessions processed!")
+            self._log(
+                f"📊 Multi summary: sessions ok={ok_sessions}, failed={len(self._multi_failed_sessions)}, "
+                f"total={self._multi_total_sessions}; actions done={self._multi_done_jobs}/{self._multi_total_jobs}; elapsed={elapsed:.2f}s; "
+                f"throughput={actions_per_min:.2f} actions/min, {sessions_per_min:.2f} sessions/min"
+            )
+            for folder, st in self._multi_session_stats.items():
+                sess_elapsed = (st["end_at"] or time.perf_counter()) - (
+                    st["start_at"] or self._multi_started_at
+                )
+                session_apm = (
+                    (st["done_steps"] * 60.0 / sess_elapsed)
+                    if sess_elapsed > 0
+                    else 0.0
+                )
+                self._log(
+                    f"   • [{st['name']}] actions={st['done_steps']}/{st['total_steps']} "
+                    f"failed_steps={st['failed_steps']} time={sess_elapsed:.2f}s throughput={session_apm:.2f} actions/min"
+                )
             self._status_bar.showMessage("✅ All sessions complete!")
             self._session_panel.refresh()
             return
@@ -812,6 +888,10 @@ class MultiSessionWindow(QMainWindow):
             return
 
         self._current_session = session
+        self._set_step3_source_file(session.source_file)
+        st = self._multi_session_stats.get(folder)
+        if st and not st["start_at"]:
+            st["start_at"] = time.perf_counter()
 
         # Update UI
         self._session_panel.set_session_status(folder, "running", step.STEP_ID)
@@ -852,6 +932,10 @@ class MultiSessionWindow(QMainWindow):
     def _on_done(self, step, sess_data: dict, result):
         self._worker = None
         folder = sess_data["folder"]
+        self._multi_done_jobs += 1
+        st = self._multi_session_stats.get(folder)
+        if st:
+            st["done_steps"] += 1
 
         card = self._card_for(step)
         card.set_running(False)
@@ -874,7 +958,28 @@ class MultiSessionWindow(QMainWindow):
         more_for_session = any(sd["folder"] == folder for sd, _ in self._job_queue[1:])
         if not more_for_session:
             self._session_panel.set_session_status(folder, "done")
-            self._log(f"✅ Session [{sess_data['name']}] complete")
+            st = self._multi_session_stats.get(folder)
+            if st:
+                st["end_at"] = time.perf_counter()
+                sess_elapsed = st["end_at"] - st["start_at"]
+                session_apm = (
+                    (st["done_steps"] * 60.0 / sess_elapsed)
+                    if sess_elapsed > 0
+                    else 0.0
+                )
+                self._log(
+                    f"✅ Session [{sess_data['name']}] complete — actions {st['done_steps']}/{st['total_steps']} in {sess_elapsed:.2f}s | throughput={session_apm:.2f} actions/min"
+                )
+            else:
+                self._log(f"✅ Session [{sess_data['name']}] complete")
+
+        elapsed = time.perf_counter() - self._multi_started_at
+        actions_per_min = (
+            (self._multi_done_jobs * 60.0 / elapsed) if elapsed > 0 else 0.0
+        )
+        self._log(
+            f"📈 Multi progress: actions {self._multi_done_jobs}/{self._multi_total_jobs} | avg throughput={actions_per_min:.2f} actions/min"
+        )
 
         if self._job_queue and self._job_queue[0][1] is step:
             self._job_queue.pop(0)
@@ -884,6 +989,11 @@ class MultiSessionWindow(QMainWindow):
     def _on_error(self, step, sess_data: dict, msg: str):
         self._worker = None
         folder = sess_data["folder"]
+        self._multi_failed_sessions.add(folder)
+        st = self._multi_session_stats.get(folder)
+        if st:
+            st["failed_steps"] += 1
+            st["end_at"] = time.perf_counter()
 
         card = self._card_for(step)
         card.set_running(False)
@@ -891,6 +1001,14 @@ class MultiSessionWindow(QMainWindow):
 
         self._session_panel.set_session_status(folder, "error", step.STEP_ID)
         self._log(f"❌ [{sess_data['name']}] [{step.LABEL}]: {msg}")
+        if st:
+            sess_elapsed = st["end_at"] - (st["start_at"] or st["end_at"])
+            session_apm = (
+                (st["done_steps"] * 60.0 / sess_elapsed) if sess_elapsed > 0 else 0.0
+            )
+            self._log(
+                f"📊 Session [{sess_data['name']}] failed — actions {st['done_steps']}/{st['total_steps']} in {sess_elapsed:.2f}s | throughput={session_apm:.2f} actions/min"
+            )
 
         # Skip remaining jobs for this session, continue with others
         self._job_queue = [

@@ -85,7 +85,7 @@ class AddVoiceStep(BaseStep):
         if cancel.is_set():
             raise CancelledError()
 
-        mixed_audio = self._mix_audio(
+        mixed_audio, temp_mix_files = self._mix_audio(
             session=session,
             tts_path=tts_path,
             mix_mode=mix_mode,
@@ -128,6 +128,12 @@ class AddVoiceStep(BaseStep):
 
         if mixed_audio != tts_path and os.path.exists(mixed_audio):
             os.unlink(mixed_audio)
+        for p in temp_mix_files:
+            if p and os.path.exists(p):
+                if os.path.isdir(p):
+                    shutil.rmtree(p, ignore_errors=True)
+                else:
+                    os.unlink(p)
         for p in temp_files:
             if os.path.exists(p):
                 os.unlink(p)
@@ -188,26 +194,40 @@ class AddVoiceStep(BaseStep):
         return composed_path, temp_files
 
     def _mix_audio(self, session, tts_path, mix_mode, tts_vol, bgm_vol, orig_vol, log):
+        temp_files = []
         has_bgm = session.step4_done and Path(session.step4_background).exists()
 
         if mix_mode == "replace":
             if tts_vol == 1.0:
-                return tts_path
-            return self._apply_volume(tts_path, tts_vol)
+                return tts_path, temp_files
+            out = self._apply_volume(tts_path, tts_vol)
+            if out != tts_path:
+                temp_files.append(out)
+            return out, temp_files
 
         elif mix_mode == "bgm_only":
-            if not has_bgm:
-                log("⚠️  No background music (Step 4 not run) — using TTS only")
-                return tts_path
+            bgm_path = None
+            if has_bgm:
+                bgm_path = str(session.step4_background)
+            else:
+                bgm_path, extra_temp = self._ensure_background_track(session, log)
+                temp_files.extend(extra_temp)
+
+            if not bgm_path:
+                log("⚠️  Could not isolate background — fallback to TTS only")
+                return tts_path, temp_files
+
             log("🎵 Mixing TTS + background music…")
             log(f"   TTS: {tts_vol:.0%}  |  BGM: {bgm_vol:.0%}")
-            return self._ffmpeg_mix(
+            mixed = self._ffmpeg_mix(
                 [
                     (tts_path, tts_vol),
-                    (str(session.step4_background), bgm_vol),
+                    (bgm_path, bgm_vol),
                 ],
                 log,
             )
+            temp_files.append(mixed)
+            return mixed, temp_files
 
         elif mix_mode == "full_mix":
             tracks = [(tts_path, tts_vol)]
@@ -244,9 +264,99 @@ class AddVoiceStep(BaseStep):
             result = self._ffmpeg_mix(tracks, log)
             if os.path.exists(orig_audio):
                 os.unlink(orig_audio)
-            return result
+            temp_files.append(result)
+            return result, temp_files
 
-        return tts_path
+        return tts_path, temp_files
+
+    def _ensure_background_track(self, session, log):
+        """Return a background (non-vocal) track path for Step 6 mixing.
+
+        Priority:
+        1) Use Step 4 background if exists.
+        2) Auto-run Demucs 2-stem in Step 6 to get no_vocals.
+        """
+        if session.step4_done and Path(session.step4_background).exists():
+            return str(session.step4_background), []
+
+        try:
+            import demucs  # noqa: F401
+        except Exception:
+            log("⚠️  Step 4 background missing and Demucs not installed")
+            log("   Install with: pip install demucs")
+            return None, []
+
+        log(
+            "🎛️  Step 4 background missing — auto isolating non-vocal track (Demucs 2-stem)…"
+        )
+        tmp_root = Path(tempfile.mkdtemp(prefix="step6_demucs_"))
+        tmp_input = tmp_root / "step6_input.wav"
+
+        conv = subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(session.source_file),
+                "-ac",
+                "2",
+                "-ar",
+                "44100",
+                "-vn",
+                str(tmp_input),
+            ],
+            capture_output=True,
+        )
+        if conv.returncode != 0 or not tmp_input.exists():
+            log("⚠️  Could not convert source to WAV for Demucs")
+            shutil.rmtree(tmp_root, ignore_errors=True)
+            return None, []
+
+        demucs_out = tmp_root / "demucs_out"
+        demucs_cmd = [
+            "python",
+            "-m",
+            "demucs",
+            "--name",
+            "htdemucs",
+            "--out",
+            str(demucs_out),
+            "--mp3",
+            "--two-stems",
+            "vocals",
+            str(tmp_input),
+        ]
+        log("   Running Demucs (htdemucs, two-stems=vocals)…")
+        proc = subprocess.run(
+            demucs_cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if proc.returncode != 0:
+            log("⚠️  Demucs auto-isolation failed")
+            tail = (proc.stderr or proc.stdout or "")[-700:]
+            if tail:
+                log(f"   {tail}")
+            shutil.rmtree(tmp_root, ignore_errors=True)
+            return None, []
+
+        model_dir = demucs_out / "htdemucs"
+        stem_dir = model_dir / "step6_input"
+        if not stem_dir.exists() and model_dir.exists():
+            cands = [p for p in model_dir.iterdir() if p.is_dir()]
+            if cands:
+                stem_dir = cands[0]
+
+        bgm = stem_dir / "no_vocals.mp3"
+        if not bgm.exists():
+            log("⚠️  Demucs finished but no non-vocal track found")
+            shutil.rmtree(tmp_root, ignore_errors=True)
+            return None, []
+
+        log("✅ Auto background isolated from source (voice reduced/removed)")
+        return str(bgm), [str(tmp_root)]
 
     def _ffmpeg_mix(self, tracks, log):
         out = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
@@ -303,6 +413,7 @@ class AddVoiceStep(BaseStep):
 
     def _mux(self, video_path, audio_path, out_path, log):
         Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+        log("   Keeping video quality: stream copy mode (-c:v copy, no re-encode)")
         in_place = os.path.abspath(video_path) == os.path.abspath(out_path)
         actual_out = out_path
         if in_place:

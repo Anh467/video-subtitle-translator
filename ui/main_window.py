@@ -1,6 +1,7 @@
 """MainWindow — orchestrates the pipeline with session management."""
 
 import os
+import time
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QThreadPool
@@ -379,6 +380,9 @@ class MainWindow(QMainWindow):
         self._pool = QThreadPool.globalInstance()
         self._queue: list = []
         self._stop_queue = False
+        self._single_run_started_at = 0.0
+        self._single_total_steps = 0
+        self._single_done_steps = 0
 
         self._steps = [
             TranscribeStep(),
@@ -835,6 +839,16 @@ class MainWindow(QMainWindow):
             if callable(setter):
                 setter(base_dir)
 
+    def _set_step3_source_file(self, source_file: str | None):
+        """Push current source file into Step 3 for accurate preview ratio/size."""
+        for step in self._steps:
+            if getattr(step, "STEP_ID", "") != "step3_burn":
+                continue
+            setter = getattr(step, "set_source_file", None)
+            if callable(setter):
+                setter(source_file)
+            break
+
     def _open_session_picker(self):
         base = self._sess_dir_edit.text().strip()
         if not base:
@@ -861,6 +875,7 @@ class MainWindow(QMainWindow):
 
         self._session = session
         self._file = session.source_file
+        self._set_step3_source_file(self._file)
         self._file_edit.setText(session.source_file)
         self._drop.set_file(Path(session.source_file).name)
         self._sess_name_lbl.setText(session.folder.name)
@@ -936,6 +951,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No file", "Select a video/audio file first.")
             return False
         self._session = Session(base, self._file)
+        self._set_step3_source_file(self._file)
         self._sess_name_lbl.setText(self._session.folder.name)
         self._info_editor.load_session(self._session)
         self._log(f"📁 New session: {self._session.folder}")
@@ -968,6 +984,7 @@ class MainWindow(QMainWindow):
 
     def _set_file(self, path):
         self._file = path
+        self._set_step3_source_file(path)
         self._session = None
         self._file_edit.setText(path)
         self._drop.set_file(Path(path).name)
@@ -1044,6 +1061,9 @@ class MainWindow(QMainWindow):
             )
             return
         self._stop_queue = False
+        self._single_run_started_at = time.perf_counter()
+        self._single_total_steps = len(self._queue)
+        self._single_done_steps = 0
         self._log_edit.clear()
         self._log(
             f"🚀 Run All — {len(self._queue)} steps: "
@@ -1058,15 +1078,28 @@ class MainWindow(QMainWindow):
             self._set_queue_running(False)
             self._set_busy(False)
             remaining = len(self._queue)
+            processed = self._single_done_steps
+            total = self._single_total_steps
+            elapsed = time.perf_counter() - self._single_run_started_at
+            apm = (processed * 60.0 / elapsed) if elapsed > 0 else 0.0
             self._queue = []
             self._queue_lbl.setText("")
             self._log(f"⏹  Queue stopped — {remaining} step(s) skipped.")
+            self._log(
+                f"📊 Single-session summary: {processed}/{total} actions done in {elapsed:.2f}s | throughput={apm:.2f} actions/min"
+            )
             return
         if not self._queue:
             self._set_queue_running(False)
             self._set_busy(False)
             self._queue_lbl.setText("")
+            total = self._single_total_steps
+            elapsed = time.perf_counter() - self._single_run_started_at
+            apm = (total * 60.0 / elapsed) if elapsed > 0 else 0.0
             self._log("🎉 All steps complete!")
+            self._log(
+                f"📊 Single-session summary: {total}/{total} actions done in {elapsed:.2f}s | throughput={apm:.2f} actions/min"
+            )
             self._status_bar.showMessage("✅ All steps complete!")
             return
         step = self._queue[0]
@@ -1087,12 +1120,16 @@ class MainWindow(QMainWindow):
     def _done_queue(self, step, result):
         self._worker = None
         self._set_busy(False)
+        self._single_done_steps += 1
         card = self._card_for(step)
         card.set_running(False)
         out_path = result if isinstance(result, str) else ""
         if not out_path and self._session:
             out_path = self._step_output_path(step, self._session)
         card.set_status("✅ Done", "done", out_path)
+        self._log(
+            f"📈 Queue progress: {self._single_done_steps}/{self._single_total_steps} actions"
+        )
         self._update_previews(step, result)
         if self._queue and self._queue[0] is step:
             self._queue.pop(0)
@@ -1102,12 +1139,17 @@ class MainWindow(QMainWindow):
         self._worker = None
         self._set_busy(False)
         self._set_queue_running(False)
+        elapsed = time.perf_counter() - self._single_run_started_at
+        apm = (self._single_done_steps * 60.0 / elapsed) if elapsed > 0 else 0.0
         self._queue = []
         self._queue_lbl.setText("")
         card = self._card_for(step)
         card.set_running(False)
         card.set_status("❌ Error", "error")
         self._log(f"❌ ERROR [{step.LABEL}]: {msg}")
+        self._log(
+            f"📊 Single-session summary: {self._single_done_steps}/{self._single_total_steps} actions done in {elapsed:.2f}s | throughput={apm:.2f} actions/min"
+        )
         QMessageBox.critical(self, f"Error — {step.LABEL}", f"{msg}\n\nQueue stopped.")
 
     def _cancelled_queue(self, step):
