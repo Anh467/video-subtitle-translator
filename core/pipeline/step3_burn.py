@@ -525,6 +525,14 @@ class BurnStep(BaseStep):
 
         w, h = _get_video_size(input_video)
         log(f"   Video resolution: {w}x{h}")
+        log(
+            "   Subtitle style: "
+            f"bg_style={config.get('bg_style', 'semi')}, "
+            f"bg_color={config.get('bg_color', 'black')}, "
+            f"bg_opacity={config.get('bg_opacity', 50)}%, "
+            f"outline_color={config.get('outline_color', 'black') or 'none'}, "
+            f"outline_width={config.get('outline_width', 2)}"
+        )
 
         font_pct = config.get("font_pct", 2.0)
         # subtitles filter (libass) expects style size in ASS script space.
@@ -1454,7 +1462,8 @@ def _hard_cmd(
             f"FontSize={font_size},Bold={bold_val},Italic={italic_val},"
             f"PrimaryColour=&H00{_bgr(font_color)},"
             f"{outline_str}"
-            f"Shadow={shadow},BorderStyle=3,"
+            # BorderStyle=4 keeps subtitle box color from BackColour while preserving text outline.
+            f"Shadow={shadow},BorderStyle=4,"
             f"BackColour=&H{bg_alpha_hex}{_bgr(bg_color)},"
             f"Alignment={alignment},MarginV={margin_v}"
         )

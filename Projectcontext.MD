@@ -173,9 +173,17 @@ File: `core/pipeline/step3_burn.py`
 ### Subtitle Burn
 
 - Always burns from `session.source_file` (NOT from latest_video) to avoid double-subtitle stacking.
-- Font size: `% of video height` (QDoubleSpinBox, 0.5 step). Default: `2.0%`.
+- Font size: `% of ASS PlayResY (288)` space via `int(ASS_PLAYRES_Y * font_pct / 100)`. Default: `2.0%`.
 - Subtitle position: ASS style with `MarginV=6`.
-- Background box: `BorderStyle=4` opaque box, `BackColour=&H80000000`.
+- Background box: `BorderStyle=4` uses `BackColour=&H{alpha_hex}{bgr_hex}` for opaque/semi-transparent box.
+- **ASS color format**: `&HAABBGGRR` — alpha is **inverted** (00=opaque, FF=transparent), color in BGR byte order.
+- `COLOR_MAP` stores true RGB hex; `_bgr()` reverses byte pairs to BGR for libass.
+- `bg_alpha_hex = int((100 - opacity) / 100 * 255)` — inverted correctly.
+- `ASS_PLAYRES_Y = 288` constant ensures font sizes are in script-space, not pixel-space.
+- **Preview** (QPainter): uses `fm.ascent()` + `fm.descent()` for correct box sizing so text is centered inside box.
+- `set_source_file(path)` method: called on browse/load/session change to refresh preview with actual video dimensions.
+- **Default quality**: `DEFAULT_CRF=20`, `DEFAULT_PRESET="medium"` for near-original quality.
+- **Default preview ratio**: `PREVIEW_ASPECT_AUTO` = "Auto (from source video)" with fallback logic.
 
 ### Remove Existing Subtitle (delogo)
 
@@ -240,9 +248,15 @@ Setup:
 
 ## Step 6 (Add Voice) Current Logic
 
-(unchanged from original)
+File: `core/pipeline/step6_add_voice.py`
 
-### Volume Defaults (patched via patch_defaults.py)
+### Audio composition
+
+- `_ensure_background_track(session, log)`: returns `step4_background` if it exists; otherwise auto-runs Demucs 2-stem (`--two-stems vocals`) on `source_file` to extract background track. Cleans up temp Demucs output after use.
+- `_mix_audio(tts, bg, vol_tts, vol_bg, vol_orig, orig, log)` returns `(mixed_path, temp_files_list)`.
+- `_mux()` uses `-c:v copy` (stream copy, no re-encode) + `-c:a aac -b:a 192k` for stable audio quality.
+
+### Volume Defaults
 
 - TTS voice: **124%**
 - Background music: **145%**
@@ -298,10 +312,15 @@ Hook rules:
 - `update_base_dir(d)` called on `_multi_window` when base dir changes.
 - `update_char_count(session)` called on all steps when session loads/changes.
 - Step 7 key autofill integrated in `_autofill_api_keys` (Gemini service key).
+- `_set_step3_source_file(source_file)`: calls `BurnStep.set_source_file()` on browse, load, and session change.
+- **Throughput metrics**: `_single_run_started_at`, `_single_total_steps`, `_single_done_steps` logged at queue end with `actions/min`.
 
 ### MultiSessionWindow (`ui/multi_session_window.py`)
 
 Standalone `QMainWindow`, opened from MainWindow. Receives `steps[]` (shared instances).
+
+- `_set_step3_source_file(source_file)`: called in `_on_session_clicked()` and `_run_next()` to keep BurnStep preview in sync with queued session.
+- **Throughput metrics**: `_multi_started_at`, `_multi_total_jobs`, `_multi_done_jobs`, `_multi_session_stats`, `_multi_failed_sessions` logged per-session and as aggregate `actions/min` + `sessions/min`.
 
 Layout:
 
@@ -380,6 +399,11 @@ Layout: thumbnail preview (96×54) + upload/clear buttons on left; Title + Notes
 ## Maintenance Guidelines
 
 - **Step 3**: Input must ALWAYS be `session.source_file`, never `session.latest_video()`, to prevent double-subtitle stacking.
+- **Step 3 ASS colors**: `COLOR_MAP` stores true RGB hex. `_bgr()` swaps pairs to BGR. `BackColour=&H{alpha}{bgr}` where alpha is inverted (00=opaque, FF=transparent). Do not revert.
+- **Step 3 FontSize**: Must use `int(ASS_PLAYRES_Y * font_pct / 100)` (ASS script space). Do NOT use video pixel height.
+- **Step 3 BorderStyle**: Must be `4` for background box fill (BackColour). `BorderStyle=3` is outline-only and ignores BackColour.
+- **Step 3 preview**: Call `set_source_file(path)` whenever active session or source file changes so preview reflects correct video dimensions.
+- **Step 6**: `_ensure_background_track()` auto-runs Demucs if `step4_background` is missing. Keep Demucs temp cleanup logic intact.
 - **FFmpeg drawtext**: Use sin/cos only for expressions. No nested if/max/min/overlay_w.
 - **delogo filter**: must come BEFORE subtitles filter in the chain.
 - Keep Step 5 free of mux/mix logic.

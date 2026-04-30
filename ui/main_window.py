@@ -520,6 +520,15 @@ class MainWindow(QMainWindow):
             card.on_run = lambda s=step: self._run_step(s)
             self._cards.append(card)
             cards_h.addWidget(card)
+            # When Step 2 backend changes, re-autofill the API key field
+            if (
+                getattr(step, "STEP_ID", "") == "step2_translate"
+                and hasattr(step, "_backend_combo")
+                and step._backend_combo
+            ):
+                step._backend_combo.currentIndexChanged.connect(
+                    self._on_step2_backend_changed
+                )
         cards_h.addStretch()
         cards_container.adjustSize()
         cards_container.setMinimumWidth(cards_container.sizeHint().width())
@@ -703,32 +712,26 @@ class MainWindow(QMainWindow):
                     step._api_key_edit.setText(key)
                     step._api_key_edit.blockSignals(False)
 
-            # Step 2 translate
+            # Step 2 translate — always sync from manager so backend changes pick up correct key
             if (
                 getattr(step, "STEP_ID", "") == "step2_translate"
                 and hasattr(step, "_api_edit")
                 and step._api_edit
+                and hasattr(step, "_backend_combo")
+                and step._backend_combo
             ):
-                if not step._api_edit.text().strip() and hasattr(
-                    step, "_backend_combo"
-                ):
-                    backend_text = (
-                        step._backend_combo.currentText().lower()
-                        if step._backend_combo
-                        else ""
-                    )
-                    backend_key = (
-                        "gemini"
-                        if "gemini" in backend_text
-                        else "openai" if "openai" in backend_text else "google"
-                    )
-                    candidates = translate_key_candidates(backend_key)
+                from core.pipeline.selection import translate_backend_from_index
 
-                    for service in candidates:
-                        key = service_keys.get(service, "")
-                        if key:
-                            step._api_edit.setText(key)
-                            break
+                be_idx = step._backend_combo.currentIndex()
+                backend_key = translate_backend_from_index(be_idx)
+                candidates = translate_key_candidates(backend_key)
+                for service in candidates:
+                    key = service_keys.get(service, "")
+                    if key:
+                        step._api_edit.blockSignals(True)
+                        step._api_edit.setText(key)
+                        step._api_edit.blockSignals(False)
+                        break
 
             # Step 5 TTS — always sync from manager so backend change triggers refill
             if (
@@ -767,6 +770,15 @@ class MainWindow(QMainWindow):
                     step._api_edit.blockSignals(False)
                     if hasattr(step, "_selected_api_key"):
                         step._selected_api_key = key.strip()
+
+    def _on_step2_backend_changed(self, _idx: int = 0):
+        """Re-autofill Step 2 API key when backend combo changes."""
+        try:
+            from core.api_keys import get_manager
+
+            self._autofill_api_keys(get_manager())
+        except Exception:
+            pass
 
     def _open_api_keys_dialog(self):
         """Open dialog to manage API keys."""
