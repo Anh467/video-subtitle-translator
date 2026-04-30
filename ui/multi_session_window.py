@@ -527,22 +527,22 @@ class MultiSessionWindow(QMainWindow):
         title_row.addWidget(sub)
         title_row.addSpacing(10)
 
-        self._btn_editor_default = QPushButton("Default")
-        self._btn_editor_default.setCheckable(True)
-        self._btn_editor_default.setChecked(True)
-        self._btn_editor_default.setFixedHeight(26)
-        self._btn_editor_default.clicked.connect(
-            lambda: self._set_editor_mode("default")
-        )
-        title_row.addWidget(self._btn_editor_default)
+        # self._btn_editor_default = QPushButton("Default")
+        # self._btn_editor_default.setCheckable(True)
+        # self._btn_editor_default.setChecked(True)
+        # self._btn_editor_default.setFixedHeight(26)
+        # self._btn_editor_default.clicked.connect(
+        #     lambda: self._set_editor_mode("default")
+        # )
+        # title_row.addWidget(self._btn_editor_default)
 
-        self._btn_editor_studio = QPushButton("Studio")
-        self._btn_editor_studio.setCheckable(True)
-        self._btn_editor_studio.setFixedHeight(26)
-        self._btn_editor_studio.clicked.connect(lambda: self._set_editor_mode("studio"))
-        title_row.addWidget(self._btn_editor_studio)
-        title_row.addStretch()
-        root.addLayout(title_row)
+        # self._btn_editor_studio = QPushButton("Studio")
+        # self._btn_editor_studio.setCheckable(True)
+        # self._btn_editor_studio.setFixedHeight(26)
+        # self._btn_editor_studio.clicked.connect(lambda: self._set_editor_mode("studio"))
+        # title_row.addWidget(self._btn_editor_studio)
+        # title_row.addStretch()
+        # root.addLayout(title_row)
 
         # ── Top area: session list (left) + preview (right) ───────────────
         self._top_split = QSplitter(Qt.Orientation.Horizontal)
