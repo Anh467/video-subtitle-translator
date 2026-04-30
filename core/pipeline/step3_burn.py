@@ -77,18 +77,22 @@ PREVIEW_ASPECTS = {
     "1:1 (Square)": 1.0,
     "4:3": 4 / 3,
 }
+PREVIEW_ASPECT_AUTO = "Auto (from source video)"
 PRESET_OPTIONS = ["ultrafast", "veryfast", "fast", "medium", "slow"]
 CRF_RANGE = (18, 28)
+# libass uses script resolution (PlayResY, often 288) to scale style size.
+# Keep this aligned so burn output matches preview percent sizing.
+ASS_PLAYRES_Y = 288
 COLOR_MAP = {
     "white": "FFFFFF",
-    "yellow": "00FFFF",
-    "cyan": "FFFF00",
+    "yellow": "FFFF00",
+    "cyan": "00FFFF",
     "black": "000000",
-    "red": "0000FF",
+    "red": "FF0000",
     "green": "00FF00",
-    "blue": "FF0000",
+    "blue": "0000FF",
     "purple": "800080",
-    "orange": "00A5FF",
+    "orange": "FFA500",
     "gray": "808080",
 }
 
@@ -521,8 +525,13 @@ class BurnStep(BaseStep):
         log(f"   Video resolution: {w}x{h}")
 
         font_pct = config.get("font_pct", 2.0)
-        font_size = max(12, int(h * font_pct / 100))
-        log(f"   Font size: {font_pct}% of {h}px = {font_size}px")
+        # subtitles filter (libass) expects style size in ASS script space.
+        # Convert percent to PlayResY-space so on-screen size tracks video percent.
+        font_size = max(6, int(ASS_PLAYRES_Y * font_pct / 100))
+        approx_px = int(h * font_pct / 100)
+        log(
+            f"   Font size: {font_pct}% of video height (~{approx_px}px onscreen), ASS size={font_size}"
+        )
 
         # Delogo config
         delogo_cfg = config.get("delogo")
@@ -767,7 +776,7 @@ class BurnStep(BaseStep):
         prev_row.addWidget(QLabel("Ratio:"))
         self._preview_ratio_combo = QComboBox()
         self._preview_ratio_combo.addItems(PREVIEW_ASPECTS.keys())
-        self._preview_ratio_combo.setCurrentText("Auto (from source video)")
+        self._preview_ratio_combo.setCurrentText(PREVIEW_ASPECT_AUTO)
         self._preview_ratio_combo.setFixedWidth(130)
         prev_row.addWidget(self._preview_ratio_combo)
         prev_row.addStretch()
@@ -1005,7 +1014,7 @@ class BurnStep(BaseStep):
         ratio_label = (
             self._preview_ratio_combo.currentText()
             if self._preview_ratio_combo
-            else "Auto (from source video)"
+            else PREVIEW_ASPECT_AUTO
         )
         ratio = PREVIEW_ASPECTS.get(ratio_label, None)
         src = None
@@ -1219,8 +1228,11 @@ class BurnStep(BaseStep):
             self._pos_combo.setCurrentText(label)
         if self._margin_v_spin and config.get("margin_v") is not None:
             self._margin_v_spin.setValue(int(config["margin_v"]))
-        if self._preview_ratio_combo and config.get("preview_aspect"):
-            self._preview_ratio_combo.setCurrentText(str(config["preview_aspect"]))
+        if self._preview_ratio_combo:
+            aspect = str(config.get("preview_aspect") or PREVIEW_ASPECT_AUTO)
+            if aspect not in PREVIEW_ASPECTS:
+                aspect = PREVIEW_ASPECT_AUTO
+            self._preview_ratio_combo.setCurrentText(aspect)
         if self._crf_spin and config.get("crf") is not None:
             self._crf_spin.setValue(int(config["crf"]))
         if self._preset_combo and config.get("preset"):
@@ -1317,7 +1329,7 @@ class BurnStep(BaseStep):
             "preview_aspect": (
                 self._preview_ratio_combo.currentText()
                 if self._preview_ratio_combo
-                else "Auto (from source video)"
+                else PREVIEW_ASPECT_AUTO
             ),
             "crf": self._crf_spin.value() if self._crf_spin else 24,
             "preset": (
@@ -1432,7 +1444,7 @@ def _hard_cmd(
             f"FontSize={font_size},Bold={bold_val},Italic={italic_val},"
             f"PrimaryColour=&H00{_bgr(font_color)},"
             f"{outline_str}"
-            f"Shadow={shadow},BorderStyle=4,"
+            f"Shadow={shadow},BorderStyle=3,"
             f"BackColour=&H{bg_alpha_hex}{_bgr(bg_color)},"
             f"Alignment={alignment},MarginV={margin_v}"
         )
