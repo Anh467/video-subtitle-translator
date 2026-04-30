@@ -392,6 +392,7 @@ class MainWindow(QMainWindow):
         self._cards: list[StepCard] = []
         self._multi_window: MultiSessionWindow | None = None
         self._setup_ui()
+        self._restore_last_workspace()
 
     # ── UI ────────────────────────────────────────────────────────────────────
 
@@ -779,14 +780,53 @@ class MainWindow(QMainWindow):
                 self._log("🔑 API keys saved and applied")
 
     def _pick_base_dir(self):
+        # Save current configs before switching workspace
+        old_base = self._sess_dir_edit.text().strip()
+        if old_base:
+            from core.config_store import save_step_configs
+
+            save_step_configs(old_base, self._steps)
+
         d = QFileDialog.getExistingDirectory(self, "Choose base folder for sessions")
         if d:
             self._sess_dir_edit.setText(d)
             self._set_steps_base_dir(d)
             self._load_api_keys(d)
+            # Restore step configs saved for this workspace
+            from core.config_store import load_step_configs
+
+            if load_step_configs(d, self._steps):
+                self._log("⚙️  Step settings restored from workspace")
             self._status_bar.showMessage(f"Base folder: {d}")
             if self._multi_window is not None:
                 self._multi_window.update_base_dir(d)
+
+    def closeEvent(self, event):
+        base = self._sess_dir_edit.text().strip()
+        if base:
+            from core.config_store import save_step_configs
+
+            save_step_configs(base, self._steps)
+            from PyQt6.QtCore import QSettings
+
+            QSettings("SubSync", "SubSync").setValue("last_workspace", base)
+        super().closeEvent(event)
+
+    def _restore_last_workspace(self):
+        """On app start, restore last workspace and its step configs."""
+        import os
+
+        from PyQt6.QtCore import QSettings
+
+        last = QSettings("SubSync", "SubSync").value("last_workspace", "")
+        if last and os.path.isdir(last):
+            self._sess_dir_edit.setText(last)
+            self._set_steps_base_dir(last)
+            self._load_api_keys(last)
+            from core.config_store import load_step_configs
+
+            load_step_configs(last, self._steps)
+            self._status_bar.showMessage(f"Restored workspace: {last}")
 
     def _set_steps_base_dir(self, base_dir: str):
         """Pass base directory to steps that keep shared assets/config."""

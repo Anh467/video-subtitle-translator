@@ -65,7 +65,19 @@ class Session:
                     done.append("④")
                 if (d / "step5_tts.mp3").exists():
                     done.append("⑤")
-                if any(d.glob("step6_output.*")) or any(d.glob("step5_output.*")):
+                result_dir = d / "result"
+                has_step6 = (
+                    any(d.glob("step6_output.*"))
+                    or any(d.glob("result_output.*"))
+                    or (
+                        result_dir.exists() and any(result_dir.glob("step6_output_*.*"))
+                    )
+                    or (
+                        result_dir.exists()
+                        and any(result_dir.glob("result_output_*.*"))
+                    )
+                )
+                if has_step6 or any(d.glob("step5_output.*")):
                     done.append("⑥")
                 if (d / "step7_publish_info.json").exists():
                     done.append("⑦")
@@ -233,20 +245,22 @@ class Session:
         # Check result/ subfolder first (new naming with manifest stem)
         result_dir = self.folder / "result"
         if result_dir.exists():
-            # Return most recently modified step6_output in result/
+            candidates = []
+            for pattern in ("result_output_*.*", "step6_output_*.*"):
+                candidates.extend(result_dir.glob(pattern))
             candidates = sorted(
-                result_dir.glob("step6_output_*.*"),
-                key=lambda f: f.stat().st_mtime,
-                reverse=True,
+                candidates, key=lambda f: f.stat().st_mtime, reverse=True
             )
             if candidates:
                 return candidates[0]
         # Fallback: legacy location in session root
         for f in self.folder.glob("step6_output.*"):
             return f
+        for f in self.folder.glob("result_output.*"):
+            return f
         for f in self.folder.glob("step5_output.*"):
             return f
-        return self.folder / "result" / f"step6_output{Path(self.source_file).suffix}"
+        return self.folder / "result" / f"result_output{Path(self.source_file).suffix}"
 
     @property
     def step7_info(self):
@@ -284,7 +298,10 @@ class Session:
     def step6_done(self):
         # Check result/ folder first
         result_dir = self.folder / "result"
-        if result_dir.exists() and any(result_dir.glob("step6_output_*.*")):
+        if result_dir.exists() and (
+            any(result_dir.glob("step6_output_*.*"))
+            or any(result_dir.glob("result_output_*.*"))
+        ):
             return True
         return self.step6_video.exists()
 

@@ -1231,6 +1231,41 @@ class TranslateStep(BaseStep):
     def _on_verify_changed(self, idx):
         self._ollama_opts.setVisible(idx == 1)
 
+    def apply_config(self, config: dict) -> None:
+        if not config:
+            return
+        from core.pipeline.selection import VERIFY_BACKEND_BY_INDEX
+
+        _LANG_BY_CODE = {v: k for k, v in LANGUAGES.items()}
+        # backend index
+        be = config.get("backend", "openai")
+        om = config.get("openai_model", "gpt-4o")
+        # re-map to combo choice (openai+gpt-4o→2, openai+gpt-4o-mini→3, gemini→0, google→1)
+        _BE_TO_IDX = {"gemini": 0, "google": 1}
+        if be == "openai" and om == "gpt-4o":
+            be_idx = 2
+        elif be == "openai":
+            be_idx = 3
+        else:
+            be_idx = _BE_TO_IDX.get(be, 2)
+        if self._backend_combo:
+            self._backend_combo.setCurrentIndex(be_idx)
+        if self._lang_combo:
+            label = _LANG_BY_CODE.get(config.get("target_lang", "vi"), "Vietnamese")
+            self._lang_combo.setCurrentText(label)
+        if self._chunk_spin and config.get("chunk_size") is not None:
+            self._chunk_spin.setValue(int(config["chunk_size"]))
+        if self._ctx_spin and config.get("ctx_window") is not None:
+            self._ctx_spin.setValue(int(config["ctx_window"]))
+        vb = config.get("verify_backend", "none")
+        _VB_TO_IDX = {v: k for k, v in VERIFY_BACKEND_BY_INDEX.items()}
+        if self._verify_combo:
+            self._verify_combo.setCurrentIndex(_VB_TO_IDX.get(vb, 0))
+        if self._ollama_model_combo and config.get("verify_model"):
+            self._ollama_model_combo.setCurrentText(config["verify_model"])
+        if self._rule_fix_chk and config.get("rule_fix") is not None:
+            self._rule_fix_chk.setChecked(bool(config["rule_fix"]))
+
     def collect_config(self):
         idx = self._backend_combo.currentIndex() if self._backend_combo else 0
         backend = translate_backend_from_index(idx)

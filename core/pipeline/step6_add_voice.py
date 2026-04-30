@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -98,12 +99,26 @@ class AddVoiceStep(BaseStep):
             raise CancelledError()
 
         input_media = session.latest_video()
-        out_video = str(session.step6_video)
+        has_video = self._has_video_stream(input_media)
+        voice_tag = self._detect_voice_tag(
+            session=session,
+            source_mode=source_mode,
+            tts_source=tts_source,
+            tts_path=tts_path,
+        )
+        if has_video:
+            ext = Path(input_media).suffix.lower() or ".mp4"
+            if ext not in VIDEO_EXTS:
+                ext = ".mp4"
+        else:
+            ext = ".mp3"
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out_video = str(session.result_dir / f"result_output_{voice_tag}_{ts}{ext}")
         Path(out_video).parent.mkdir(parents=True, exist_ok=True)
         if input_media == str(session.step3_video):
             log("🔗 Chaining: using Step 3 (subtitled) video as base")
 
-        if self._has_video_stream(input_media):
+        if has_video:
             log("🎬 Muxing audio into video…")
             self._mux(input_media, mixed_audio, out_video, log)
         else:
@@ -119,6 +134,36 @@ class AddVoiceStep(BaseStep):
 
         log(f"✅ Final output → {Path(out_video).name}")
         return out_video
+
+    @staticmethod
+    def _safe_slug(text: str) -> str:
+        value = (text or "").strip().lower()
+        value = re.sub(r"[^a-z0-9._-]+", "_", value)
+        value = value.strip("._-")
+        return value[:80] or "default"
+
+    def _detect_voice_tag(
+        self,
+        session,
+        source_mode: str,
+        tts_source: str,
+        tts_path: str,
+    ) -> str:
+        manifests = resolve_manifests(session, source_mode, tts_source)
+        if manifests:
+            mf = manifests[-1]
+            try:
+                data = json.loads(Path(mf).read_text(encoding="utf-8"))
+                backend = str(data.get("backend", "") or "").strip()
+                voice = str(data.get("voice_id", "") or "").strip()
+                parts = [p for p in (backend, voice) if p]
+                if parts:
+                    return self._safe_slug("_".join(parts))
+            except Exception:
+                pass
+            return self._safe_slug(Path(mf).stem)
+
+        return self._safe_slug(Path(tts_path).stem)
 
     def _resolve_tts_source(
         self, session, source_mode: str, tts_source: str, sync_mode: str, log
@@ -533,6 +578,39 @@ class AddVoiceStep(BaseStep):
                 label = m.stem[:50]
             self._manifest_combo.addItem(label, userData=str(m))
         self._manifest_combo.blockSignals(False)
+
+    def apply_config(self, config: dict) -> None:
+        if not config:
+            return
+        _MODE_LABEL = {
+            "all_cache": "All Step 5 session assets",
+            "latest": "Latest Step 5 manifest only",
+            "single": "Single audio file (legacy)",
+            "custom": "Custom manifest/audio list",
+        }
+        if self._source_mode_combo and config.get("source_mode"):
+            self._source_mode_combo.setCurrentText(
+                _MODE_LABEL.get(config["source_mode"], "All Step 5 session assets")
+            )
+        if self._sync_combo and config.get("sync_mode"):
+            # match prefix of combo items
+            sm = config["sync_mode"]
+            for i in range(self._sync_combo.count()):
+                if self._sync_combo.itemText(i).split("—")[0].strip() == sm:
+                    self._sync_combo.setCurrentIndex(i)
+                    break
+        if (
+            self._mix_radios
+            and config.get("mix_mode")
+            and config["mix_mode"] in self._mix_radios
+        ):
+            self._mix_radios[config["mix_mode"]].setChecked(True)
+        if self._tts_vol_slider and config.get("tts_vol") is not None:
+            self._tts_vol_slider.setValue(int(round(config["tts_vol"] * 100)))
+        if self._bgm_vol_slider and config.get("bgm_vol") is not None:
+            self._bgm_vol_slider.setValue(int(round(config["bgm_vol"] * 100)))
+        if self._orig_vol_slider and config.get("orig_vol") is not None:
+            self._orig_vol_slider.setValue(int(round(config["orig_vol"] * 100)))
 
     def collect_config(self):
         mode_text = (

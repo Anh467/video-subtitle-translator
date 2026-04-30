@@ -12,6 +12,7 @@ Current processing flow:
 4. Step 4 `Separate Voice`: split vocals/background.
 5. Step 5 `Text-to-Speech`: generate TTS assets only.
 6. Step 6 `Add Voice`: compose/mix/mux audio into final video.
+7. Step 7 `Publish Info`: generate title/description/hashtags and edited thumbnail.
 
 Main design rule: Step 5 does API calls and stores reusable assets; Step 6 does composition and final video output.
 
@@ -29,6 +30,10 @@ Main design rule: Step 5 does API calls and stores reusable assets; Step 6 does 
 - `core/pipeline/step4_separate.py`
 - `core/pipeline/step5_tts.py`
 - `core/pipeline/step6_add_voice.py`
+- `core/pipeline/step7_publish_info.py`
+- `automation/session_publish_jobs.py`: scan sessions to publish jobs payload.
+- `automation/export_publish_jobs.py`: CLI export JSON jobs for n8n.
+- `automation/mark_publish_result.py`: CLI write posted markers per platform.
 - `ui/main_window.py`: orchestration, queue, session manager, key loading.
 - `ui/multi_session_window.py`: standalone multi-session runner window.
 - `ui/widgets/step_card.py`: auto-width step card widget.
@@ -53,6 +58,9 @@ Important outputs:
 - `step5_tts.mp3`
 - `step5_tts_assets/` (TTS assets per segment)
 - `step6_output.*`
+- `step7_publish_info.json`
+- `thumb_background.*` (optional Step 7 foreground layer persisted per session)
+- `posted_youtube.json` / `posted_facebook.json` (optional automation markers)
 
 ### Session Metadata
 
@@ -67,6 +75,8 @@ Methods:
 - `session.save_info(title, description)` — writes to session.json
 - `session.save_thumbnail(src_path)` — copies image to `thumbnail.*` in session folder
 - `session.thumbnail` — property returning thumbnail path or `""`
+- `session.save_thumb_background(src_path)` — copies image to `thumb_background.*`
+- `session.thumb_background` — property returning Step 7 foreground layer path or `""`
 
 ### Session List Ordering
 
@@ -100,6 +110,7 @@ Managed by `core/api_keys.py`:
 - `ApiKeyManager.load(base_dir)`
 - `ApiKeyManager.save(base_dir)`
 - Known keys: Gemini, OpenAI, FPT, Zalo, ElevenLabs, **Google Cloud TTS**.
+- Step 7 uses `GEMINI_API_KEY` when Generator = Gemini.
 
 UI behavior in `ui/main_window.py`:
 
@@ -109,6 +120,7 @@ UI behavior in `ui/main_window.py`:
 - Autofill uses normalized candidate mapping from `core/pipeline/selection.py`.
 - Step 1 Whisper API key auto-filled from `OPENAI_API_KEY`.
 - Step 1 field `textChanged` syncs back to `ApiKeyManager` (bidirectional).
+- Step 7 Gemini API key field behaves like Step 5 key field: autofill from manager in both single and multi-session windows.
 
 ## Step 1 (Transcribe) Current Logic
 
@@ -236,6 +248,44 @@ Setup:
 - Background music: **145%**
 - Original voice: **31%**
 
+## Step 7 (Publish Info) Current Logic
+
+File: `core/pipeline/step7_publish_info.py`
+
+### Generation backends
+
+- **Ollama (local)**: title/description/hook/time-pick with retry + fallback.
+- **Gemini (Google API)**: title/description/hook/time-pick via `google-genai` and `GEMINI_API_KEY`.
+- **Rule-based**: deterministic fallback for all text pieces.
+
+### Thumbnail layering
+
+Final thumbnail composition order:
+
+1. Video representative frame (back)
+2. Uploaded foreground image (full opacity overlay)
+3. Hook text with stroke (no dark background box)
+
+Hook rules:
+
+- 4-5 words only.
+- One visible line.
+- Uppercase preference for AI outputs.
+
+### Shared foreground image behavior
+
+- Upload once in Step 7 UI.
+- Saved in base folder as `step7_thumb_foreground.*`.
+- Auto-reused in single and multi-session runs for the same base folder.
+- UI includes preview pane and clear action.
+
+### Step 7 config UX
+
+- Backend selector dynamically enables only relevant model combo:
+  - Ollama selected -> Ollama model enabled, Gemini model disabled.
+  - Gemini selected -> Gemini model enabled, Ollama model disabled, API key field visible.
+  - Rule-based selected -> both model combos disabled.
+
 ## UI Architecture
 
 ### MainWindow (`ui/main_window.py`)
@@ -247,6 +297,7 @@ Setup:
 - `_multi_window: MultiSessionWindow | None` — singleton, reused across opens.
 - `update_base_dir(d)` called on `_multi_window` when base dir changes.
 - `update_char_count(session)` called on all steps when session loads/changes.
+- Step 7 key autofill integrated in `_autofill_api_keys` (Gemini service key).
 
 ### MultiSessionWindow (`ui/multi_session_window.py`)
 
@@ -284,6 +335,7 @@ Layout:
 - **Run All Sessions**: runs `_session_panel._sessions` directly (does NOT mutate checkboxes).
 - On error: skips remaining steps for that session, continues next session.
 - After completion: calls `_session_panel.refresh()` to update done_steps display.
+- `_autofill_keys()` also pushes Gemini key into Step 7 API field before queue runs.
 
 ### SubtitleEditor (`ui/widgets/subtitle_editor.py`)
 
@@ -332,6 +384,7 @@ Layout: thumbnail preview (96×54) + upload/clear buttons on left; Title + Notes
 - **delogo filter**: must come BEFORE subtitles filter in the chain.
 - Keep Step 5 free of mux/mix logic.
 - Keep Step 6 free of TTS API calls.
+- Keep Step 7 generation logic independent from Step 5/6 media composition.
 - Keep backend/model/API-key mapping inside `core/pipeline/selection.py`.
 - When adding new TTS backend, ensure:
   1. Add to `TTS_BACKEND_LABEL_TO_KEY` in `selection.py`
@@ -342,8 +395,29 @@ Layout: thumbnail preview (96×54) + upload/clear buttons on left; Title + Notes
 - If key handling changes, update both `core/api_keys.py` and autofill in `ui/main_window.py`.
 - `update_char_count(session)` must be called whenever active session changes in both MainWindow and MultiSessionWindow.
 - Step 1 `_api_key_edit.textChanged` syncs to ApiKeyManager — do not remove this signal.
+- Step 7 `_api_edit.textChanged` syncs runtime key selection for collect_config.
 - Checkbox default in `SessionListPanel._make_row` is **False**. Do not change to True.
 - `_rebuild_list(preserve_checked=True)` must be used in all cases except initial load.
+
+## Automation (n8n helper)
+
+Folder: `automation/`
+
+- `export_publish_jobs.py` scans session folders and outputs JSON jobs.
+- `session_publish_jobs.py` discovers video/title/description/hashtags/thumbnail and ready-state.
+- `mark_publish_result.py` writes per-platform markers after scheduling/upload.
+
+Video discovery priority in scanner:
+
+1. `result/step6_output_*.*`
+2. `step6_output.*`
+3. `step5_output.*`
+4. `step3_output.*`
+
+Marker files used to skip already posted sessions:
+
+- `posted_youtube.json`
+- `posted_facebook.json`
 
 ## Default Values (after patch_defaults.py)
 

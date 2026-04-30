@@ -1281,6 +1281,48 @@ class PublishInfoStep(BaseStep):
         self._thumb_bg_path = ""
         self._refresh_thumb_bg_preview()
 
+    def apply_config(self, config: dict) -> None:
+        if not config:
+            return
+        _BE_LABEL = {
+            "ollama": "Ollama (local)",
+            "gemini": "Gemini (Google)",
+            "rule": "Rule-based",
+        }
+        _STYLE_LABEL = {
+            "story": "Story (balanced)",
+            "dramatic": "Dramatic (hook)",
+            "short": "Short (compact)",
+        }
+        _THUMB_LABEL = {
+            "keep": "Keep current thumbnail",
+            "auto_if_missing": "Auto if missing",
+            "auto": "Always auto-generate",
+        }
+        if self._gen_backend_combo and config.get("gen_backend"):
+            lbl = _BE_LABEL.get(config["gen_backend"], "")
+            if lbl:
+                self._gen_backend_combo.setCurrentText(lbl)
+        if self._ollama_model_combo and config.get("ollama_model"):
+            self._ollama_model_combo.setCurrentText(config["ollama_model"])
+        if self._gemini_model_combo and config.get("gemini_model"):
+            self._gemini_model_combo.setCurrentText(config["gemini_model"])
+        if self._style_combo and config.get("style"):
+            self._style_combo.setCurrentText(
+                _STYLE_LABEL.get(config["style"], "Story (balanced)")
+            )
+        if self._max_tags_spin and config.get("max_tags") is not None:
+            self._max_tags_spin.setValue(int(config["max_tags"]))
+        if self._thumb_mode_combo and config.get("thumb_mode"):
+            self._thumb_mode_combo.setCurrentText(
+                _THUMB_LABEL.get(config["thumb_mode"], "Auto if missing")
+            )
+        if self._thumb_at_spin and config.get("thumb_at_sec") is not None:
+            self._thumb_at_spin.setValue(float(config["thumb_at_sec"]))
+        if self._overwrite_chk and config.get("overwrite") is not None:
+            self._overwrite_chk.setChecked(bool(config["overwrite"]))
+        # api_key: skip — handled by autofill from ApiKeyManager
+
     def collect_config(self):
         style_key = {
             "Story (balanced)": "story",

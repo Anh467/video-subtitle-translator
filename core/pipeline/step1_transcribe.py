@@ -469,6 +469,22 @@ class TranscribeStep(BaseStep):
         if self._local_opts:
             self._local_opts.setVisible(not is_api)
 
+    def apply_config(self, config: dict) -> None:
+        if not config:
+            return
+        _LANG_BY_CODE = {v: k for k, v in LANGUAGES.items() if v}
+        if self._backend_combo:
+            self._backend_combo.setCurrentIndex(
+                0 if config.get("backend") == "api" else 1
+            )
+        if self._model_combo and config.get("model_size"):
+            self._model_combo.setCurrentText(config["model_size"])
+        if self._lang_combo:
+            label = _LANG_BY_CODE.get(config.get("language"), "Auto detect")
+            self._lang_combo.setCurrentText(label)
+        if self._min_silence_spin and config.get("min_silence") is not None:
+            self._min_silence_spin.setValue(float(config["min_silence"]))
+
     def collect_config(self):
         idx = self._backend_combo.currentIndex() if self._backend_combo else 0
         backend = "api" if idx == 0 else "local"

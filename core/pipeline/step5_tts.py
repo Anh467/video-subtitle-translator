@@ -1081,6 +1081,28 @@ class TTSStep(BaseStep):
                 self._cost_lbl.setText(f"💸 Cost: {cost}")
                 self._cost_lbl.setStyleSheet("color:#ffaa55;font-size:10px;")
 
+    def apply_config(self, config: dict) -> None:
+        if not config:
+            return
+        from core.pipeline.selection import TTS_BACKEND_LABEL_TO_KEY
+
+        _LABEL_BY_KEY = {v: k for k, v in TTS_BACKEND_LABEL_TO_KEY.items()}
+        be = config.get("backend", "")
+        label = _LABEL_BY_KEY.get(be, "")
+        if label and self._backend_combo:
+            self._backend_combo.setCurrentText(label)
+        # language
+        _LANG_BY_CODE = {v: k for k, v in GTTS_LANGS.items()}
+        if self._lang_combo and config.get("lang"):
+            lbl = _LANG_BY_CODE.get(config["lang"], "Vietnamese")
+            self._lang_combo.setCurrentText(lbl)
+        # voice_id (stored attrs, UI shows after backend dialog)
+        if config.get("voice_id"):
+            if be == "elevenlabs":
+                self._selected_elevenlabs_voice_id = config["voice_id"]
+            else:
+                self._selected_voice_id = config["voice_id"]
+
     def collect_config(self):
         key_text = self._selected_backend_label
         backend = tts_backend_from_label(key_text)

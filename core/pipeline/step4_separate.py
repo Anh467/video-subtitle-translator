@@ -70,14 +70,36 @@ class SeparateStep(BaseStep):
 
             raise CancelledError()
 
-        # Copy source to ASCII temp name to avoid UnicodeEncodeError on Windows
+        # Convert source to WAV (torchaudio >=2.6 requires torchcodec to load MP4/M4A;
+        # WAV is always supported natively).  Also avoids UnicodeEncodeError on Windows.
         import shutil as _shutil
         import tempfile
 
-        ext = Path(source).suffix
-        tmp_input = Path(tempfile.mkdtemp()) / f"demucs_input{ext}"
-        _shutil.copy2(source, tmp_input)
-        log(f"   Input copied to safe path: {tmp_input.name}")
+        tmp_dir = Path(tempfile.mkdtemp())
+        tmp_input = tmp_dir / "demucs_input.wav"
+        log("   Converting input to WAV for Demucs compatibility…")
+        wav_cmd = [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(source),
+            "-ac",
+            "2",
+            "-ar",
+            "44100",
+            "-vn",
+            str(tmp_input),
+        ]
+        wav_proc = subprocess.run(
+            wav_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace"
+        )
+        if wav_proc.returncode != 0 or not tmp_input.exists():
+            # Fallback: plain copy with safe filename
+            tmp_input = tmp_dir / f"demucs_input{Path(source).suffix}"
+            _shutil.copy2(source, tmp_input)
+            log(f"   WAV conversion failed, using original: {tmp_input.name}")
+        else:
+            log(f"   Input ready: {tmp_input.name}")
 
         tmp_out = out_dir / "demucs_tmp"
         tmp_out.mkdir(exist_ok=True)
@@ -140,10 +162,9 @@ class SeparateStep(BaseStep):
 
         proc.wait()
 
-        # Cleanup temp input
+        # Cleanup temp input dir
         try:
-            tmp_input.unlink(missing_ok=True)
-            tmp_input.parent.rmdir()
+            _shutil.rmtree(tmp_dir, ignore_errors=True)
         except Exception:
             pass
 
@@ -300,6 +321,18 @@ class SeparateStep(BaseStep):
         v.addLayout(r2)
 
         return w
+
+    def apply_config(self, config: dict) -> None:
+        if not config:
+            return
+        _MODEL_BY_VAL = {v: k for k, v in DEMUCS_MODELS.items()}
+        _STEM_BY_VAL = {v: k for k, v in STEM_MODES.items()}
+        if self._model_combo and config.get("model"):
+            label = _MODEL_BY_VAL.get(config["model"], "htdemucs (recommended)")
+            self._model_combo.setCurrentText(label)
+        if self._stem_combo and config.get("stems"):
+            label = _STEM_BY_VAL.get(config["stems"], "2-stem: vocals + background")
+            self._stem_combo.setCurrentText(label)
 
     def collect_config(self):
         model_key = (

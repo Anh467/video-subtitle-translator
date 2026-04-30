@@ -14,6 +14,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QColor, QFont, QFontMetrics, QImage, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -42,6 +44,39 @@ SUB_POSITIONS = {
 }
 FONT_COLORS = ["white", "yellow", "cyan", "green", "red", "black"]
 OUTLINE_COLORS = ["black", "white", "none"]
+BG_COLORS = [
+    "black",
+    "white",
+    "yellow",
+    "blue",
+    "red",
+    "green",
+    "purple",
+    "orange",
+    "gray",
+]
+FONT_FAMILIES = [
+    "Arial",
+    "Arial Bold",
+    "Impact",
+    "Tahoma",
+    "Verdana",
+    "Trebuchet MS",
+    "Times New Roman",
+    "Courier New",
+]
+BG_BOX_STYLES = {
+    "None": "none",
+    "Semi-transparent box": "semi",
+    "Opaque box": "opaque",
+}
+PREVIEW_ASPECTS = {
+    "Auto (from source video)": None,
+    "16:9 (Landscape)": 16 / 9,
+    "9:16 (Portrait)": 9 / 16,
+    "1:1 (Square)": 1.0,
+    "4:3": 4 / 3,
+}
 COLOR_MAP = {
     "white": "FFFFFF",
     "yellow": "00FFFF",
@@ -49,6 +84,10 @@ COLOR_MAP = {
     "black": "000000",
     "red": "0000FF",
     "green": "00FF00",
+    "blue": "FF0000",
+    "purple": "800080",
+    "orange": "00A5FF",
+    "gray": "808080",
 }
 
 CHANNEL_PROFILE_FILE = ".subsync_channel_profiles.json"
@@ -286,9 +325,23 @@ class BurnStep(BaseStep):
         self._radio_soft = self._radio_hard = None
         self._font_pct_spin = None
         self._color_combo = self._outline_combo = self._pos_combo = None
-        self._bg_box_chk = None
+        self._bg_box_combo = None  # replaces _bg_box_chk
+        self._bg_color_combo = None
+        self._bg_opacity_spin = None
+        self._outline_width_spin = None
+        self._shadow_spin = None
+        self._bold_chk = self._italic_chk = None
+        self._font_family_combo = None
+        self._margin_v_spin = None
+        self._bg_box_chk = None  # kept for backward compat (not shown in new UI)
         self._base_dir = ""
         self._profiles = {}
+
+        # Preview
+        self._preview_lbl = None
+        self._preview_timer = None
+        self._preview_text_edit = None
+        self._preview_ratio_combo = None
 
         # Delogo controls
         self._delogo_chk = None
@@ -480,10 +533,18 @@ class BurnStep(BaseStep):
                     tmp.name,
                     out,
                     font_size=font_size,
+                    font_family=config.get("font_family", "Arial"),
+                    bold=config.get("bold", False),
+                    italic=config.get("italic", False),
                     font_color=config["font_color"],
                     outline_color=config["outline_color"],
+                    outline_width=config.get("outline_width", 2),
+                    shadow=config.get("shadow", 0),
+                    bg_style=config.get("bg_style", "semi"),
+                    bg_color=config.get("bg_color", "black"),
+                    bg_opacity=config.get("bg_opacity", 50),
                     alignment=config["alignment"],
-                    bg_box=config.get("bg_box", True),
+                    margin_v=config.get("margin_v", 6),
                     video_w=w,
                     video_h=h,
                     delogo=delogo_cfg,
@@ -515,9 +576,9 @@ class BurnStep(BaseStep):
         w = QWidget(parent)
         v = QVBoxLayout(w)
         v.setContentsMargins(0, 0, 0, 0)
-        v.setSpacing(6)
+        v.setSpacing(5)
 
-        # Mode
+        # ── Mode ─────────────────────────────────────────────────────────────
         r_mode = QHBoxLayout()
         r_mode.addWidget(QLabel("Mode:"))
         self._radio_soft = QRadioButton("Soft (track)")
@@ -531,47 +592,171 @@ class BurnStep(BaseStep):
         r_mode.addStretch()
         v.addLayout(r_mode)
 
-        # Font size
-        r_fs = QHBoxLayout()
-        r_fs.addWidget(QLabel("Font size:"))
+        # ── ① Subtitle Style ─────────────────────────────────────────────────
+        v.addWidget(self._sep_label("🔤 Subtitle Style"))
+
+        # Row: Font family + size
+        r_font = QHBoxLayout()
+        r_font.addWidget(QLabel("Font:"))
+        self._font_family_combo = QComboBox()
+        self._font_family_combo.addItems(FONT_FAMILIES)
+        self._font_family_combo.setFixedWidth(130)
+        r_font.addWidget(self._font_family_combo)
+        r_font.addSpacing(6)
+        r_font.addWidget(QLabel("Size:"))
         self._font_pct_spin = QDoubleSpinBox()
         self._font_pct_spin.setDecimals(1)
         self._font_pct_spin.setSingleStep(0.5)
         self._font_pct_spin.setRange(0.5, 15)
-        self._font_pct_spin.setValue(2)
-        self._font_pct_spin.setFixedWidth(60)
-        r_fs.addWidget(self._font_pct_spin)
-        r_fs.addWidget(QLabel("% of height"))
-        r_fs.addStretch()
-        v.addLayout(r_fs)
+        self._font_pct_spin.setValue(2.0)
+        self._font_pct_spin.setFixedWidth(58)
+        r_font.addWidget(self._font_pct_spin)
+        r_font.addWidget(QLabel("% h"))
+        r_font.addSpacing(8)
+        self._bold_chk = QCheckBox("Bold")
+        self._italic_chk = QCheckBox("Italic")
+        r_font.addWidget(self._bold_chk)
+        r_font.addWidget(self._italic_chk)
+        r_font.addStretch()
+        v.addLayout(r_font)
 
-        # Color + outline
+        # Row: Color + outline
         r_col = QHBoxLayout()
         r_col.addWidget(QLabel("Color:"))
         self._color_combo = QComboBox()
         self._color_combo.addItems(FONT_COLORS)
+        self._color_combo.setFixedWidth(70)
         r_col.addWidget(self._color_combo)
         r_col.addSpacing(8)
         r_col.addWidget(QLabel("Outline:"))
         self._outline_combo = QComboBox()
         self._outline_combo.addItems(OUTLINE_COLORS)
+        self._outline_combo.setFixedWidth(65)
         r_col.addWidget(self._outline_combo)
+        r_col.addSpacing(4)
+        r_col.addWidget(QLabel("Width:"))
+        self._outline_width_spin = QSpinBox()
+        self._outline_width_spin.setRange(0, 8)
+        self._outline_width_spin.setValue(2)
+        self._outline_width_spin.setFixedWidth(46)
+        r_col.addWidget(self._outline_width_spin)
+        r_col.addSpacing(8)
+        r_col.addWidget(QLabel("Shadow:"))
+        self._shadow_spin = QSpinBox()
+        self._shadow_spin.setRange(0, 5)
+        self._shadow_spin.setValue(0)
+        self._shadow_spin.setFixedWidth(46)
+        r_col.addWidget(self._shadow_spin)
         r_col.addStretch()
         v.addLayout(r_col)
 
-        # Background box
-        self._bg_box_chk = QCheckBox("Background box (blur behind text)")
-        self._bg_box_chk.setChecked(True)
-        v.addWidget(self._bg_box_chk)
+        # Row: Background box + position + margin
+        r_bg = QHBoxLayout()
+        r_bg.addWidget(QLabel("Background:"))
+        self._bg_box_combo = QComboBox()
+        self._bg_box_combo.addItems(BG_BOX_STYLES.keys())
+        self._bg_box_combo.setCurrentText("Semi-transparent box")
+        self._bg_box_combo.setFixedWidth(145)
+        r_bg.addWidget(self._bg_box_combo)
+        r_bg.addSpacing(6)
+        r_bg.addWidget(QLabel("Color:"))
+        self._bg_color_combo = QComboBox()
+        self._bg_color_combo.addItems(BG_COLORS)
+        self._bg_color_combo.setCurrentText("black")
+        self._bg_color_combo.setFixedWidth(82)
+        r_bg.addWidget(self._bg_color_combo)
+        r_bg.addSpacing(4)
+        r_bg.addWidget(QLabel("Opacity:"))
+        self._bg_opacity_spin = QSpinBox()
+        self._bg_opacity_spin.setRange(0, 100)
+        self._bg_opacity_spin.setValue(50)
+        self._bg_opacity_spin.setFixedWidth(50)
+        r_bg.addWidget(self._bg_opacity_spin)
+        r_bg.addWidget(QLabel("%"))
+        r_bg.addStretch()
+        v.addLayout(r_bg)
 
-        # Position
         r_pos = QHBoxLayout()
         r_pos.addWidget(QLabel("Position:"))
         self._pos_combo = QComboBox()
         self._pos_combo.addItems(SUB_POSITIONS.keys())
+        self._pos_combo.setFixedWidth(165)
         r_pos.addWidget(self._pos_combo)
+        r_pos.addSpacing(8)
+        r_pos.addWidget(QLabel("Margin V:"))
+        self._margin_v_spin = QSpinBox()
+        self._margin_v_spin.setRange(0, 200)
+        self._margin_v_spin.setValue(6)
+        self._margin_v_spin.setFixedWidth(55)
+        r_pos.addWidget(self._margin_v_spin)
+        r_pos.addWidget(QLabel("px"))
         r_pos.addStretch()
         v.addLayout(r_pos)
+
+        # ── ② Subtitle Preview ───────────────────────────────────────────────
+        v.addWidget(self._sep_label("👁  Subtitle Preview"))
+
+        prev_row = QHBoxLayout()
+        # Sample text field
+        self._preview_text_edit = QLineEdit()
+        self._preview_text_edit.setPlaceholderText("Preview text…")
+        self._preview_text_edit.setText("Đây là ví dụ phụ đề tiếng Việt")
+        self._preview_text_edit.setFixedWidth(200)
+        prev_row.addWidget(QLabel("Text:"))
+        prev_row.addWidget(self._preview_text_edit)
+        prev_row.addSpacing(8)
+        prev_row.addWidget(QLabel("Ratio:"))
+        self._preview_ratio_combo = QComboBox()
+        self._preview_ratio_combo.addItems(PREVIEW_ASPECTS.keys())
+        self._preview_ratio_combo.setCurrentText("Auto (from source video)")
+        self._preview_ratio_combo.setFixedWidth(130)
+        prev_row.addWidget(self._preview_ratio_combo)
+        prev_row.addStretch()
+        v.addLayout(prev_row)
+
+        self._preview_lbl = QLabel()
+        self._preview_lbl.setFixedHeight(190)
+        self._preview_lbl.setMinimumWidth(340)
+        self._preview_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._preview_lbl.setStyleSheet(
+            "background:#111;border:1px solid #333;border-radius:4px;"
+        )
+        v.addWidget(self._preview_lbl)
+
+        # Wire all style controls to trigger preview refresh
+        self._preview_timer = QTimer()
+        self._preview_timer.setSingleShot(True)
+        self._preview_timer.setInterval(120)
+        self._preview_timer.timeout.connect(self._refresh_preview)
+
+        def _schedule():
+            self._preview_timer.stop()
+            self._preview_timer.start()
+
+        for widget in [
+            self._font_family_combo,
+            self._color_combo,
+            self._outline_combo,
+            self._bg_box_combo,
+            self._bg_color_combo,
+            self._pos_combo,
+            self._preview_ratio_combo,
+        ]:
+            widget.currentIndexChanged.connect(_schedule)
+        for widget in [
+            self._font_pct_spin,
+            self._outline_width_spin,
+            self._shadow_spin,
+            self._bg_opacity_spin,
+            self._margin_v_spin,
+        ]:
+            widget.valueChanged.connect(_schedule)
+        self._bold_chk.toggled.connect(_schedule)
+        self._italic_chk.toggled.connect(_schedule)
+        self._preview_text_edit.textChanged.connect(_schedule)
+
+        # Initial render
+        QTimer.singleShot(0, self._refresh_preview)
 
         # ── Remove existing subtitle (delogo) ─────────────────────────────
         v.addWidget(self._sep_label("🧹 Remove Existing Subtitle"))
@@ -745,8 +930,258 @@ class BurnStep(BaseStep):
         l.setStyleSheet("color:#a0a8ff;font-size:11px;font-weight:600;margin-top:4px;")
         return l
 
+    def _refresh_preview(self):
+        """Render a subtitle preview using QPainter into the preview label."""
+        if not self._preview_lbl:
+            return
+
+        lbl_w = max(340, self._preview_lbl.width() or 460)
+        lbl_h = max(190, self._preview_lbl.height() or 190)
+
+        ratio_label = (
+            self._preview_ratio_combo.currentText()
+            if self._preview_ratio_combo
+            else "Auto (from source video)"
+        )
+        ratio = PREVIEW_ASPECTS.get(ratio_label, None)
+        if ratio is None:
+            src = self._get_current_source()
+            if src:
+                w, h = _get_video_size(src)
+                ratio = (w / h) if w > 0 and h > 0 else (16 / 9)
+            else:
+                ratio = 16 / 9
+
+        # Fit a video rectangle inside the preview canvas based on selected aspect ratio
+        avail_w = max(10, lbl_w - 20)
+        avail_h = max(10, lbl_h - 20)
+        if (avail_w / avail_h) > ratio:
+            video_h = avail_h
+            video_w = int(video_h * ratio)
+        else:
+            video_w = avail_w
+            video_h = int(video_w / ratio)
+        vx = (lbl_w - video_w) // 2
+        vy = (lbl_h - video_h) // 2
+
+        font_pct = self._font_pct_spin.value() if self._font_pct_spin else 2.0
+        font_size_px = max(8, int(video_h * font_pct / 100))
+
+        text = (
+            self._preview_text_edit.text() if self._preview_text_edit else ""
+        ) or "Sample Subtitle Text"
+        font_color_name = (
+            self._color_combo.currentText() if self._color_combo else "white"
+        )
+        outline_color_name = (
+            self._outline_combo.currentText() if self._outline_combo else "black"
+        )
+        bg_color_name = (
+            self._bg_color_combo.currentText() if self._bg_color_combo else "black"
+        )
+        outline_w = self._outline_width_spin.value() if self._outline_width_spin else 2
+        shadow_px = self._shadow_spin.value() if self._shadow_spin else 0
+        bg_style = BG_BOX_STYLES.get(
+            (
+                self._bg_box_combo.currentText()
+                if self._bg_box_combo
+                else "Semi-transparent box"
+            ),
+            "semi",
+        )
+        bg_opacity = (
+            self._bg_opacity_spin.value() if self._bg_opacity_spin else 50
+        ) / 100.0
+        align = SUB_POSITIONS.get(
+            (
+                self._pos_combo.currentText()
+                if self._pos_combo
+                else "Bottom center (default)"
+            ),
+            2,
+        )
+        margin_v = self._margin_v_spin.value() if self._margin_v_spin else 6
+        bold = self._bold_chk.isChecked() if self._bold_chk else False
+        italic = self._italic_chk.isChecked() if self._italic_chk else False
+        family = (
+            self._font_family_combo.currentText()
+            if self._font_family_combo
+            else "Arial"
+        )
+
+        # Color mapping
+        _COLOR_MAP = {
+            "white": QColor(255, 255, 255),
+            "yellow": QColor(255, 255, 0),
+            "cyan": QColor(0, 255, 255),
+            "green": QColor(0, 200, 80),
+            "red": QColor(255, 60, 60),
+            "black": QColor(0, 0, 0),
+            "blue": QColor(70, 120, 255),
+            "purple": QColor(170, 70, 220),
+            "orange": QColor(255, 165, 40),
+            "gray": QColor(140, 140, 140),
+        }
+        fg_color = _COLOR_MAP.get(font_color_name, QColor(255, 255, 255))
+        oc = (
+            _COLOR_MAP.get(outline_color_name, QColor(0, 0, 0))
+            if outline_color_name != "none"
+            else None
+        )
+        bg_base = _COLOR_MAP.get(bg_color_name, QColor(0, 0, 0))
+
+        img = QImage(lbl_w, lbl_h, QImage.Format.Format_ARGB32)
+        img.fill(QColor(20, 20, 20))
+
+        painter = QPainter(img)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+
+        # Draw a simulated video frame area for chosen ratio
+        painter.fillRect(vx, vy, video_w, video_h, QColor(36, 48, 66))
+        painter.setPen(QPen(QColor(110, 130, 155), 1))
+        painter.drawRect(vx, vy, video_w, video_h)
+
+        font = QFont(family, font_size_px)
+        font.setBold(bold)
+        font.setItalic(italic)
+        painter.setFont(font)
+
+        fm = QFontMetrics(font)
+        text_w = fm.horizontalAdvance(text)
+        text_h = fm.height()
+        if align in (1,):
+            x = vx + 12
+        elif align in (3,):
+            x = vx + video_w - text_w - 12
+        else:
+            x = vx + (video_w - text_w) // 2
+
+        if align in (8,):
+            y = vy + text_h + max(4, margin_v)
+        elif align in (5,):
+            y = vy + (video_h + text_h) // 2
+        else:
+            y = vy + video_h - max(4, margin_v)
+
+        # Background box
+        if bg_style != "none":
+            pad = max(3, outline_w + 4)
+            box_alpha = int(bg_opacity * 255)
+            if bg_style == "opaque":
+                box_alpha = 255
+            box_color = QColor(
+                bg_base.red(), bg_base.green(), bg_base.blue(), box_alpha
+            )
+            painter.fillRect(
+                x - pad, y - text_h + 4, text_w + 2 * pad, text_h + pad, box_color
+            )
+
+        # Shadow
+        if shadow_px > 0:
+            painter.setPen(QColor(0, 0, 0, 160))
+            painter.drawText(x + shadow_px, y + shadow_px, text)
+
+        # Outline (draw text in outline color at N offsets)
+        if oc and outline_w > 0:
+            painter.setPen(QPen(oc, 1))
+            for dx in range(-outline_w, outline_w + 1):
+                for dy in range(-outline_w, outline_w + 1):
+                    if dx == 0 and dy == 0:
+                        continue
+                    painter.setPen(oc)
+                    painter.drawText(x + dx, y + dy, text)
+
+        # Main text
+        painter.setPen(fg_color)
+        painter.drawText(x, y, text)
+        painter.end()
+
+        self._preview_lbl.setPixmap(QPixmap.fromImage(img))
+
+    def apply_config(self, config: dict) -> None:
+        if not config:
+            return
+        _POS_BY_VAL = {v: k for k, v in SUB_POSITIONS.items()}
+        _BRAND_BY_VAL = {v: k for k, v in BRAND_POSITIONS.items()}
+        _BG_BY_VAL = {v: k for k, v in BG_BOX_STYLES.items()}
+        if config.get("mode") == "hard" and self._radio_hard:
+            self._radio_hard.setChecked(True)
+        elif config.get("mode") == "soft" and self._radio_soft:
+            self._radio_soft.setChecked(True)
+        if self._font_pct_spin and config.get("font_pct") is not None:
+            self._font_pct_spin.setValue(float(config["font_pct"]))
+        if self._color_combo and config.get("font_color"):
+            self._color_combo.setCurrentText(config["font_color"])
+        if self._outline_combo:
+            oc = config.get("outline_color", "black")
+            self._outline_combo.setCurrentText(oc if oc else "none")
+        if self._outline_width_spin and config.get("outline_width") is not None:
+            self._outline_width_spin.setValue(int(config["outline_width"]))
+        if self._shadow_spin and config.get("shadow") is not None:
+            self._shadow_spin.setValue(int(config["shadow"]))
+        if self._font_family_combo and config.get("font_family"):
+            self._font_family_combo.setCurrentText(config["font_family"])
+        if self._bold_chk and config.get("bold") is not None:
+            self._bold_chk.setChecked(bool(config["bold"]))
+        if self._italic_chk and config.get("italic") is not None:
+            self._italic_chk.setChecked(bool(config["italic"]))
+        if self._bg_box_combo and config.get("bg_style"):
+            lbl = _BG_BY_VAL.get(config["bg_style"], "Semi-transparent box")
+            self._bg_box_combo.setCurrentText(lbl)
+        if self._bg_color_combo and config.get("bg_color"):
+            self._bg_color_combo.setCurrentText(str(config["bg_color"]))
+        if self._bg_opacity_spin and config.get("bg_opacity") is not None:
+            self._bg_opacity_spin.setValue(int(config["bg_opacity"]))
+        if self._pos_combo and config.get("alignment") is not None:
+            label = _POS_BY_VAL.get(config["alignment"], "Bottom center (default)")
+            self._pos_combo.setCurrentText(label)
+        if self._margin_v_spin and config.get("margin_v") is not None:
+            self._margin_v_spin.setValue(int(config["margin_v"]))
+        if self._preview_ratio_combo and config.get("preview_aspect"):
+            self._preview_ratio_combo.setCurrentText(str(config["preview_aspect"]))
+        # delogo
+        dl = config.get("delogo")
+        if self._delogo_chk:
+            self._delogo_chk.setChecked(bool(dl and dl.get("enabled")))
+        if dl and isinstance(dl, dict):
+            for attr, key in (
+                ("_delogo_x_spin", "x"),
+                ("_delogo_y_spin", "y"),
+                ("_delogo_w_spin", "w"),
+                ("_delogo_h_spin", "h"),
+            ):
+                spin = getattr(self, attr, None)
+                if spin and dl.get(key) is not None:
+                    spin.setValue(int(dl[key]))
+        # brand
+        if self._brand_enable_chk and config.get("brand_enabled") is not None:
+            self._brand_enable_chk.setChecked(bool(config["brand_enabled"]))
+        if self._brand_name_edit and config.get("brand_name") is not None:
+            self._brand_name_edit.setText(config["brand_name"])
+        if self._brand_avatar_edit and config.get("brand_avatar") is not None:
+            self._brand_avatar_edit.setText(config["brand_avatar"])
+        if self._brand_avatar_pct_spin and config.get("brand_avatar_pct") is not None:
+            self._brand_avatar_pct_spin.setValue(float(config["brand_avatar_pct"]))
+        if self._brand_opacity_spin and config.get("brand_opacity") is not None:
+            self._brand_opacity_spin.setValue(int(config["brand_opacity"]))
+        if self._brand_pos_combo and config.get("brand_pos"):
+            label = _BRAND_BY_VAL.get(config["brand_pos"], "Random")
+            self._brand_pos_combo.setCurrentText(label)
+        if self._brand_margin_pct_spin and config.get("brand_margin_pct") is not None:
+            self._brand_margin_pct_spin.setValue(float(config["brand_margin_pct"]))
+        if self._brand_name_pct_spin and config.get("brand_name_pct") is not None:
+            self._brand_name_pct_spin.setValue(float(config["brand_name_pct"]))
+
     def collect_config(self):
         outline = self._outline_combo.currentText() if self._outline_combo else "black"
+        bg_style = BG_BOX_STYLES.get(
+            (
+                self._bg_box_combo.currentText()
+                if self._bg_box_combo
+                else "Semi-transparent box"
+            ),
+            "semi",
+        )
 
         delogo_cfg = None
         if self._delogo_chk and self._delogo_chk.isChecked():
@@ -765,14 +1200,39 @@ class BurnStep(BaseStep):
                 else "soft"
             ),
             "font_pct": self._font_pct_spin.value() if self._font_pct_spin else 2.0,
+            "font_family": (
+                self._font_family_combo.currentText()
+                if self._font_family_combo
+                else "Arial"
+            ),
+            "bold": self._bold_chk.isChecked() if self._bold_chk else False,
+            "italic": self._italic_chk.isChecked() if self._italic_chk else False,
             "font_color": (
                 self._color_combo.currentText() if self._color_combo else "white"
             ),
             "outline_color": "" if outline == "none" else outline,
+            "outline_width": (
+                self._outline_width_spin.value() if self._outline_width_spin else 2
+            ),
+            "shadow": self._shadow_spin.value() if self._shadow_spin else 0,
+            "bg_style": bg_style,
+            "bg_color": (
+                self._bg_color_combo.currentText() if self._bg_color_combo else "black"
+            ),
+            "bg_opacity": (
+                self._bg_opacity_spin.value() if self._bg_opacity_spin else 50
+            ),
+            # legacy compat: bg_box=True when style != none
+            "bg_box": bg_style != "none",
             "alignment": (
                 SUB_POSITIONS[self._pos_combo.currentText()] if self._pos_combo else 2
             ),
-            "bg_box": self._bg_box_chk.isChecked() if self._bg_box_chk else True,
+            "margin_v": self._margin_v_spin.value() if self._margin_v_spin else 6,
+            "preview_aspect": (
+                self._preview_ratio_combo.currentText()
+                if self._preview_ratio_combo
+                else "Auto (from source video)"
+            ),
             "delogo": delogo_cfg,
             "brand_enabled": (
                 self._brand_enable_chk.isChecked() if self._brand_enable_chk else True
@@ -839,10 +1299,19 @@ def _hard_cmd(
     srt,
     out,
     font_size,
-    font_color,
-    outline_color,
-    alignment,
-    bg_box=True,
+    font_family="Arial",
+    bold=False,
+    italic=False,
+    font_color="white",
+    outline_color="black",
+    outline_width=2,
+    shadow=0,
+    bg_style="semi",
+    bg_color="black",
+    bg_opacity=50,
+    alignment=2,
+    margin_v=6,
+    bg_box=True,  # legacy compat
     video_w=1920,
     video_h=1080,
     delogo=None,
@@ -850,32 +1319,38 @@ def _hard_cmd(
 ):
     escaped = srt.replace("\\", "/").replace(":", "\\:")
 
-    # Build subtitle style
-    if bg_box:
-        outline_str = (
-            f"Outline=2,OutlineColour=&H00{_bgr(outline_color)},"
-            if outline_color
-            else "Outline=0,"
-        )
+    # Resolve bg from new bg_style field
+    use_bg = bg_style != "none"
+    bg_alpha_hex = f"{int(max(0, min(255, (bg_opacity / 100.0) * 255))):02X}"
+
+    outline_val = outline_width if outline_color and outline_color != "none" else 0
+    outline_str = (
+        f"Outline={outline_val},OutlineColour=&H00{_bgr(outline_color)},"
+        if outline_val > 0
+        else "Outline=0,"
+    )
+
+    bold_val = 1 if bold else 0
+    italic_val = 1 if italic else 0
+    font_name_str = f"Fontname={font_family}," if font_family else ""
+
+    if use_bg:
         force_style = (
-            f"FontSize={font_size},"
+            f"{font_name_str}"
+            f"FontSize={font_size},Bold={bold_val},Italic={italic_val},"
             f"PrimaryColour=&H00{_bgr(font_color)},"
             f"{outline_str}"
-            f"Shadow=0,BorderStyle=4,"
-            f"BackColour=&H80000000,"
-            f"Alignment={alignment},MarginV=6"
+            f"Shadow={shadow},BorderStyle=4,"
+            f"BackColour=&H{bg_alpha_hex}{_bgr(bg_color)},"
+            f"Alignment={alignment},MarginV={margin_v}"
         )
     else:
-        outline_str = (
-            f"Outline=2,OutlineColour=&H00{_bgr(outline_color)},"
-            if outline_color
-            else "Outline=0,"
-        )
         force_style = (
-            f"FontSize={font_size},"
+            f"{font_name_str}"
+            f"FontSize={font_size},Bold={bold_val},Italic={italic_val},"
             f"PrimaryColour=&H00{_bgr(font_color)},"
             f"{outline_str}"
-            f"Shadow=1,Alignment={alignment},MarginV=6"
+            f"Shadow={shadow},Alignment={alignment},MarginV={margin_v}"
         )
 
     sub_filter = f"subtitles='{escaped}':force_style='{force_style}'"

@@ -107,5 +107,10 @@ class BaseStep(ABC):
         """Read current values from config widget → return dict passed to run()."""
         ...
 
+    def apply_config(self, config: dict) -> None:
+        """Restore config widget values from a previously saved dict.
+        Steps that persist UI state should override this method.
+        Default: no-op."""
+
     def make_worker(self, session, config: dict) -> StepWorker:
         return StepWorker(self, session, config)
