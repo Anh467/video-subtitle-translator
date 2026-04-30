@@ -525,6 +525,22 @@ class MultiSessionWindow(QMainWindow):
         sub.setStyleSheet("font-size:11px;color:#555;margin-left:12px;margin-top:6px;")
         title_row.addWidget(t)
         title_row.addWidget(sub)
+        title_row.addSpacing(10)
+
+        self._btn_editor_default = QPushButton("Default")
+        self._btn_editor_default.setCheckable(True)
+        self._btn_editor_default.setChecked(True)
+        self._btn_editor_default.setFixedHeight(26)
+        self._btn_editor_default.clicked.connect(
+            lambda: self._set_editor_mode("default")
+        )
+        title_row.addWidget(self._btn_editor_default)
+
+        self._btn_editor_studio = QPushButton("Studio")
+        self._btn_editor_studio.setCheckable(True)
+        self._btn_editor_studio.setFixedHeight(26)
+        self._btn_editor_studio.clicked.connect(lambda: self._set_editor_mode("studio"))
+        title_row.addWidget(self._btn_editor_studio)
         title_row.addStretch()
         root.addLayout(title_row)
 
@@ -548,6 +564,7 @@ class MultiSessionWindow(QMainWindow):
         self._subtitle_editor = SubtitleEditor()
         self._preview_title = self._subtitle_editor._title_lbl
         self._subtitle_editor.saved.connect(self._on_subtitle_editor_saved)
+        self._subtitle_editor.mode_changed.connect(self._on_editor_mode_changed)
         for step in self._steps:
             if getattr(step, "STEP_ID", "") == "step3_burn":
                 self._subtitle_editor.set_step3_bridge(step)
@@ -683,6 +700,17 @@ class MultiSessionWindow(QMainWindow):
         )
         self.setStatusBar(self._status_bar)
         self._status_bar.showMessage("Ready — select sessions and steps, then Run")
+
+    def _set_editor_mode(self, mode: str):
+        if hasattr(self, "_subtitle_editor") and self._subtitle_editor:
+            self._subtitle_editor.set_mode(mode)
+        is_studio = mode == "studio"
+        self._info_editor.setVisible(not is_studio)
+        self._btn_editor_default.setChecked(not is_studio)
+        self._btn_editor_studio.setChecked(is_studio)
+
+    def _on_editor_mode_changed(self, mode: str):
+        self._set_editor_mode(mode)
 
     # ── Public: called by MainWindow when base_dir changes ────────────────────
 

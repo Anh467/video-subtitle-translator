@@ -419,6 +419,22 @@ class MainWindow(QMainWindow):
         sub.setStyleSheet("font-size:11px;color:#444;margin-left:12px;margin-top:8px;")
         title_row.addWidget(t)
         title_row.addWidget(sub)
+        title_row.addSpacing(10)
+
+        self._btn_editor_default = QPushButton("Default")
+        self._btn_editor_default.setCheckable(True)
+        self._btn_editor_default.setChecked(True)
+        self._btn_editor_default.setFixedHeight(26)
+        self._btn_editor_default.clicked.connect(
+            lambda: self._set_editor_mode("default")
+        )
+        title_row.addWidget(self._btn_editor_default)
+
+        self._btn_editor_studio = QPushButton("Studio")
+        self._btn_editor_studio.setCheckable(True)
+        self._btn_editor_studio.setFixedHeight(26)
+        self._btn_editor_studio.clicked.connect(lambda: self._set_editor_mode("studio"))
+        title_row.addWidget(self._btn_editor_studio)
         title_row.addStretch()
 
         # Multi-session button
@@ -613,6 +629,7 @@ class MainWindow(QMainWindow):
         self._subtitle_editor.set_orig_placeholder("Original transcript…")
         self._subtitle_editor.set_trans_placeholder("Translated subtitles…")
         self._subtitle_editor.saved.connect(self._on_subtitle_editor_saved)
+        self._subtitle_editor.mode_changed.connect(self._on_editor_mode_changed)
         for step in self._steps:
             if getattr(step, "STEP_ID", "") == "step3_burn":
                 self._subtitle_editor.set_step3_bridge(step)
@@ -623,6 +640,19 @@ class MainWindow(QMainWindow):
         self._status_bar = QStatusBar()
         self.setStatusBar(self._status_bar)
         self._status_bar.showMessage("Ready — choose session folder then drop a video")
+
+    def _set_editor_mode(self, mode: str):
+        if hasattr(self, "_subtitle_editor") and self._subtitle_editor:
+            self._subtitle_editor.set_mode(mode)
+        is_studio = mode == "studio"
+        # Switch the whole editing area focus: hide session info while in studio.
+        self._info_editor.setVisible(not is_studio)
+        self._btn_editor_default.setChecked(not is_studio)
+        self._btn_editor_studio.setChecked(is_studio)
+
+    def _on_editor_mode_changed(self, mode: str):
+        # Keep top switch in sync even if mode changed inside SubtitleEditor.
+        self._set_editor_mode(mode)
 
     # ── Multi-session ─────────────────────────────────────────────────────────
 

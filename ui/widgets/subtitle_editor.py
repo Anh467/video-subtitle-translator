@@ -23,11 +23,12 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from PyQt6.QtCore import QRect, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QEvent, QRect, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QKeySequence, QPainter, QPen, QPixmap, QShortcut
 from PyQt6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -41,6 +42,14 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+try:
+    from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
+    from PyQt6.QtMultimediaWidgets import QVideoWidget
+except Exception:
+    QAudioOutput = None
+    QMediaPlayer = None
+    QVideoWidget = None
 
 
 def _srt_time(s: float) -> str:
@@ -132,6 +141,7 @@ class SubtitleEditor(QWidget):
     """
 
     saved = pyqtSignal(str)  # emits session folder path
+    mode_changed = pyqtSignal(str)  # emits "default" | "studio"
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -141,6 +151,8 @@ class SubtitleEditor(QWidget):
         self._segments: list[dict] = []
         self._active_idx = -1
         self._duration_ms = 0
+        self._timeline_dragging = False
+        self._has_realtime_player = False
         self._studio_tmp_dir = Path(tempfile.gettempdir()) / "subsync_studio_preview"
         self._studio_tmp_dir.mkdir(parents=True, exist_ok=True)
         self._mode = "default"
@@ -156,11 +168,27 @@ class SubtitleEditor(QWidget):
 
     def set_source_file(self, source_file: str | None):
         self._source_file = str(source_file or "")
+        if self._has_realtime_player and self._player:
+            try:
+                self._player.setSource(
+                    QUrl.fromLocalFile(self._source_file)
+                    if self._source_file
+                    else QUrl()
+                )
+            except Exception:
+                pass
         self._duration_ms = int(_ffprobe_duration_seconds(self._source_file) * 1000)
         if hasattr(self, "_studio_timeline") and self._studio_timeline:
             self._studio_timeline.setMaximum(max(0, self._duration_ms))
         self._update_timeline_label()
         self._render_studio_preview(force=True)
+
+    def set_mode(self, mode: str):
+        """Public API for parent windows to switch editor mode."""
+        self._set_mode(mode)
+
+    def current_mode(self) -> str:
+        return self._mode
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -377,17 +405,81 @@ class SubtitleEditor(QWidget):
         studio_left_v.setContentsMargins(0, 0, 0, 0)
         studio_left_v.setSpacing(4)
 
-        self._studio_video_lbl = QLabel("No source video")
-        self._studio_video_lbl.setMinimumHeight(230)
-        self._studio_video_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._studio_video_lbl.setStyleSheet(
-            "background:#111;border:1px solid #333;border-radius:4px;color:#666;"
-        )
-        studio_left_v.addWidget(self._studio_video_lbl)
+        if QMediaPlayer and QVideoWidget:
+            self._has_realtime_player = True
+            self._player = QMediaPlayer(self)
+            self._audio = QAudioOutput(self) if QAudioOutput else None
+            if self._audio:
+                self._audio.setVolume(0.8)
+                self._player.setAudioOutput(self._audio)
+
+            self._studio_video_host = QFrame()
+            self._studio_video_host.setMinimumHeight(230)
+            self._studio_video_host.setStyleSheet(
+                "background:#111;border:1px solid #333;border-radius:4px;"
+            )
+            self._studio_video_host.installEventFilter(self)
+            host_v = QVBoxLayout(self._studio_video_host)
+            host_v.setContentsMargins(0, 0, 0, 0)
+            host_v.setSpacing(0)
+
+            self._studio_video = QVideoWidget(self._studio_video_host)
+            self._player.setVideoOutput(self._studio_video)
+            host_v.addWidget(self._studio_video)
+
+            self._studio_overlay_lbl = QLabel("", self._studio_video_host)
+            self._studio_overlay_lbl.setAlignment(
+                Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
+            )
+            self._studio_overlay_lbl.setWordWrap(True)
+            self._studio_overlay_lbl.setAttribute(
+                Qt.WidgetAttribute.WA_TransparentForMouseEvents, True
+            )
+            self._studio_overlay_lbl.setStyleSheet(
+                "color:white;font-weight:600;"
+                "background:rgba(0,0,0,80);"
+                "padding:6px;border-radius:6px;"
+            )
+            self._studio_overlay_lbl.hide()
+
+            self._player.positionChanged.connect(self._on_player_position_changed)
+            self._player.durationChanged.connect(self._on_player_duration_changed)
+            studio_left_v.addWidget(self._studio_video_host)
+        else:
+            self._player = None
+            self._audio = None
+            self._studio_video = None
+            self._studio_video_host = None
+            self._studio_overlay_lbl = None
+            self._studio_video_lbl = QLabel("No source video")
+            self._studio_video_lbl.setMinimumHeight(230)
+            self._studio_video_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._studio_video_lbl.setStyleSheet(
+                "background:#111;border:1px solid #333;border-radius:4px;color:#666;"
+            )
+            studio_left_v.addWidget(self._studio_video_lbl)
+
+        pr = QHBoxLayout()
+        self._btn_play_pause = QPushButton("▶ Play")
+        self._btn_play_pause.setFixedHeight(24)
+        self._btn_play_pause.clicked.connect(self._toggle_play_pause)
+        pr.addWidget(self._btn_play_pause)
+        self._btn_to_prev = QPushButton("◀ Prev")
+        self._btn_to_prev.setFixedHeight(24)
+        self._btn_to_prev.clicked.connect(self._jump_prev_segment)
+        pr.addWidget(self._btn_to_prev)
+        self._btn_to_next = QPushButton("Next ▶")
+        self._btn_to_next.setFixedHeight(24)
+        self._btn_to_next.clicked.connect(self._jump_next_segment)
+        pr.addWidget(self._btn_to_next)
+        pr.addStretch()
+        studio_left_v.addLayout(pr)
 
         tl = QHBoxLayout()
         self._studio_timeline = QSlider(Qt.Orientation.Horizontal)
         self._studio_timeline.setRange(0, 0)
+        self._studio_timeline.sliderPressed.connect(self._on_timeline_pressed)
+        self._studio_timeline.sliderReleased.connect(self._on_timeline_released)
         self._studio_timeline.valueChanged.connect(self._on_timeline_changed)
         tl.addWidget(self._studio_timeline, stretch=1)
         self._studio_time_lbl = QLabel("00:00.000 / 00:00.000")
@@ -505,15 +597,22 @@ class SubtitleEditor(QWidget):
             self._update_title()
 
     def _set_mode(self, mode: str):
-        self._mode = "studio" if mode == "studio" else "default"
+        new_mode = "studio" if mode == "studio" else "default"
+        old_mode = self._mode
+        self._mode = new_mode
         is_studio = self._mode == "studio"
         self._btn_mode_default.setChecked(not is_studio)
         self._btn_mode_studio.setChecked(is_studio)
         self._studio_wrap.setVisible(is_studio)
         self._default_splitter.setVisible(not is_studio)
+        if self._has_realtime_player and self._player and not is_studio:
+            self._player.pause()
+            self._btn_play_pause.setText("▶ Play")
         if is_studio:
             self._reload_studio_segments()
             self._render_studio_preview(force=True)
+        if old_mode != new_mode:
+            self.mode_changed.emit(new_mode)
 
     def _studio_payload(self) -> dict:
         return {
@@ -562,6 +661,7 @@ class SubtitleEditor(QWidget):
                 refresh()
         except Exception:
             pass
+        self._update_live_overlay()
         self._render_studio_preview(force=True)
 
     def _load_studio_from_session(self, session):
@@ -598,6 +698,133 @@ class SubtitleEditor(QWidget):
         self._studio_time_lbl.setText(
             f"{self._format_ms(cur)} / {self._format_ms(self._duration_ms)}"
         )
+
+    def _on_player_duration_changed(self, dur: int):
+        if dur and dur > 0:
+            self._duration_ms = int(dur)
+            self._studio_timeline.setMaximum(int(dur))
+            self._update_timeline_label()
+
+    def _on_player_position_changed(self, pos: int):
+        if self._timeline_dragging:
+            return
+        self._studio_timeline.blockSignals(True)
+        self._studio_timeline.setValue(int(pos))
+        self._studio_timeline.blockSignals(False)
+        self._update_timeline_label()
+        self._sync_active_segment_from_timeline()
+        self._update_live_overlay()
+
+    def _on_timeline_pressed(self):
+        self._timeline_dragging = True
+
+    def _on_timeline_released(self):
+        self._timeline_dragging = False
+        pos = self._studio_timeline.value()
+        if self._has_realtime_player and self._player:
+            self._player.setPosition(int(pos))
+        self._update_timeline_label()
+        self._sync_active_segment_from_timeline()
+        if not self._has_realtime_player:
+            self._studio_preview_timer.start()
+
+    def _toggle_play_pause(self):
+        if not self._has_realtime_player or not self._player:
+            QMessageBox.information(
+                self,
+                "Studio Player",
+                "Realtime player unavailable on this environment. Using frame preview mode.",
+            )
+            return
+        if self._player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+            self._player.pause()
+            self._btn_play_pause.setText("▶ Play")
+        else:
+            self._player.play()
+            self._btn_play_pause.setText("⏸ Pause")
+
+    def _jump_prev_segment(self):
+        if not self._segments:
+            return
+        sec = self._studio_timeline.value() / 1000.0
+        prev_idx = -1
+        for i, s in enumerate(self._segments):
+            if s["start"] < sec - 0.05:
+                prev_idx = i
+        if prev_idx >= 0:
+            self._seek_to_segment(prev_idx)
+
+    def _jump_next_segment(self):
+        if not self._segments:
+            return
+        sec = self._studio_timeline.value() / 1000.0
+        for i, s in enumerate(self._segments):
+            if s["start"] > sec + 0.05:
+                self._seek_to_segment(i)
+                return
+
+    def _seek_to_segment(self, idx: int):
+        if idx < 0 or idx >= len(self._segments):
+            return
+        self._active_idx = idx
+        ms = int(float(self._segments[idx]["start"]) * 1000)
+        if self._has_realtime_player and self._player:
+            self._player.setPosition(ms)
+        self._studio_timeline.setValue(ms)
+        self._sync_active_segment_from_timeline()
+        self._update_live_overlay()
+
+    def _update_live_overlay(self):
+        if (
+            not self._has_realtime_player
+            or not self._studio_overlay_lbl
+            or not self._studio_video_host
+        ):
+            return
+        txt = ""
+        if 0 <= self._active_idx < len(self._segments):
+            txt = self._segments[self._active_idx].get("translated", "")
+        if not txt:
+            self._studio_overlay_lbl.hide()
+            return
+
+        w = max(280, self._studio_video_host.width() - 40)
+        h = max(50, int(self._studio_video_host.height() * 0.22))
+        x = 20
+        pos = (self._studio_pos_combo.currentText() or "Bottom center").lower()
+        if "top" in pos:
+            y = int(self._studio_video_host.height() * 0.06)
+        elif "middle" in pos or (
+            "center" in pos and "bottom" not in pos and "top" not in pos
+        ):
+            y = int(self._studio_video_host.height() * 0.40)
+        else:
+            y = int(self._studio_video_host.height() * 0.74)
+
+        self._studio_overlay_lbl.setGeometry(x, y, w, h)
+        f = QFont(self._studio_font_combo.currentText() or "Arial")
+        f.setPixelSize(
+            max(
+                12,
+                int(
+                    self._studio_video_host.height()
+                    * float(self._studio_font_pct.value())
+                    / 100.0
+                ),
+            )
+        )
+        self._studio_overlay_lbl.setFont(f)
+        self._studio_overlay_lbl.setText(txt)
+        self._studio_overlay_lbl.show()
+        self._studio_overlay_lbl.raise_()
+
+    def eventFilter(self, obj, event):
+        if (
+            obj is getattr(self, "_studio_video_host", None)
+            and event.type() == QEvent.Type.Resize
+        ):
+            self._update_live_overlay()
+        return super().eventFilter(obj, event)
 
     def _segments_to_text(self) -> str:
         lines = []
@@ -652,7 +879,8 @@ class SubtitleEditor(QWidget):
     def _on_timeline_changed(self, _value: int):
         self._update_timeline_label()
         self._sync_active_segment_from_timeline()
-        self._studio_preview_timer.start()
+        if not self._has_realtime_player:
+            self._studio_preview_timer.start()
 
     def _on_segment_clicked(self, item: QListWidgetItem):
         idx = item.data(Qt.ItemDataRole.UserRole)
@@ -661,8 +889,9 @@ class SubtitleEditor(QWidget):
         self._active_idx = int(idx)
         seg = self._segments[self._active_idx]
         self._studio_seg_edit.setPlainText(seg.get("translated", ""))
-        self._studio_timeline.setValue(int(float(seg["start"]) * 1000))
-        self._render_studio_preview(force=True)
+        self._seek_to_segment(self._active_idx)
+        if not self._has_realtime_player:
+            self._render_studio_preview(force=True)
 
     def _update_selected_segment(self):
         if self._active_idx < 0 or self._active_idx >= len(self._segments):
@@ -680,6 +909,8 @@ class SubtitleEditor(QWidget):
         self._render_studio_preview(force=True)
 
     def _render_studio_preview(self, force: bool = False):
+        if self._has_realtime_player:
+            return
         if not hasattr(self, "_studio_video_lbl"):
             return
         if not self._source_file or not Path(self._source_file).exists():
