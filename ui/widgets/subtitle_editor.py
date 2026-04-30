@@ -24,7 +24,16 @@ import tempfile
 from pathlib import Path
 
 from PyQt6.QtCore import QEvent, QRect, Qt, QTimer, QUrl, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QKeySequence, QPainter, QPen, QPixmap, QShortcut
+from PyQt6.QtGui import (
+    QColor,
+    QFont,
+    QImage,
+    QKeySequence,
+    QPainter,
+    QPen,
+    QPixmap,
+    QShortcut,
+)
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -137,6 +146,8 @@ class _StudioOverlayWidget(QWidget):
         self._style_config: dict = {}
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setStyleSheet("background: transparent;")
 
     def set_payload(self, title_text: str, subtitle_text: str, style_config: dict):
         self._title_text = title_text or ""
@@ -667,7 +678,7 @@ class SubtitleEditor(QWidget):
 
             self._studio_video = QLabel("No source video", self._studio_video_host)
             self._studio_video.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self._studio_video.setStyleSheet("background:#111;color:#666;")
+            self._studio_video.setStyleSheet("background:transparent;color:#666;")
             host_v.addWidget(self._studio_video)
 
             self._video_sink = QVideoSink(self)
@@ -1064,11 +1075,15 @@ class SubtitleEditor(QWidget):
             self._studio_video.setText("No source video")
             return
         pix = self._paint_overlay_on_pixmap(pix)
-        scaled = pix.scaled(
-            self._studio_video.size(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
+        target = self._studio_video.size()
+        if pix.width() > target.width() or pix.height() > target.height():
+            scaled = pix.scaled(
+                target,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        else:
+            scaled = pix
         self._studio_video.setPixmap(scaled)
         self._studio_video.setText("")
 
@@ -1079,6 +1094,7 @@ class SubtitleEditor(QWidget):
             image = None
         if image is None or image.isNull():
             return
+        image = image.convertToFormat(QImage.Format.Format_ARGB32)
         self._current_video_frame = QPixmap.fromImage(image)
         self._present_realtime_frame()
 
