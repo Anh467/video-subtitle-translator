@@ -46,11 +46,12 @@ from PyQt6.QtWidgets import (
 )
 
 try:
-    from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
+    from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer, QVideoSink
     from PyQt6.QtMultimediaWidgets import QVideoWidget
 except Exception:
     QAudioOutput = None
     QMediaPlayer = None
+    QVideoSink = None
     QVideoWidget = None
 
 
@@ -331,6 +332,7 @@ class SubtitleEditor(QWidget):
         self._duration_ms = 0
         self._timeline_dragging = False
         self._has_realtime_player = False
+        self._current_video_frame = QPixmap()
         self._studio_tmp_dir = Path(tempfile.gettempdir()) / "subsync_studio_preview"
         self._studio_tmp_dir.mkdir(parents=True, exist_ok=True)
         self._mode = "default"
@@ -645,7 +647,7 @@ class SubtitleEditor(QWidget):
         studio_left_v.setContentsMargins(0, 0, 0, 0)
         studio_left_v.setSpacing(4)
 
-        if QMediaPlayer and QVideoWidget:
+        if QMediaPlayer and QVideoSink:
             self._has_realtime_player = True
             self._player = QMediaPlayer(self)
             self._audio = QAudioOutput(self) if QAudioOutput else None
@@ -663,13 +665,16 @@ class SubtitleEditor(QWidget):
             host_v.setContentsMargins(0, 0, 0, 0)
             host_v.setSpacing(0)
 
-            self._studio_video = QVideoWidget(self._studio_video_host)
-            self._player.setVideoOutput(self._studio_video)
+            self._studio_video = QLabel("No source video", self._studio_video_host)
+            self._studio_video.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._studio_video.setStyleSheet("background:#111;color:#666;")
             host_v.addWidget(self._studio_video)
 
-            self._studio_overlay_lbl = _StudioOverlayWidget(self._studio_video_host)
-            self._studio_overlay_lbl.setGeometry(self._studio_video_host.rect())
-            self._studio_overlay_lbl.hide()
+            self._video_sink = QVideoSink(self)
+            self._video_sink.videoFrameChanged.connect(self._on_video_frame_changed)
+            self._player.setVideoOutput(self._video_sink)
+
+            self._studio_overlay_lbl = None
 
             self._player.positionChanged.connect(self._on_player_position_changed)
             self._player.durationChanged.connect(self._on_player_duration_changed)
@@ -678,6 +683,7 @@ class SubtitleEditor(QWidget):
         else:
             self._player = None
             self._audio = None
+            self._video_sink = None
             self._studio_video = None
             self._studio_video_host = None
             self._studio_overlay_lbl = None
@@ -1033,6 +1039,49 @@ class SubtitleEditor(QWidget):
         self._update_live_overlay()
         self._render_studio_preview(force=True)
 
+    def _paint_overlay_on_pixmap(self, base_pixmap: QPixmap) -> QPixmap:
+        if base_pixmap.isNull():
+            return base_pixmap
+        draw = QPixmap(base_pixmap)
+        painter = QPainter(draw)
+        overlay = _StudioOverlayWidget()
+        overlay.resize(draw.size())
+        txt = ""
+        if 0 <= self._active_idx < len(self._segments):
+            txt = self._segments[self._active_idx].get("translated", "")
+        overlay.set_payload(
+            self._studio_title_edit.text().strip(), txt, self._studio_payload()
+        )
+        overlay.render(painter)
+        painter.end()
+        return draw
+
+    def _present_realtime_frame(self):
+        if not self._has_realtime_player or not self._studio_video:
+            return
+        pix = self._current_video_frame
+        if pix.isNull():
+            self._studio_video.setText("No source video")
+            return
+        pix = self._paint_overlay_on_pixmap(pix)
+        scaled = pix.scaled(
+            self._studio_video.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self._studio_video.setPixmap(scaled)
+        self._studio_video.setText("")
+
+    def _on_video_frame_changed(self, frame):
+        try:
+            image = frame.toImage()
+        except Exception:
+            image = None
+        if image is None or image.isNull():
+            return
+        self._current_video_frame = QPixmap.fromImage(image)
+        self._present_realtime_frame()
+
     def _load_studio_from_session(self, session):
         self._sync_studio_choices_from_step3()
         studio = {}
@@ -1159,32 +1208,15 @@ class SubtitleEditor(QWidget):
         self._update_live_overlay()
 
     def _update_live_overlay(self):
-        if (
-            not self._has_realtime_player
-            or not self._studio_overlay_lbl
-            or not self._studio_video_host
-        ):
+        if not self._has_realtime_player or not self._studio_video_host:
             return
-        txt = ""
-        if 0 <= self._active_idx < len(self._segments):
-            txt = self._segments[self._active_idx].get("translated", "")
-        title_txt = self._studio_title_edit.text().strip()
-        if not txt and not title_txt:
-            self._studio_overlay_lbl.hide()
-            return
-
-        self._studio_overlay_lbl.setGeometry(self._studio_video_host.rect())
-        self._studio_overlay_lbl.set_payload(title_txt, txt, self._studio_payload())
-        self._studio_overlay_lbl.show()
-        self._studio_overlay_lbl.raise_()
+        self._present_realtime_frame()
 
     def eventFilter(self, obj, event):
         if (
             obj is getattr(self, "_studio_video_host", None)
             and event.type() == QEvent.Type.Resize
         ):
-            if self._studio_overlay_lbl:
-                self._studio_overlay_lbl.setGeometry(self._studio_video_host.rect())
             self._update_live_overlay()
         return super().eventFilter(obj, event)
 
@@ -1319,18 +1351,7 @@ class SubtitleEditor(QWidget):
             return
 
         draw = QPixmap(pix)
-        p = QPainter(draw)
-        txt = ""
-        if 0 <= self._active_idx < len(self._segments):
-            txt = self._segments[self._active_idx].get("translated", "")
-        title_txt = self._studio_title_edit.text().strip()
-        payload = self._studio_payload()
-        overlay = _StudioOverlayWidget()
-        overlay.resize(draw.size())
-        overlay.set_payload(title_txt, txt, payload)
-        overlay.render(p)
-
-        p.end()
+        draw = self._paint_overlay_on_pixmap(draw)
         scaled = draw.scaled(
             self._studio_video_lbl.size(),
             Qt.AspectRatioMode.KeepAspectRatio,
