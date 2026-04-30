@@ -13,6 +13,7 @@ from pathlib import Path
 from PyQt6.QtCore import QSize, Qt, QThreadPool, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -61,6 +62,8 @@ class SessionListPanel(QWidget):
         self._sessions: list[dict] = []
         self._session_status: dict[str, str] = {}  # folder → overall status
         self._session_step_status: dict[str, dict] = {}  # folder → {step_id: status}
+        self._sort_by = "time"
+        self._sort_order = "desc"
         self._setup_ui()
 
     def _setup_ui(self):
@@ -73,6 +76,26 @@ class SessionListPanel(QWidget):
         lbl = QLabel("Sessions to process")
         lbl.setStyleSheet("color:#a0a8ff;font-weight:600;font-size:12px;")
         hdr.addWidget(lbl)
+        hdr.addSpacing(6)
+
+        self._sort_by_combo = QComboBox()
+        self._sort_by_combo.addItems(["Time", "Video"])
+        self._sort_by_combo.setCurrentText("Time")
+        self._sort_by_combo.setToolTip(
+            "Sort by session modified time or source video name"
+        )
+        self._sort_by_combo.setFixedHeight(24)
+        self._sort_by_combo.currentTextChanged.connect(self._on_sort_changed)
+        hdr.addWidget(self._sort_by_combo)
+
+        self._sort_order_combo = QComboBox()
+        self._sort_order_combo.addItems(["Desc", "Asc"])
+        self._sort_order_combo.setCurrentText("Desc")
+        self._sort_order_combo.setToolTip("Sort order")
+        self._sort_order_combo.setFixedHeight(24)
+        self._sort_order_combo.currentTextChanged.connect(self._on_sort_changed)
+        hdr.addWidget(self._sort_order_combo)
+
         hdr.addStretch()
 
         btn_all = QPushButton("All")
@@ -135,6 +158,7 @@ class SessionListPanel(QWidget):
         if not self._base_dir:
             return
         self._sessions = Session.list_sessions(self._base_dir)
+        self._apply_sort()
         self._rebuild_list(preserve_checked=True)
 
     def get_selected_sessions(self) -> list[dict]:
@@ -195,7 +219,7 @@ class SessionListPanel(QWidget):
         for idx, s in enumerate(self._sessions):
             item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, idx)
-            item.setSizeHint(QSize(0, 62))
+            item.setSizeHint(QSize(0, 76))
             w = self._make_row(s, idx)
             if preserve_checked:
                 chk = w.findChild(QCheckBox)
@@ -251,19 +275,21 @@ class SessionListPanel(QWidget):
         info_v.setContentsMargins(0, 0, 0, 0)
         info_v.setSpacing(1)
 
+        src = Path(s["source_file"]).name if s["source_file"] else "unknown.mp4"
         display_name = s.get("title", "").strip() or s["name"]
-        name_lbl = QLabel(display_name)
+
+        # Line 1: source filename
+        name_lbl = QLabel(src)
         name_lbl.setStyleSheet("color:#e0e0e0;font-size:12px;font-weight:600;")
-        name_lbl.setToolTip(s["name"])  # show folder name on hover
+        name_lbl.setToolTip(f"Session: {display_name} ({s['name']})")
         info_v.addWidget(name_lbl)
 
-        src = Path(s["source_file"]).name if s["source_file"] else "unknown"
         done_str = " ".join(s["done_steps"]) if s["done_steps"] else "—"
         dt = datetime.fromtimestamp(s["mtime"]).strftime("%m-%d %H:%M")
-        folder_hint = f"  📁 {s['name']}" if display_name != s["name"] else ""
-        detail = QLabel(
-            f"📄 {src}   ✅ {done_str}   💾 {s['size_mb']}MB   🕐 {dt}{folder_hint}"
-        )
+        folder_hint = f"  📁 {display_name}" if display_name else ""
+
+        # Line 2: progress + size + completion time
+        detail = QLabel(f"✅ {done_str}   💾 {s['size_mb']}MB   🕐 {dt}{folder_hint}")
         detail.setStyleSheet("color:#666;font-size:10px;")
         info_v.addWidget(detail)
 
@@ -294,6 +320,19 @@ class SessionListPanel(QWidget):
                 info_v.addWidget(steps_row)
 
         h.addWidget(info_w, stretch=1)
+
+        btn_open = QPushButton("📂")
+        btn_open.setFixedSize(26, 22)
+        btn_open.setToolTip("Open this session folder")
+        btn_open.setStyleSheet(
+            "QPushButton{background:#1a2a3a;color:#60c8ff;border:1px solid #2a4a6a;"
+            "border-radius:4px;padding:0;font-size:11px;}"
+            "QPushButton:hover{background:#2a4a6a;}"
+        )
+        btn_open.clicked.connect(
+            lambda _=False, folder=s["folder"]: self._open_session_folder(folder)
+        )
+        h.addWidget(btn_open)
         return container
 
     def _update_row(self, folder: str):
@@ -314,7 +353,7 @@ class SessionListPanel(QWidget):
             chk = new_w.findChild(QCheckBox)
             if chk:
                 chk.setChecked(was_checked)
-            item.setSizeHint(QSize(0, 62))
+            item.setSizeHint(QSize(0, 76))
             self._list.setItemWidget(item, new_w)
             break
 
@@ -371,6 +410,41 @@ class SessionListPanel(QWidget):
         idx = current.data(Qt.ItemDataRole.UserRole)
         if idx is not None and 0 <= idx < len(self._sessions):
             self.session_clicked.emit(self._sessions[idx])
+
+    def _on_sort_changed(self, _text: str):
+        self._sort_by = (
+            "video" if self._sort_by_combo.currentText().lower() == "video" else "time"
+        )
+        self._sort_order = (
+            "asc" if self._sort_order_combo.currentText().lower() == "asc" else "desc"
+        )
+        self._apply_sort()
+        self._rebuild_list(preserve_checked=True)
+
+    def _apply_sort(self):
+        reverse = self._sort_order == "desc"
+        if self._sort_by == "video":
+            self._sessions.sort(
+                key=lambda s: Path(s.get("source_file") or "").name.lower(),
+                reverse=reverse,
+            )
+        else:
+            self._sessions.sort(key=lambda s: s.get("mtime", 0), reverse=reverse)
+
+    def _open_session_folder(self, folder: str):
+        import os
+        import subprocess
+        import sys
+
+        try:
+            if sys.platform == "darwin":
+                subprocess.run(["open", folder], check=False)
+            elif sys.platform == "win32":
+                os.startfile(folder)
+            else:
+                subprocess.run(["xdg-open", folder], check=False)
+        except Exception:
+            QMessageBox.warning(self, "Open folder", f"Cannot open folder:\n{folder}")
 
     def _select_all(self):
         for i in range(self._list.count()):
