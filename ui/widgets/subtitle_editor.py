@@ -170,11 +170,14 @@ class SubtitleEditor(QWidget):
         self._source_file = str(source_file or "")
         if self._has_realtime_player and self._player:
             try:
+                self._player.stop()
                 self._player.setSource(
                     QUrl.fromLocalFile(self._source_file)
-                    if self._source_file
+                    if self._source_file and Path(self._source_file).exists()
                     else QUrl()
                 )
+                self._player.setPosition(0)
+                self._btn_play_pause.setText("▶ Play")
             except Exception:
                 pass
         self._duration_ms = int(_ffprobe_duration_seconds(self._source_file) * 1000)
@@ -444,6 +447,7 @@ class SubtitleEditor(QWidget):
 
             self._player.positionChanged.connect(self._on_player_position_changed)
             self._player.durationChanged.connect(self._on_player_duration_changed)
+            self._player.playbackStateChanged.connect(self._on_playback_state_changed)
             studio_left_v.addWidget(self._studio_video_host)
         else:
             self._player = None
@@ -705,6 +709,12 @@ class SubtitleEditor(QWidget):
             self._studio_timeline.setMaximum(int(dur))
             self._update_timeline_label()
 
+    def _on_playback_state_changed(self, state):
+        if state == QMediaPlayer.PlaybackState.PlayingState:
+            self._btn_play_pause.setText("⏸ Pause")
+        else:
+            self._btn_play_pause.setText("▶ Play")
+
     def _on_player_position_changed(self, pos: int):
         if self._timeline_dragging:
             return
@@ -736,12 +746,17 @@ class SubtitleEditor(QWidget):
                 "Realtime player unavailable on this environment. Using frame preview mode.",
             )
             return
+        if not self._source_file or not Path(self._source_file).exists():
+            QMessageBox.warning(
+                self, "Studio Player", "Source video not found for this session."
+            )
+            return
+        if self._player.source().isEmpty():
+            self._player.setSource(QUrl.fromLocalFile(self._source_file))
         if self._player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
             self._player.pause()
-            self._btn_play_pause.setText("▶ Play")
         else:
             self._player.play()
-            self._btn_play_pause.setText("⏸ Pause")
 
     def _jump_prev_segment(self):
         if not self._segments:
@@ -767,7 +782,11 @@ class SubtitleEditor(QWidget):
         if idx < 0 or idx >= len(self._segments):
             return
         self._active_idx = idx
-        ms = int(float(self._segments[idx]["start"]) * 1000)
+        start_ms = int(float(self._segments[idx]["start"]) * 1000)
+        end_ms = int(float(self._segments[idx]["end"]) * 1000)
+        ms = start_ms + 30
+        if end_ms > start_ms:
+            ms = min(ms, end_ms - 1)
         if self._has_realtime_player and self._player:
             self._player.setPosition(ms)
         self._studio_timeline.setValue(ms)
@@ -850,7 +869,12 @@ class SubtitleEditor(QWidget):
 
     def _find_segment_idx_at(self, sec: float) -> int:
         for i, s in enumerate(self._segments):
-            if s["start"] <= sec <= s["end"]:
+            start = float(s["start"])
+            end = float(s["end"])
+            if i == len(self._segments) - 1:
+                if start <= sec <= end:
+                    return i
+            elif start <= sec < end:
                 return i
         return -1
 
