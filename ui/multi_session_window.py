@@ -545,21 +545,21 @@ class MultiSessionWindow(QMainWindow):
         root.addLayout(title_row)
 
         # ── Top area: session list (left) + preview (right) ───────────────
-        top_split = QSplitter(Qt.Orientation.Horizontal)
+        self._top_split = QSplitter(Qt.Orientation.Horizontal)
 
         # Left: session list only
         self._session_panel = SessionListPanel()
         self._session_panel.session_clicked.connect(self._on_session_clicked)
         self._session_panel.setMinimumWidth(340)
         self._session_panel.setMaximumWidth(500)
-        top_split.addWidget(self._session_panel)
+        self._top_split.addWidget(self._session_panel)
 
         # Right: session info editor (top) + subtitle editor (bottom)
-        right_split = QSplitter(Qt.Orientation.Vertical)
+        self._right_split = QSplitter(Qt.Orientation.Vertical)
 
         self._info_editor = SessionInfoEditor()
         self._info_editor.setMaximumHeight(130)
-        right_split.addWidget(self._info_editor)
+        self._right_split.addWidget(self._info_editor)
 
         self._subtitle_editor = SubtitleEditor()
         self._preview_title = self._subtitle_editor._title_lbl
@@ -569,14 +569,14 @@ class MultiSessionWindow(QMainWindow):
             if getattr(step, "STEP_ID", "") == "step3_burn":
                 self._subtitle_editor.set_step3_bridge(step)
                 break
-        right_split.addWidget(self._subtitle_editor)
+        self._right_split.addWidget(self._subtitle_editor)
 
-        right_split.setStretchFactor(0, 0)
-        right_split.setStretchFactor(1, 1)
-        top_split.addWidget(right_split)
-        top_split.setStretchFactor(0, 0)
-        top_split.setStretchFactor(1, 1)
-        root.addWidget(top_split, stretch=1)
+        self._right_split.setStretchFactor(0, 0)
+        self._right_split.setStretchFactor(1, 1)
+        self._top_split.addWidget(self._right_split)
+        self._top_split.setStretchFactor(0, 0)
+        self._top_split.setStretchFactor(1, 1)
+        root.addWidget(self._top_split, stretch=1)
 
         # ── Bottom: step cards full width ──────────────────────────────────
         cards_container = QWidget()
@@ -593,25 +593,29 @@ class MultiSessionWindow(QMainWindow):
         cards_container.adjustSize()
         cards_container.setMinimumWidth(cards_container.sizeHint().width())
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(False)
-        scroll.setWidget(cards_container)
-        scroll.setFixedHeight(220)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setStyleSheet(
+        self._cards_scroll = QScrollArea()
+        self._cards_scroll.setWidgetResizable(False)
+        self._cards_scroll.setWidget(cards_container)
+        self._cards_scroll.setFixedHeight(220)
+        self._cards_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self._cards_scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self._cards_scroll.setStyleSheet(
             "QScrollBar:horizontal{height:8px;background:#111828;border-radius:4px;}"
             "QScrollBar::handle:horizontal{background:#3d3d6e;border-radius:4px;}"
             "QScrollBar::add-line:horizontal,QScrollBar::sub-line:horizontal{width:0;}"
         )
-        root.addWidget(scroll)
+        root.addWidget(self._cards_scroll)
 
         # ── Run controls ───────────────────────────────────────────────────
-        ctrl = QFrame()
-        ctrl.setStyleSheet(
+        self._run_ctrl = QFrame()
+        self._run_ctrl.setStyleSheet(
             "QFrame{background:#111828;border:1px solid #2d2d4e;border-radius:8px;}"
         )
-        ctrl_h = QHBoxLayout(ctrl)
+        ctrl_h = QHBoxLayout(self._run_ctrl)
         ctrl_h.setContentsMargins(12, 8, 12, 8)
         ctrl_h.setSpacing(8)
 
@@ -673,11 +677,11 @@ class MultiSessionWindow(QMainWindow):
         self._prog_lbl.setStyleSheet("color:#888;font-size:11px;")
         ctrl_h.addWidget(self._prog_lbl)
         ctrl_h.addStretch()
-        root.addWidget(ctrl)
+        root.addWidget(self._run_ctrl)
 
         # ── Log panel ──────────────────────────────────────────────────────
-        log_wrap = QWidget()
-        log_v = QVBoxLayout(log_wrap)
+        self._log_wrap = QWidget()
+        log_v = QVBoxLayout(self._log_wrap)
         log_v.setContentsMargins(0, 0, 0, 0)
         log_v.setSpacing(3)
         log_lbl = QLabel("Log")
@@ -692,7 +696,7 @@ class MultiSessionWindow(QMainWindow):
             "padding:8px;color:#d0d0d0;font-family:'SF Mono','Consolas',monospace;font-size:12px;"
         )
         log_v.addWidget(self._log_edit)
-        root.addWidget(log_wrap)
+        root.addWidget(self._log_wrap)
 
         self._status_bar = QStatusBar()
         self._status_bar.setStyleSheet(
@@ -705,9 +709,16 @@ class MultiSessionWindow(QMainWindow):
         if hasattr(self, "_subtitle_editor") and self._subtitle_editor:
             self._subtitle_editor.set_mode(mode)
         is_studio = mode == "studio"
+        self._session_panel.setVisible(not is_studio)
         self._info_editor.setVisible(not is_studio)
+        self._cards_scroll.setVisible(not is_studio)
+        self._run_ctrl.setVisible(not is_studio)
+        self._log_wrap.setVisible(not is_studio)
         self._btn_editor_default.setChecked(not is_studio)
         self._btn_editor_studio.setChecked(is_studio)
+        if is_studio:
+            self._top_split.setSizes([0, 1])
+            self._right_split.setSizes([0, 1])
 
     def _on_editor_mode_changed(self, mode: str):
         self._set_editor_mode(mode)

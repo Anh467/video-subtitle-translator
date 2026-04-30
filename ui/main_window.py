@@ -450,9 +450,9 @@ class MainWindow(QMainWindow):
         root.addLayout(title_row)
 
         # Session bar
-        sf = QFrame()
-        sf.setObjectName("session_bar")
-        sh = QHBoxLayout(sf)
+        self._session_bar = QFrame()
+        self._session_bar.setObjectName("session_bar")
+        sh = QHBoxLayout(self._session_bar)
         sh.setContentsMargins(12, 8, 12, 8)
         sh.addWidget(self._lbl("Session folder:", bold=True))
         self._sess_dir_edit = QLineEdit()
@@ -506,7 +506,7 @@ class MainWindow(QMainWindow):
         )
         btn_logs.clicked.connect(self._open_logs_folder)
         sh.addWidget(btn_logs)
-        root.addWidget(sf)
+        root.addWidget(self._session_bar)
 
         # Session info editor (title + description)
         self._info_editor = SessionInfoEditor()
@@ -514,7 +514,9 @@ class MainWindow(QMainWindow):
         root.addWidget(self._info_editor)
 
         # File input
-        fi = QHBoxLayout()
+        self._file_row = QWidget()
+        fi = QHBoxLayout(self._file_row)
+        fi.setContentsMargins(0, 0, 0, 0)
         self._drop = DropZone(self._set_file)
         fi.addWidget(self._drop, stretch=1)
         self._file_edit = QLineEdit()
@@ -524,7 +526,7 @@ class MainWindow(QMainWindow):
         btn_browse.clicked.connect(self._browse_file)
         fi.addWidget(self._file_edit, stretch=2)
         fi.addWidget(btn_browse)
-        root.addLayout(fi)
+        root.addWidget(self._file_row)
 
         # Step cards
         cards_container = QWidget()
@@ -548,26 +550,30 @@ class MainWindow(QMainWindow):
         cards_h.addStretch()
         cards_container.adjustSize()
         cards_container.setMinimumWidth(cards_container.sizeHint().width())
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(False)
-        scroll.setWidget(cards_container)
-        scroll.setMinimumHeight(340)
-        scroll.setMaximumHeight(420)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setStyleSheet(
+        self._cards_scroll = QScrollArea()
+        self._cards_scroll.setWidgetResizable(False)
+        self._cards_scroll.setWidget(cards_container)
+        self._cards_scroll.setMinimumHeight(340)
+        self._cards_scroll.setMaximumHeight(420)
+        self._cards_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self._cards_scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self._cards_scroll.setStyleSheet(
             "QScrollBar:horizontal{height:8px;background:#111828;border-radius:4px;}"
             "QScrollBar::handle:horizontal{background:#3d3d6e;border-radius:4px;}"
             "QScrollBar::add-line:horizontal,QScrollBar::sub-line:horizontal{width:0;}"
         )
-        root.addWidget(scroll)
+        root.addWidget(self._cards_scroll)
 
         # Run All / Stop / Cancel
-        ctrl = QFrame()
-        ctrl.setStyleSheet(
+        self._run_ctrl = QFrame()
+        self._run_ctrl.setStyleSheet(
             "QFrame{background:#111828;border:1px solid #2d2d4e;border-radius:8px;}"
         )
-        ctrl_h = QHBoxLayout(ctrl)
+        ctrl_h = QHBoxLayout(self._run_ctrl)
         ctrl_h.setContentsMargins(12, 8, 12, 8)
         ctrl_h.setSpacing(8)
 
@@ -614,15 +620,16 @@ class MainWindow(QMainWindow):
         ctrl_h.addWidget(self._queue_lbl)
         ctrl_h.addWidget(self._prog_lbl)
         ctrl_h.addStretch()
-        root.addWidget(ctrl)
+        root.addWidget(self._run_ctrl)
 
         # Log + preview
-        vsplit = QSplitter(Qt.Orientation.Vertical)
+        self._editor_split = QSplitter(Qt.Orientation.Vertical)
         self._log_edit = QTextEdit()
         self._log_edit.setReadOnly(True)
         self._log_edit.setMaximumHeight(130)
         self._log_edit.setPlaceholderText("Pipeline log…")
-        vsplit.addWidget(self._wrap("Log", self._log_edit))
+        self._log_wrap = self._wrap("Log", self._log_edit)
+        self._editor_split.addWidget(self._log_wrap)
 
         # Subtitle editor (Original read-only + Translated editable + Save)
         self._subtitle_editor = SubtitleEditor()
@@ -634,8 +641,8 @@ class MainWindow(QMainWindow):
             if getattr(step, "STEP_ID", "") == "step3_burn":
                 self._subtitle_editor.set_step3_bridge(step)
                 break
-        vsplit.addWidget(self._subtitle_editor)
-        root.addWidget(vsplit, stretch=1)
+        self._editor_split.addWidget(self._subtitle_editor)
+        root.addWidget(self._editor_split, stretch=1)
 
         self._status_bar = QStatusBar()
         self.setStatusBar(self._status_bar)
@@ -645,10 +652,17 @@ class MainWindow(QMainWindow):
         if hasattr(self, "_subtitle_editor") and self._subtitle_editor:
             self._subtitle_editor.set_mode(mode)
         is_studio = mode == "studio"
-        # Switch the whole editing area focus: hide session info while in studio.
+        # Switch the whole editing area focus.
+        self._session_bar.setVisible(not is_studio)
+        self._file_row.setVisible(not is_studio)
+        self._cards_scroll.setVisible(not is_studio)
+        self._run_ctrl.setVisible(not is_studio)
+        self._log_wrap.setVisible(not is_studio)
         self._info_editor.setVisible(not is_studio)
         self._btn_editor_default.setChecked(not is_studio)
         self._btn_editor_studio.setChecked(is_studio)
+        if is_studio:
+            self._editor_split.setSizes([0, 1])
 
     def _on_editor_mode_changed(self, mode: str):
         # Keep top switch in sync even if mode changed inside SubtitleEditor.
