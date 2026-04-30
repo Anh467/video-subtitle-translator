@@ -843,15 +843,9 @@ class MultiSessionWindow(QMainWindow):
         for step in self._steps:
             if getattr(step, "STEP_ID", "") != "step3_burn":
                 continue
-            ff = getattr(step, "_font_family_combo", None)
-            if ff and studio.get("font_family"):
-                ff.setCurrentText(str(studio.get("font_family")))
-            fs = getattr(step, "_font_pct_spin", None)
-            if fs and studio.get("font_pct") is not None:
-                fs.setValue(float(studio.get("font_pct")))
-            pos = getattr(step, "_pos_combo", None)
-            if pos and studio.get("position"):
-                pos.setCurrentText(str(studio.get("position")))
+            apply_config = getattr(step, "apply_config", None)
+            if callable(apply_config):
+                apply_config(studio)
             refresh = getattr(step, "_refresh_preview", None)
             if callable(refresh):
                 refresh()

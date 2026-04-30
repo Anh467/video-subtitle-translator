@@ -26,6 +26,7 @@ from pathlib import Path
 from PyQt6.QtCore import QEvent, QRect, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QKeySequence, QPainter, QPen, QPixmap, QShortcut
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFrame,
@@ -37,6 +38,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSlider,
+    QSpinBox,
     QSplitter,
     QTextEdit,
     QVBoxLayout,
@@ -50,6 +52,182 @@ except Exception:
     QAudioOutput = None
     QMediaPlayer = None
     QVideoWidget = None
+
+
+_COLOR_MAP = {
+    "white": "#FFFFFF",
+    "yellow": "#FFFF00",
+    "cyan": "#00FFFF",
+    "black": "#000000",
+    "red": "#FF0000",
+    "green": "#00FF00",
+    "blue": "#0000FF",
+    "purple": "#800080",
+    "orange": "#FFA500",
+    "gray": "#808080",
+}
+
+
+def _named_color(name: str, alpha: int = 255) -> QColor:
+    c = QColor(_COLOR_MAP.get((name or "white").lower(), "#FFFFFF"))
+    c.setAlpha(max(0, min(255, int(alpha))))
+    return c
+
+
+def _style_alignment_flags(alignment: int):
+    base = Qt.AlignmentFlag.AlignVCenter
+    if alignment == 1:
+        return Qt.AlignmentFlag.AlignLeft | base
+    if alignment == 3:
+        return Qt.AlignmentFlag.AlignRight | base
+    return Qt.AlignmentFlag.AlignHCenter | base
+
+
+def _draw_overlay_block(
+    painter: QPainter,
+    rect: QRect,
+    text: str,
+    font: QFont,
+    fg: QColor,
+    outline: QColor | None,
+    outline_width: int,
+    shadow: int,
+    bg_style: str,
+    bg_color: QColor,
+    align_flags,
+):
+    if not text.strip():
+        return
+
+    flags = align_flags | Qt.TextFlag.TextWordWrap
+    painter.setFont(font)
+    metrics = painter.fontMetrics()
+    text_rect = metrics.boundingRect(rect, flags, text)
+
+    if bg_style != "none":
+        pad_x = max(10, outline_width * 4)
+        pad_y = max(6, outline_width * 3)
+        bg_rect = text_rect.adjusted(-pad_x, -pad_y, pad_x, pad_y)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(bg_color)
+        painter.drawRoundedRect(bg_rect, 8, 8)
+
+    if shadow > 0:
+        painter.setPen(QColor(0, 0, 0, 150))
+        painter.drawText(rect.translated(shadow, shadow), flags, text)
+
+    if outline and outline_width > 0:
+        painter.setPen(QPen(outline, max(1, outline_width)))
+        for dx in range(-outline_width, outline_width + 1):
+            for dy in range(-outline_width, outline_width + 1):
+                if dx == 0 and dy == 0:
+                    continue
+                painter.drawText(rect.translated(dx, dy), flags, text)
+
+    painter.setPen(fg)
+    painter.drawText(rect, flags, text)
+
+
+class _StudioOverlayWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._title_text = ""
+        self._subtitle_text = ""
+        self._style_config: dict = {}
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
+
+    def set_payload(self, title_text: str, subtitle_text: str, style_config: dict):
+        self._title_text = title_text or ""
+        self._subtitle_text = subtitle_text or ""
+        self._style_config = dict(style_config or {})
+        self.update()
+
+    def paintEvent(self, _event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        cfg = self._style_config or {}
+        fg = _named_color(cfg.get("font_color", "white"))
+        outline_name = cfg.get("outline_color") or ""
+        outline = _named_color(outline_name) if outline_name else None
+        outline_width = int(cfg.get("outline_width", 2) or 0)
+        shadow = int(cfg.get("shadow", 0) or 0)
+        bg_style = str(cfg.get("bg_style", "semi") or "semi")
+        bg_opacity = int(cfg.get("bg_opacity", 50) or 50)
+        alpha = (
+            255
+            if bg_style == "opaque"
+            else int(max(0, min(100, bg_opacity)) * 255 / 100)
+        )
+        bg = _named_color(cfg.get("bg_color", "black"), alpha)
+        alignment = int(cfg.get("alignment", 2) or 2)
+        margin_v = int(cfg.get("margin_v", 6) or 6)
+
+        title_font = QFont(cfg.get("font_family", "Arial") or "Arial")
+        title_font.setBold(bool(cfg.get("bold", False)))
+        title_font.setItalic(bool(cfg.get("italic", False)))
+        title_font.setPixelSize(
+            max(14, int(self.height() * float(cfg.get("font_pct", 2.0) or 2.0) / 140.0))
+        )
+        subtitle_font = QFont(title_font)
+        subtitle_font.setPixelSize(
+            max(16, int(self.height() * float(cfg.get("font_pct", 2.0) or 2.0) / 100.0))
+        )
+
+        title_rect = QRect(
+            24, 14, max(120, self.width() - 48), int(self.height() * 0.18)
+        )
+        _draw_overlay_block(
+            painter,
+            title_rect,
+            self._title_text,
+            title_font,
+            fg,
+            outline,
+            max(1, outline_width),
+            shadow,
+            bg_style,
+            bg,
+            Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
+        )
+
+        if alignment == 8:
+            subtitle_rect = QRect(
+                24,
+                24 + margin_v,
+                max(120, self.width() - 48),
+                int(self.height() * 0.26),
+            )
+        elif alignment == 5:
+            subtitle_rect = QRect(
+                24,
+                int(self.height() * 0.38),
+                max(120, self.width() - 48),
+                int(self.height() * 0.24),
+            )
+        else:
+            subtitle_rect = QRect(
+                24,
+                int(self.height() * 0.68) - margin_v,
+                max(120, self.width() - 48),
+                int(self.height() * 0.22),
+            )
+
+        _draw_overlay_block(
+            painter,
+            subtitle_rect,
+            self._subtitle_text,
+            subtitle_font,
+            fg,
+            outline,
+            outline_width,
+            shadow,
+            bg_style,
+            bg,
+            _style_alignment_flags(alignment),
+        )
+        painter.end()
 
 
 def _srt_time(s: float) -> str:
@@ -394,6 +572,65 @@ class SubtitleEditor(QWidget):
         r2.addWidget(self._btn_save_studio)
         studio_v.addLayout(r2)
 
+        r3 = QHBoxLayout()
+        self._studio_bold_chk = QCheckBox("Bold")
+        self._studio_bold_chk.toggled.connect(self._on_studio_changed)
+        r3.addWidget(self._studio_bold_chk)
+        self._studio_italic_chk = QCheckBox("Italic")
+        self._studio_italic_chk.toggled.connect(self._on_studio_changed)
+        r3.addWidget(self._studio_italic_chk)
+        r3.addSpacing(8)
+        r3.addWidget(QLabel("Color:"))
+        self._studio_color_combo = QComboBox()
+        self._studio_color_combo.currentTextChanged.connect(self._on_studio_changed)
+        r3.addWidget(self._studio_color_combo)
+        r3.addSpacing(8)
+        r3.addWidget(QLabel("Outline:"))
+        self._studio_outline_combo = QComboBox()
+        self._studio_outline_combo.currentTextChanged.connect(self._on_studio_changed)
+        r3.addWidget(self._studio_outline_combo)
+        r3.addSpacing(4)
+        r3.addWidget(QLabel("Width:"))
+        self._studio_outline_width_spin = QSpinBox()
+        self._studio_outline_width_spin.setRange(0, 8)
+        self._studio_outline_width_spin.valueChanged.connect(self._on_studio_changed)
+        r3.addWidget(self._studio_outline_width_spin)
+        r3.addSpacing(4)
+        r3.addWidget(QLabel("Shadow:"))
+        self._studio_shadow_spin = QSpinBox()
+        self._studio_shadow_spin.setRange(0, 5)
+        self._studio_shadow_spin.valueChanged.connect(self._on_studio_changed)
+        r3.addWidget(self._studio_shadow_spin)
+        r3.addStretch()
+        studio_v.addLayout(r3)
+
+        r4 = QHBoxLayout()
+        r4.addWidget(QLabel("Background:"))
+        self._studio_bg_style_combo = QComboBox()
+        self._studio_bg_style_combo.currentTextChanged.connect(self._on_studio_changed)
+        r4.addWidget(self._studio_bg_style_combo)
+        r4.addSpacing(6)
+        r4.addWidget(QLabel("BG color:"))
+        self._studio_bg_color_combo = QComboBox()
+        self._studio_bg_color_combo.currentTextChanged.connect(self._on_studio_changed)
+        r4.addWidget(self._studio_bg_color_combo)
+        r4.addSpacing(4)
+        r4.addWidget(QLabel("Opacity:"))
+        self._studio_bg_opacity_spin = QSpinBox()
+        self._studio_bg_opacity_spin.setRange(0, 100)
+        self._studio_bg_opacity_spin.valueChanged.connect(self._on_studio_changed)
+        r4.addWidget(self._studio_bg_opacity_spin)
+        r4.addWidget(QLabel("%"))
+        r4.addSpacing(8)
+        r4.addWidget(QLabel("Margin V:"))
+        self._studio_margin_v_spin = QSpinBox()
+        self._studio_margin_v_spin.setRange(0, 200)
+        self._studio_margin_v_spin.valueChanged.connect(self._on_studio_changed)
+        r4.addWidget(self._studio_margin_v_spin)
+        r4.addWidget(QLabel("px"))
+        r4.addStretch()
+        studio_v.addLayout(r4)
+
         self._studio_hint_lbl = QLabel(
             "Studio mode: edit title + font + position and sync to session + Step 3."
         )
@@ -430,19 +667,8 @@ class SubtitleEditor(QWidget):
             self._player.setVideoOutput(self._studio_video)
             host_v.addWidget(self._studio_video)
 
-            self._studio_overlay_lbl = QLabel("", self._studio_video_host)
-            self._studio_overlay_lbl.setAlignment(
-                Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
-            )
-            self._studio_overlay_lbl.setWordWrap(True)
-            self._studio_overlay_lbl.setAttribute(
-                Qt.WidgetAttribute.WA_TransparentForMouseEvents, True
-            )
-            self._studio_overlay_lbl.setStyleSheet(
-                "color:white;font-weight:600;"
-                "background:rgba(0,0,0,80);"
-                "padding:6px;border-radius:6px;"
-            )
+            self._studio_overlay_lbl = _StudioOverlayWidget(self._studio_video_host)
+            self._studio_overlay_lbl.setGeometry(self._studio_video_host.rect())
             self._studio_overlay_lbl.hide()
 
             self._player.positionChanged.connect(self._on_player_position_changed)
@@ -599,6 +825,7 @@ class SubtitleEditor(QWidget):
         if not self._studio_dirty:
             self._studio_dirty = True
             self._update_title()
+        self._apply_studio_to_step3()
 
     def _set_mode(self, mode: str):
         new_mode = "studio" if mode == "studio" else "default"
@@ -619,12 +846,33 @@ class SubtitleEditor(QWidget):
             self.mode_changed.emit(new_mode)
 
     def _studio_payload(self) -> dict:
-        return {
-            "title": self._studio_title_edit.text().strip(),
-            "font_family": self._studio_font_combo.currentText().strip(),
-            "font_pct": float(self._studio_font_pct.value()),
-            "position": self._studio_pos_combo.currentText().strip(),
-        }
+        cfg = {}
+        if self._step3 is not None and hasattr(self._step3, "collect_config"):
+            try:
+                cfg = dict(self._step3.collect_config() or {})
+            except Exception:
+                cfg = {}
+        if not cfg:
+            cfg = {
+                "font_family": self._studio_font_combo.currentText().strip(),
+                "font_pct": float(self._studio_font_pct.value()),
+                "bold": self._studio_bold_chk.isChecked(),
+                "italic": self._studio_italic_chk.isChecked(),
+                "font_color": self._studio_color_combo.currentText().strip() or "white",
+                "outline_color": self._studio_outline_combo.currentText().strip()
+                or "black",
+                "outline_width": int(self._studio_outline_width_spin.value()),
+                "shadow": int(self._studio_shadow_spin.value()),
+                "bg_style": self._studio_bg_style_combo.currentText().strip() or "semi",
+                "bg_color": self._studio_bg_color_combo.currentText().strip()
+                or "black",
+                "bg_opacity": int(self._studio_bg_opacity_spin.value()),
+                "alignment": 2,
+                "margin_v": int(self._studio_margin_v_spin.value()),
+            }
+        cfg["title"] = self._studio_title_edit.text().strip()
+        cfg["position"] = self._studio_pos_combo.currentText().strip()
+        return cfg
 
     def _sync_studio_choices_from_step3(self):
         if self._step3 is None:
@@ -633,6 +881,30 @@ class SubtitleEditor(QWidget):
             if self._studio_pos_combo.count() == 0:
                 self._studio_pos_combo.addItems(
                     ["Bottom center (default)", "Top center", "Middle center"]
+                )
+            if self._studio_color_combo.count() == 0:
+                self._studio_color_combo.addItems(
+                    ["white", "yellow", "cyan", "green", "red", "black"]
+                )
+            if self._studio_outline_combo.count() == 0:
+                self._studio_outline_combo.addItems(["black", "white", "none"])
+            if self._studio_bg_style_combo.count() == 0:
+                self._studio_bg_style_combo.addItems(
+                    ["None", "Semi-transparent box", "Opaque box"]
+                )
+            if self._studio_bg_color_combo.count() == 0:
+                self._studio_bg_color_combo.addItems(
+                    [
+                        "black",
+                        "white",
+                        "yellow",
+                        "blue",
+                        "red",
+                        "green",
+                        "purple",
+                        "orange",
+                        "gray",
+                    ]
                 )
             return
 
@@ -646,6 +918,69 @@ class SubtitleEditor(QWidget):
             self._studio_pos_combo.addItems(
                 [pos.itemText(i) for i in range(pos.count())]
             )
+        color = getattr(self._step3, "_color_combo", None)
+        if color and self._studio_color_combo.count() == 0:
+            self._studio_color_combo.addItems(
+                [color.itemText(i) for i in range(color.count())]
+            )
+        outline = getattr(self._step3, "_outline_combo", None)
+        if outline and self._studio_outline_combo.count() == 0:
+            self._studio_outline_combo.addItems(
+                [outline.itemText(i) for i in range(outline.count())]
+            )
+        bg_style = getattr(self._step3, "_bg_box_combo", None)
+        if bg_style and self._studio_bg_style_combo.count() == 0:
+            self._studio_bg_style_combo.addItems(
+                [bg_style.itemText(i) for i in range(bg_style.count())]
+            )
+        bg_color = getattr(self._step3, "_bg_color_combo", None)
+        if bg_color and self._studio_bg_color_combo.count() == 0:
+            self._studio_bg_color_combo.addItems(
+                [bg_color.itemText(i) for i in range(bg_color.count())]
+            )
+
+    def _sync_studio_controls_from_step3(self):
+        if self._step3 is None:
+            return
+        ff = getattr(self._step3, "_font_family_combo", None)
+        if ff and self._studio_font_combo.count():
+            self._studio_font_combo.setCurrentText(ff.currentText())
+        fs = getattr(self._step3, "_font_pct_spin", None)
+        if fs:
+            self._studio_font_pct.setValue(float(fs.value()))
+        pos = getattr(self._step3, "_pos_combo", None)
+        if pos and self._studio_pos_combo.count():
+            self._studio_pos_combo.setCurrentText(pos.currentText())
+        bold = getattr(self._step3, "_bold_chk", None)
+        if bold:
+            self._studio_bold_chk.setChecked(bool(bold.isChecked()))
+        italic = getattr(self._step3, "_italic_chk", None)
+        if italic:
+            self._studio_italic_chk.setChecked(bool(italic.isChecked()))
+        color = getattr(self._step3, "_color_combo", None)
+        if color and self._studio_color_combo.count():
+            self._studio_color_combo.setCurrentText(color.currentText())
+        outline = getattr(self._step3, "_outline_combo", None)
+        if outline and self._studio_outline_combo.count():
+            self._studio_outline_combo.setCurrentText(outline.currentText())
+        outline_w = getattr(self._step3, "_outline_width_spin", None)
+        if outline_w:
+            self._studio_outline_width_spin.setValue(int(outline_w.value()))
+        shadow = getattr(self._step3, "_shadow_spin", None)
+        if shadow:
+            self._studio_shadow_spin.setValue(int(shadow.value()))
+        bg_style = getattr(self._step3, "_bg_box_combo", None)
+        if bg_style and self._studio_bg_style_combo.count():
+            self._studio_bg_style_combo.setCurrentText(bg_style.currentText())
+        bg_color = getattr(self._step3, "_bg_color_combo", None)
+        if bg_color and self._studio_bg_color_combo.count():
+            self._studio_bg_color_combo.setCurrentText(bg_color.currentText())
+        bg_opacity = getattr(self._step3, "_bg_opacity_spin", None)
+        if bg_opacity:
+            self._studio_bg_opacity_spin.setValue(int(bg_opacity.value()))
+        margin_v = getattr(self._step3, "_margin_v_spin", None)
+        if margin_v:
+            self._studio_margin_v_spin.setValue(int(margin_v.value()))
 
     def _apply_studio_to_step3(self):
         if self._step3 is None:
@@ -660,6 +995,36 @@ class SubtitleEditor(QWidget):
             pos = getattr(self._step3, "_pos_combo", None)
             if pos and self._studio_pos_combo.currentText():
                 pos.setCurrentText(self._studio_pos_combo.currentText())
+            bold = getattr(self._step3, "_bold_chk", None)
+            if bold:
+                bold.setChecked(bool(self._studio_bold_chk.isChecked()))
+            italic = getattr(self._step3, "_italic_chk", None)
+            if italic:
+                italic.setChecked(bool(self._studio_italic_chk.isChecked()))
+            color = getattr(self._step3, "_color_combo", None)
+            if color and self._studio_color_combo.currentText():
+                color.setCurrentText(self._studio_color_combo.currentText())
+            outline = getattr(self._step3, "_outline_combo", None)
+            if outline and self._studio_outline_combo.currentText():
+                outline.setCurrentText(self._studio_outline_combo.currentText())
+            outline_w = getattr(self._step3, "_outline_width_spin", None)
+            if outline_w:
+                outline_w.setValue(int(self._studio_outline_width_spin.value()))
+            shadow = getattr(self._step3, "_shadow_spin", None)
+            if shadow:
+                shadow.setValue(int(self._studio_shadow_spin.value()))
+            bg_style = getattr(self._step3, "_bg_box_combo", None)
+            if bg_style and self._studio_bg_style_combo.currentText():
+                bg_style.setCurrentText(self._studio_bg_style_combo.currentText())
+            bg_color = getattr(self._step3, "_bg_color_combo", None)
+            if bg_color and self._studio_bg_color_combo.currentText():
+                bg_color.setCurrentText(self._studio_bg_color_combo.currentText())
+            bg_opacity = getattr(self._step3, "_bg_opacity_spin", None)
+            if bg_opacity:
+                bg_opacity.setValue(int(self._studio_bg_opacity_spin.value()))
+            margin_v = getattr(self._step3, "_margin_v_spin", None)
+            if margin_v:
+                margin_v.setValue(int(self._studio_margin_v_spin.value()))
             refresh = getattr(self._step3, "_refresh_preview", None)
             if callable(refresh):
                 refresh()
@@ -681,12 +1046,12 @@ class SubtitleEditor(QWidget):
             studio = {}
 
         self._studio_title_edit.setText(studio.get("title", session.title or ""))
-        if studio.get("font_family"):
-            self._studio_font_combo.setCurrentText(studio.get("font_family"))
-        if studio.get("font_pct") is not None:
-            self._studio_font_pct.setValue(float(studio.get("font_pct")))
-        if studio.get("position"):
-            self._studio_pos_combo.setCurrentText(studio.get("position"))
+        if studio and self._step3 is not None and hasattr(self._step3, "apply_config"):
+            try:
+                self._step3.apply_config(studio)
+            except Exception:
+                pass
+        self._sync_studio_controls_from_step3()
         self._studio_dirty = False
         self._apply_studio_to_step3()
 
@@ -803,37 +1168,13 @@ class SubtitleEditor(QWidget):
         txt = ""
         if 0 <= self._active_idx < len(self._segments):
             txt = self._segments[self._active_idx].get("translated", "")
-        if not txt:
+        title_txt = self._studio_title_edit.text().strip()
+        if not txt and not title_txt:
             self._studio_overlay_lbl.hide()
             return
 
-        w = max(280, self._studio_video_host.width() - 40)
-        h = max(50, int(self._studio_video_host.height() * 0.22))
-        x = 20
-        pos = (self._studio_pos_combo.currentText() or "Bottom center").lower()
-        if "top" in pos:
-            y = int(self._studio_video_host.height() * 0.06)
-        elif "middle" in pos or (
-            "center" in pos and "bottom" not in pos and "top" not in pos
-        ):
-            y = int(self._studio_video_host.height() * 0.40)
-        else:
-            y = int(self._studio_video_host.height() * 0.74)
-
-        self._studio_overlay_lbl.setGeometry(x, y, w, h)
-        f = QFont(self._studio_font_combo.currentText() or "Arial")
-        f.setPixelSize(
-            max(
-                12,
-                int(
-                    self._studio_video_host.height()
-                    * float(self._studio_font_pct.value())
-                    / 100.0
-                ),
-            )
-        )
-        self._studio_overlay_lbl.setFont(f)
-        self._studio_overlay_lbl.setText(txt)
+        self._studio_overlay_lbl.setGeometry(self._studio_video_host.rect())
+        self._studio_overlay_lbl.set_payload(title_txt, txt, self._studio_payload())
         self._studio_overlay_lbl.show()
         self._studio_overlay_lbl.raise_()
 
@@ -842,6 +1183,8 @@ class SubtitleEditor(QWidget):
             obj is getattr(self, "_studio_video_host", None)
             and event.type() == QEvent.Type.Resize
         ):
+            if self._studio_overlay_lbl:
+                self._studio_overlay_lbl.setGeometry(self._studio_video_host.rect())
             self._update_live_overlay()
         return super().eventFilter(obj, event)
 
@@ -980,60 +1323,12 @@ class SubtitleEditor(QWidget):
         txt = ""
         if 0 <= self._active_idx < len(self._segments):
             txt = self._segments[self._active_idx].get("translated", "")
-        if txt:
-            rect = draw.rect()
-            f = QFont(self._studio_font_combo.currentText() or "Arial")
-            f.setPixelSize(
-                max(
-                    12,
-                    int(rect.height() * float(self._studio_font_pct.value()) / 100.0),
-                )
-            )
-            p.setFont(f)
-            pos = (self._studio_pos_combo.currentText() or "Bottom center").lower()
-            if "top" in pos:
-                y_rect = QRect(
-                    20,
-                    int(rect.height() * 0.06),
-                    rect.width() - 40,
-                    int(rect.height() * 0.28),
-                )
-            elif (
-                "middle" in pos
-                or "center" in pos
-                and "bottom" not in pos
-                and "top" not in pos
-            ):
-                y_rect = QRect(
-                    20,
-                    int(rect.height() * 0.36),
-                    rect.width() - 40,
-                    int(rect.height() * 0.28),
-                )
-            else:
-                y_rect = QRect(
-                    20,
-                    int(rect.height() * 0.72),
-                    rect.width() - 40,
-                    int(rect.height() * 0.24),
-                )
-
-            p.setPen(QPen(QColor("black"), 4))
-            p.drawText(
-                y_rect,
-                Qt.AlignmentFlag.AlignHCenter
-                | Qt.AlignmentFlag.AlignVCenter
-                | Qt.TextFlag.TextWordWrap,
-                txt,
-            )
-            p.setPen(QColor("white"))
-            p.drawText(
-                y_rect,
-                Qt.AlignmentFlag.AlignHCenter
-                | Qt.AlignmentFlag.AlignVCenter
-                | Qt.TextFlag.TextWordWrap,
-                txt,
-            )
+        title_txt = self._studio_title_edit.text().strip()
+        payload = self._studio_payload()
+        overlay = _StudioOverlayWidget()
+        overlay.resize(draw.size())
+        overlay.set_payload(title_txt, txt, payload)
+        overlay.render(p)
 
         p.end()
         scaled = draw.scaled(
