@@ -80,6 +80,8 @@ PREVIEW_ASPECTS = {
 PREVIEW_ASPECT_AUTO = "Auto (from source video)"
 PRESET_OPTIONS = ["ultrafast", "veryfast", "fast", "medium", "slow"]
 CRF_RANGE = (18, 28)
+DEFAULT_CRF = 20
+DEFAULT_PRESET = "medium"
 # libass uses script resolution (PlayResY, often 288) to scale style size.
 # Keep this aligned so burn output matches preview percent sizing.
 ASS_PLAYRES_Y = 288
@@ -585,8 +587,8 @@ class BurnStep(BaseStep):
                     margin_v=config.get("margin_v", 6),
                     video_w=w,
                     video_h=h,
-                    crf=config.get("crf", 24),
-                    preset=config.get("preset", "fast"),
+                    crf=config.get("crf", DEFAULT_CRF),
+                    preset=config.get("preset", DEFAULT_PRESET),
                     delogo=delogo_cfg,
                     branding={
                         "enabled": config.get("brand_enabled", True),
@@ -639,10 +641,10 @@ class BurnStep(BaseStep):
         enc_row.addWidget(QLabel("CRF:"))
         self._crf_spin = QSpinBox()
         self._crf_spin.setRange(CRF_RANGE[0], CRF_RANGE[1])
-        self._crf_spin.setValue(24)
+        self._crf_spin.setValue(DEFAULT_CRF)
         self._crf_spin.setFixedWidth(50)
         self._crf_spin.setToolTip(
-            "CRF: 18=highest quality/slowest, 24-26=balanced, 28=fastest"
+            "CRF: 18=highest quality/slowest, 20-22=near-original, 28=fastest"
         )
         enc_row.addWidget(self._crf_spin)
         enc_row.addSpacing(8)
@@ -651,7 +653,7 @@ class BurnStep(BaseStep):
         enc_row.addWidget(QLabel("Preset:"))
         self._preset_combo = QComboBox()
         self._preset_combo.addItems(PRESET_OPTIONS)
-        self._preset_combo.setCurrentText("fast")
+        self._preset_combo.setCurrentText(DEFAULT_PRESET)
         self._preset_combo.setFixedWidth(95)
         self._preset_combo.setToolTip(
             "Speed: ultrafast → veryfast → fast → medium → slow"
@@ -1163,9 +1165,12 @@ class BurnStep(BaseStep):
             box_color = QColor(
                 bg_base.red(), bg_base.green(), bg_base.blue(), box_alpha
             )
-            painter.fillRect(
-                x - pad, y - text_h + 4, text_w + 2 * pad, text_h + pad, box_color
-            )
+            # Use font metrics around the baseline so text sits centered in the box.
+            text_top = y - fm.ascent()
+            text_bottom = y + fm.descent()
+            box_y = text_top - pad
+            box_h = (text_bottom - text_top) + (2 * pad)
+            painter.fillRect(x - pad, box_y, text_w + 2 * pad, box_h, box_color)
 
         # Shadow
         if shadow_px > 0:
@@ -1331,9 +1336,11 @@ class BurnStep(BaseStep):
                 if self._preview_ratio_combo
                 else PREVIEW_ASPECT_AUTO
             ),
-            "crf": self._crf_spin.value() if self._crf_spin else 24,
+            "crf": self._crf_spin.value() if self._crf_spin else DEFAULT_CRF,
             "preset": (
-                self._preset_combo.currentText() if self._preset_combo else "fast"
+                self._preset_combo.currentText()
+                if self._preset_combo
+                else DEFAULT_PRESET
             ),
             "delogo": delogo_cfg,
             "brand_enabled": (
@@ -1416,8 +1423,8 @@ def _hard_cmd(
     bg_box=True,
     video_w=1920,
     video_h=1080,
-    crf=24,
-    preset="fast",
+    crf=DEFAULT_CRF,
+    preset=DEFAULT_PRESET,
     delogo=None,
     branding=None,
 ):
@@ -1425,7 +1432,10 @@ def _hard_cmd(
 
     # Resolve bg from new bg_style field
     use_bg = bg_style != "none"
-    bg_alpha_hex = f"{int(max(0, min(255, (bg_opacity / 100.0) * 255))):02X}"
+    # UI opacity: 0..100 means transparent..opaque.
+    # ASS alpha is inverted: 00=opaque, FF=transparent.
+    bg_opacity = max(0.0, min(100.0, float(bg_opacity)))
+    bg_alpha_hex = f"{int((100.0 - bg_opacity) / 100.0 * 255):02X}"
 
     outline_val = outline_width if outline_color and outline_color != "none" else 0
     outline_str = (
