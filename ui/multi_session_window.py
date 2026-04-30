@@ -547,6 +547,11 @@ class MultiSessionWindow(QMainWindow):
 
         self._subtitle_editor = SubtitleEditor()
         self._preview_title = self._subtitle_editor._title_lbl
+        self._subtitle_editor.saved.connect(self._on_subtitle_editor_saved)
+        for step in self._steps:
+            if getattr(step, "STEP_ID", "") == "step3_burn":
+                self._subtitle_editor.set_step3_bridge(step)
+                break
         right_split.addWidget(self._subtitle_editor)
 
         right_split.setStretchFactor(0, 0)
@@ -777,12 +782,40 @@ class MultiSessionWindow(QMainWindow):
         return l
 
     def _set_step3_source_file(self, source_file: str | None):
+        if hasattr(self, "_subtitle_editor") and self._subtitle_editor:
+            self._subtitle_editor.set_source_file(source_file)
         for step in self._steps:
             if getattr(step, "STEP_ID", "") != "step3_burn":
                 continue
             setter = getattr(step, "set_source_file", None)
             if callable(setter):
                 setter(source_file)
+            break
+
+    def _apply_session_studio_to_step3(self, session: Session):
+        """Load per-session studio style and push into Step 3 controls."""
+        try:
+            studio = session.load_subtitle_studio()
+        except Exception:
+            studio = {}
+        if not studio:
+            return
+
+        for step in self._steps:
+            if getattr(step, "STEP_ID", "") != "step3_burn":
+                continue
+            ff = getattr(step, "_font_family_combo", None)
+            if ff and studio.get("font_family"):
+                ff.setCurrentText(str(studio.get("font_family")))
+            fs = getattr(step, "_font_pct_spin", None)
+            if fs and studio.get("font_pct") is not None:
+                fs.setValue(float(studio.get("font_pct")))
+            pos = getattr(step, "_pos_combo", None)
+            if pos and studio.get("position"):
+                pos.setCurrentText(str(studio.get("position")))
+            refresh = getattr(step, "_refresh_preview", None)
+            if callable(refresh):
+                refresh()
             break
 
     def _on_session_clicked(self, sess_data: dict):
@@ -817,6 +850,16 @@ class MultiSessionWindow(QMainWindow):
                 card.set_status("✅ Done (saved)", "loaded", out_path)
             else:
                 card.set_status("Waiting…", "idle")
+
+    def _on_subtitle_editor_saved(self, folder: str):
+        """Reload active session and refresh session list row after studio/text save."""
+        try:
+            session = Session.load(folder)
+        except Exception:
+            return
+        self._current_session = session
+        self._info_editor.load_session(session)
+        self._session_panel.refresh()
 
     # ── Run logic ─────────────────────────────────────────────────────────────
 
@@ -963,6 +1006,7 @@ class MultiSessionWindow(QMainWindow):
 
         self._current_session = session
         self._set_step3_source_file(session.source_file)
+        self._apply_session_studio_to_step3(session)
         st = self._multi_session_stats.get(folder)
         if st and not st["start_at"]:
             st["start_at"] = time.perf_counter()

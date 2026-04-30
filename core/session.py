@@ -22,6 +22,7 @@ class Session:
         self.title: str = ""
         self.description: str = ""
         self._thumb_background: str = ""
+        self.subtitle_studio: dict = {}
         self.folder.mkdir(parents=True, exist_ok=True)
         self._save_meta()
 
@@ -36,6 +37,7 @@ class Session:
         obj.title = meta.get("title", "")
         obj.description = meta.get("description", "")
         obj._thumb_background = meta.get("thumb_background", "")
+        obj.subtitle_studio = meta.get("subtitle_studio", {}) or {}
         # thumbnail is detected from folder, not stored in meta
         return obj
 
@@ -124,6 +126,15 @@ class Session:
         self.title = title.strip()
         self.description = description.strip()
         self._save_meta()
+
+    def save_subtitle_studio(self, studio: dict | None):
+        """Save per-session subtitle studio settings into session.json."""
+        self.subtitle_studio = dict(studio or {})
+        self._save_meta()
+
+    def load_subtitle_studio(self) -> dict:
+        """Load per-session subtitle studio settings from session.json."""
+        return dict(self.subtitle_studio or {})
 
     def save_thumbnail(self, src_path: str) -> str:
         """Copy an image to session folder as thumbnail.jpg. Returns saved path."""
@@ -352,6 +363,7 @@ class Session:
                     "title": self.title,
                     "description": self.description,
                     "thumb_background": self.thumb_background,
+                    "subtitle_studio": self.subtitle_studio,
                 },
                 ensure_ascii=False,
                 indent=2,

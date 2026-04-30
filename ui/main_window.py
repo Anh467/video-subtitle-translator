@@ -612,6 +612,11 @@ class MainWindow(QMainWindow):
         self._subtitle_editor = SubtitleEditor()
         self._subtitle_editor.set_orig_placeholder("Original transcript…")
         self._subtitle_editor.set_trans_placeholder("Translated subtitles…")
+        self._subtitle_editor.saved.connect(self._on_subtitle_editor_saved)
+        for step in self._steps:
+            if getattr(step, "STEP_ID", "") == "step3_burn":
+                self._subtitle_editor.set_step3_bridge(step)
+                break
         vsplit.addWidget(self._subtitle_editor)
         root.addWidget(vsplit, stretch=1)
 
@@ -853,6 +858,8 @@ class MainWindow(QMainWindow):
 
     def _set_step3_source_file(self, source_file: str | None):
         """Push current source file into Step 3 for accurate preview ratio/size."""
+        if hasattr(self, "_subtitle_editor") and self._subtitle_editor:
+            self._subtitle_editor.set_source_file(source_file)
         for step in self._steps:
             if getattr(step, "STEP_ID", "") != "step3_burn":
                 continue
@@ -860,6 +867,16 @@ class MainWindow(QMainWindow):
             if callable(setter):
                 setter(source_file)
             break
+
+    def _on_subtitle_editor_saved(self, folder: str):
+        """Refresh session-bound widgets after subtitle/studio save."""
+        if not self._session or str(self._session.folder) != str(folder):
+            return
+        try:
+            self._session = Session.load(folder)
+        except Exception:
+            return
+        self._info_editor.load_session(self._session)
 
     def _open_session_picker(self):
         base = self._sess_dir_edit.text().strip()
