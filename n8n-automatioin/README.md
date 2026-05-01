@@ -128,8 +128,45 @@ then reuse the workflow for each publish batch.
   **working directory** to the repo root (then use paths like
   `n8n-automatioin/export_publish_jobs.py`), or pass **absolute** paths for both
   the exporter and `mark_publish_result.py`.
-- **n8n Cloud** often **disallows** Execute Command for security. This flow expects
-  **self-hosted** n8n (`npx`, Docker on your PC, or your server).
+- **n8n Cloud** does **not** ship the Execute Command node at all (see [Execute Command](https://docs.n8n.io/integrations/builtin/core-nodes/n8n-nodes-base.executecommand/): *Not available on Cloud*). Use **self-hosted** n8n.
+
+#### n8n 2.0+ — `Unrecognized node type: n8n-nodes-base.executeCommand`
+
+From **n8n 2.0**, risky nodes (including **Execute Command** and **Read/Write Files from Disk**) are **blocked by default** via `NODES_EXCLUDE`. If your instance still excludes them, imported workflows fail with *Unrecognized node type* even though the JSON is valid.
+
+**Fix (self-hosted only):** enable those nodes by clearing the exclude list, e.g. set:
+
+```text
+NODES_EXCLUDE=[]
+```
+
+See [Block access to nodes](https://docs.n8n.io/hosting/securing/blocking-nodes/) (*Enable nodes that are blocked by default*). Apply the variable in `docker-compose.yml`, a `.env` file, or your process manager, then **restart** n8n. A minimal Docker example is `n8n-automatioin/docker-compose.n8n.example.yml`.
+
+This template also uses **Read/Write Files from Disk** for local `video_path`; the same `NODES_EXCLUDE=[]` (or a custom list that **omits** both `n8n-nodes-base.executeCommand` and `n8n-nodes-base.readWriteFile`) is required for the full flow.
+
+If you use a **narrower** `NODES_EXCLUDE` instead of `[]`, remove only the entries you need—do not leave `executeCommand` or `readWriteFile` in the list.
+
+**n8n Cloud:** there is no env toggle; you cannot run this workflow as-is. Options: self-host, or replace shell/file nodes with your own **HTTP** microservice that runs the Python scripts on a machine you control.
+
+#### Docker Desktop (Windows): bước cụ thể
+
+1. Cài **Docker Desktop** và để trạng thái **Running** (WSL2 backend nếu được hỏi).
+2. Sửa **`n8n-automatioin/docker-compose.n8n.example.yml`**: hai dòng **volumes** đầu là đường dẫn **máy Windows** của bạn → map vào **`/repo`** (clone repo) và **`/workspace`** (thư mục cha session). Trong file mẫu dùng `/` thay cho `\` kiểu `D:/path/to/...`.
+3. Từ **thư mục gốc repo** (nơi có `n8n-automatioin/`), chạy:
+   ```powershell
+   docker compose -f n8n-automatioin/docker-compose.n8n.example.yml up -d --build
+   ```
+4. Mở **`http://localhost:5678`** (lần đầu tạo tài khoản owner nếu được hỏi).
+5. Trong workflow **sau khi import**:
+   - Node **`2 Publishing config`**: **`REPO_ROOT`** phải là đường dẫn **trong container**, ví dụ:
+     ```javascript
+     const REPO_ROOT = String.raw`/repo`;
+     ```
+     (không dùng `D:\...` vì lệnh Python chạy **bên trong** container.)
+   - Node **`1 Workspace`**: **`workspace`** = đường dẫn **trong container** trỏ đúng chỗ đã mount, ví dụ `/workspace` (nếu bạn map cả thư mục session cha vào `/workspace`).
+6. Biến **`N8N_RESTRICT_FILE_ACCESS_TO`** trong compose phải chứa các path container tương ứng (`/repo,/workspace` trong mẫu).
+
+Image được build từ **`n8n-automatioin/Dockerfile.n8n`** (n8n + Python) vì **Execute Command chạy trong container**, không dùng Python cài trên Windows host.
 
 ### 3.4 Build the workflow step by step
 
@@ -168,11 +205,15 @@ There are two workflow files under `n8n-automatioin/workflows/`:
 
 1. n8n → **Workflows** → **Import from File** (or drag onto the canvas).
 2. Open **`n8n-automatioin/workflows/publish_sessions.template.json`**.
-3. **One input field on each run** — **`Execute workflow`** exposes only **`workspace`**: parent folder containing your sessions (what you pass today as `--base-dir` / `workspace`).
+3. **Each run** — edit the **Set** node **`1 Workspace (folder chứa các session)`**:
+   - **`workspace`**: parent folder of your sessions (same as CLI `base_dir`).
+   - **`schedule_interval_hours`**: hours between successive **`scheduled_at`** values (default **`4`**). Passed through as **`--schedule-interval-hours`** to **`export_publish_jobs.py`**.
+   - **`schedule_start`**: optional **ISO-8601** first-slot time, e.g. **`2026-05-01T08:00:00+07:00`**. Leave **empty** so Python uses the first job’s **`published_at`** (see **`--schedule-start`** in **`export_publish_jobs.py`**). Non-empty values are passed as **`--schedule-start`**.
+   - Node **`2 Publishing config`** turns these into a single **`schedule_args`** string for the export **Execute Command**.
 4. **Edit once after import** — open the **Code** node **`2 Publishing config (sửa 1 lần trong Code)`** and adjust:
    - **`REPO_ROOT`**: repo root (`String.raw` …), folder that contains `n8n-automatioin/`.
    - **`FACEBOOK_PAGE_ID`**: numeric Page ID for `/{page-id}/videos` (`YOUR_PAGE_ID` placeholder).
-   - The snippet trims **`workspace`** to **`base_dir`**, derives **`log_file`** as `<normalized workspace>/n8n_publish_run.jsonl`, and outputs one object (**`repo_root`, `base_dir`, `log_file`, `facebook_page_id`**) used by **`Execute Command`** and logging nodes downstream.
+   - The snippet trims **`workspace`** to **`base_dir`**, derives **`log_file`**, builds **`schedule_args`**, and outputs **`repo_root`**, **`base_dir`**, **`log_file`**, **`facebook_page_id`**, **`schedule_args`**, … for downstream nodes.
 5. **Credentials (single naming convention)** — in n8n **Credentials**, create and authorize:
    - **YouTube OAuth2 API** named exactly **`YouTube OAuth2 - publish workspace`** (used by the **YouTube upload** node).
    - **Facebook Graph API** named exactly **`Facebook Graph API - page token`** (Page access token with video upload permissions).
@@ -187,18 +228,19 @@ There are two workflow files under `n8n-automatioin/workflows/`:
 
 9. **Optional error workflow** — import **`publish_sessions_error.template.json`**, edit **Set error paths**, then in the **main** workflow’s **Settings**, set **Error workflow** to this workflow (or attach it in your n8n deployment as documented). Failed runs then append a row to your **error** JSONL with `event: workflow_error` and `level: ERROR`.
 
-**Job order** — `session_publish_jobs.py` outputs jobs sorted by **`published_at`** ascending (oldest first), so one **Execute** run posts in chronological “public time” order.
+**Job order** — Jobs are sorted by **`published_at`** ascending (oldest first). **`export_publish_jobs.py`** assigns each job’s **`scheduled_at`** starting at **`schedule_start`** (or the first **`published_at`** if unset), adding **`schedule_interval_hours`** per job index.
 
 After import, n8n may migrate node versions (e.g. **Set** v1 → newer); that is normal.
-**Execute Command** must be allowed (Section 3.3); use self‑hosted n8n if your host disables it.
+
+If the run fails with **`Unrecognized node type: n8n-nodes-base.executeCommand`**, your host is still **excluding** that node (common on **n8n 2.x** defaults) or you are on **n8n Cloud** — see **Section 3.3** (`NODES_EXCLUDE`, self‑hosting).
 
 ## 4. Recommended workflow overview and node examples
 
 End-to-end order (aligned with **`publish_sessions.template.json`**):
 
-1. **`Execute workflow`** (manual “sub‑workflow”) with **`workspace`** only, or a trigger that forwards the same field.
-2. **`2 Publishing config`** (`Code`) — fixed **`REPO_ROOT`**, **`FACEBOOK_PAGE_ID`**; trims **`workspace`** → **`base_dir`**, derives **`log_file`**.
-3. Parallel: **log workflow start**, and **`Execute Command`** → **`export_publish_jobs.py`** (uses **`base_dir`** from config).
+1. **`Execute workflow`** then **`1 Workspace`** **Set**: **`workspace`**, **`schedule_interval_hours`**, **`schedule_start`**.
+2. **`2 Publishing config`** (`Code`) — **`REPO_ROOT`**, **`FACEBOOK_PAGE_ID`**; trims paths; emits **`schedule_args`** for **`export_publish_jobs.py`**.
+3. Parallel: **log workflow start**, and **`Execute Command`** → **`export_publish_jobs.py`** **`{{ $json.schedule_args }}`** (plus **`base_dir`** / platforms / **`--pretty`**).
 4. **`5 Split jobs (+ giữ config)`** (`Code`) — merges exporter JSON stdout with **`cfg`** from step 2, one row per job (jobs already sorted **`published_at`** ASC in Python).
 5. `Split In Batches` → size `1`
 6. YouTube upload node (with Credential)
@@ -208,10 +250,10 @@ End-to-end order (aligned with **`publish_sessions.template.json`**):
 ### Exporter via `Execute Command` (single PowerShell-style line)
 
 ```powershell
-cmd /c cd /d {{$json.repo_root}} && python n8n-automatioin\export_publish_jobs.py {{$json.base_dir}} --platform youtube --platform facebook --schedule-interval-hours 4 --pretty
+cmd /c cd /d {{$json.repo_root}} && python n8n-automatioin\export_publish_jobs.py {{$json.base_dir}} --platform youtube --platform facebook {{$json.schedule_args}} --pretty
 ```
 
-This matches **`publish_sessions.template.json`**, where **`Execute Command`** runs on the **`2 Publishing config`** output (**`repo_root`** + **`base_dir`** per item).
+**`schedule_args`** is built in **`2 Publishing config`** (e.g. `--schedule-interval-hours 4` and optionally `--schedule-start 2026-05-01T08:00:00+07:00`). For a one-off CLI run you can pass the same flags manually; see **`export_publish_jobs.py`** **`--schedule-start`** and **`--schedule-interval-hours`**.
 
 ### Exporter via `Execute Command` (split command / arguments)
 
@@ -221,7 +263,9 @@ This matches **`publish_sessions.template.json`**, where **`Execute Command`** r
   - `n8n-automatioin/export_publish_jobs.py`
   - `{{$json["base_dir"]}}`
   - `--platform`, `youtube`, `--platform`, `facebook`
-  - `--schedule-interval-hours`, `4`, `--pretty`
+  - `--schedule-interval-hours`, `4` (or your value)
+  - optional: `--schedule-start`, `2026-05-01T08:00:00+07:00`
+  - `--pretty`
 
 ### Example `Code` node (references previous node output shape)
 
@@ -292,21 +336,28 @@ python n8n-automatioin/mark_publish_result.py "{{$json["session_folder"]}}" --pl
 
 > Note: YouTube video upload in n8n generally requires OAuth2 authorization, not a plain API key.
 
-### Facebook / Meta credentials
+### Facebook / Meta credentials (Fan Page, not personal profile)
+
+The template uploads with **Graph `POST /{page-id}/videos`**. Two things must line up:
+
+1. **`FACEBOOK_PAGE_ID`** in workflow node **`2 Publishing config`** — set this to your **Fan Page ID** (numeric ID of the Page you manage). The node **Facebook • upload video** uses it as the Graph **`node`** so the video is published **on that Page’s timeline**, not on a personal profile.
+2. **Page access token** — in n8n, credential **`Facebook Graph API - page token`** must be a **Page** access token with permission to post as that Page (not only a user token meant for `/me` on a personal account).
+
+How to get the values:
 
 1. Open Meta for Developers: https://developers.facebook.com/
 2. Create a new App.
 3. Add `Facebook Login` and `Pages API`.
 4. In `Settings > Basic`, copy `App ID` and `App Secret`.
-5. In the app, generate a Page access token with these scopes:
+5. Generate a **Page** access token for the target Fan Page with scopes such as:
    - `pages_manage_posts`
    - `pages_read_engagement`
    - `pages_manage_engagement`
    - `pages_show_list`
    - `pages_read_user_content`
-6. In n8n, create a Facebook credential and authorize with the app.
+6. In n8n, create a Facebook Graph API credential (same name as in the template) and paste or OAuth as required so the effective token is the **Page** token for your Fan Page.
 
-> If the Facebook node accepts a direct access token, use the Page access token.
+**Finding the Fan Page ID:** Meta Business Suite / Page **About** section, or Graph API Explorer (`me/accounts` with a user token that has `pages_show_list`), or third-party “Page ID” tools — use the ID that matches the Page you want.
 
 ## 6. What to run
 

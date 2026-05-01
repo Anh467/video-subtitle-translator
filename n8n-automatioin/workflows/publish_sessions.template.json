@@ -16,6 +16,14 @@
             {
               "name": "workspace",
               "value": "D:\\Downloads\\workspace\\horror_story"
+            },
+            {
+              "name": "schedule_interval_hours",
+              "value": "4"
+            },
+            {
+              "name": "schedule_start",
+              "value": ""
             }
           ]
         },
@@ -31,7 +39,7 @@
       "parameters": {
         "mode": "runOnceForAllItems",
         "language": "javaScript",
-        "jsCode": "// === CHỈNH MỘT LẦN: clone repo máy bạn + Facebook Page ID ===\nconst REPO_ROOT = String.raw`D:\\Nguyen-Anh-Viet\\Tutorial\\Python\\audio-to-text\\video-subtitle-translator`;\nconst FACEBOOK_PAGE_ID = 'YOUR_PAGE_ID';\n\nlet base_dir = String($json.workspace || '').trim();\nif (!base_dir) {\n  throw new Error('Cần \"workspace\": đường dẫn thư mục chứa các folder session.');\n}\nbase_dir = base_dir.replace(/[/\\\\]+$/, '');\nconst norm = base_dir.replace(/\\\\/g, '/').replace(/\\/+$/, '');\nconst log_file = `${norm}/n8n_publish_run.jsonl`;\n\nreturn [\n  {\n    json: {\n      workspace: base_dir,\n      base_dir,\n      repo_root: REPO_ROOT,\n      log_file,\n      facebook_page_id: FACEBOOK_PAGE_ID,\n    },\n  },\n];"
+        "jsCode": "// === CHỈNH MỘT LẦN: clone repo + Fanpage Facebook (không phải profile cá nhân) ===\nconst REPO_ROOT = String.raw`D:\\Nguyen-Anh-Viet\\Tutorial\\Python\\audio-to-text\\video-subtitle-translator`;\n// ID Fanpage dạng số (hoặc username trang nếu API chấp nhận). Node \"15 Facebook\" gọi Graph: POST /{PAGE_ID}/videos.\nconst FACEBOOK_PAGE_ID = 'YOUR_PAGE_ID';\n\nlet base_dir = String($json.workspace || '').trim();\nif (!base_dir) {\n  throw new Error('Cần \"workspace\": đường dẫn thư mục chứa các folder session.');\n}\nbase_dir = base_dir.replace(/[/\\\\]+$/, '');\nconst norm = base_dir.replace(/\\\\/g, '/').replace(/\\/+$/, '');\nconst log_file = `${norm}/n8n_publish_run.jsonl`;\n\nlet hours = Number($json.schedule_interval_hours);\nif (!Number.isFinite(hours) || hours <= 0) hours = 4;\nlet schedule_args = `--schedule-interval-hours ${hours}`;\nconst schedule_start = String($json.schedule_start || '').trim();\nif (schedule_start) {\n  schedule_args += schedule_start.includes(' ')\n    ? ` --schedule-start \"${schedule_start.replace(/\"/g, '')}\"`\n    : ` --schedule-start ${schedule_start}`;\n}\n\nreturn [\n  {\n    json: {\n      workspace: base_dir,\n      base_dir,\n      repo_root: REPO_ROOT,\n      log_file,\n      facebook_page_id: FACEBOOK_PAGE_ID,\n      schedule_interval_hours: hours,\n      schedule_start,\n      schedule_args,\n    },\n  },\n];"
       },
       "id": "11111111-1111-4111-8111-111111111119",
       "name": "2 Publishing config (sửa 1 lần trong Code)",
@@ -41,8 +49,8 @@
     },
     {
       "parameters": {
-        "content": "## Một cổng vào • Một cú nhấp\n\n**Mỗi lần chạy**: chỉ sửa **`1 Workspace`** → đường dẫn thư mục workspace (folder cha của các session). Nhấn **Execute workflow**.\n\n**Một lần duy nhất**: mở **`2 Publishing config`** → chỉnh `REPO_ROOT` (repo clone) và `FACEBOOK_PAGE_ID`.\n\n**Thứ tự đăng**: Python `export_publish_jobs.py` đã **xếp job theo `published_at` tăng dần** (ngày công khai / folder cũ trước), rồi gán YouTube/Facebook **`scheduled_at` cách nhau 4 giờ**.\n\n**Credentials** (đặt tên đúng để không phải nối lại):\n- `YouTube OAuth2 - publish workspace`\n- `Facebook Graph API - page token`\n\n**Khác**: n8n có thể cần `N8N_RESTRICT_FILE_ACCESS_TO` để đọc file video.",
-        "height": 420,
+        "content": "## Một cổng vào • Một cú nhấp\n\n**Lỗi** `Unrecognized node type … executeCommand`? n8n **2+** và **Cloud** thường **chặn** node này. Cần **self-host** và bật node: biến **`NODES_EXCLUDE=[]`** rồi restart (chi tiết README **§3.3**).\n\n**Mỗi lần chạy** — node **`1 Workspace`**:\n- **`workspace`**: thư mục cha các session.\n- **`schedule_interval_hours`**: khoảng cách giữa từng video (mặc định `4`).\n- **`schedule_start`**: thời điểm **video đầu tiên** (ISO-8601), ví dụ `2026-05-01T08:00:00+07:00`. Để **trống** → Python dùng `published_at` của session đầu (cùng thứ tự cũ→mới).\n\n**Một lần duy nhất**: **`2 Publishing config`** → `REPO_ROOT`, **`FACEBOOK_PAGE_ID` = ID Fanpage** (số trang bạn quản trị; **không** phải ID profile cá nhân). Node **15 Facebook** gọi API `…/{PAGE_ID}/videos` — video lên **đúng Fanpage đó**.\n\n**Facebook**: Credential **`Facebook Graph API - page token`** phải là **Page Access Token** (token của **Fanpage** / quyền đăng bài lên trang), không dùng token chỉ để đăng lên dòng thời gian cá nhân.\n\n**Thứ tự**: job theo `published_at` tăng dần; mỗi job lệch **`schedule_interval_hours`** so với job trước tính từ **`schedule_start`** (hoặc mốc mặc định).\n\n**Credentials**: `YouTube OAuth2 - publish workspace`, `Facebook Graph API - page token`.\n\n**Khác**: `N8N_RESTRICT_FILE_ACCESS_TO` nếu cần đọc video.",
+        "height": 500,
         "width": 560,
         "color": 5
       },
@@ -66,7 +74,7 @@
     {
       "parameters": {
         "executeOnce": true,
-        "command": "=cmd /c cd /d {{ $json.repo_root }} && python n8n-automatioin\\export_publish_jobs.py {{ $json.base_dir }} --platform youtube --platform facebook --schedule-interval-hours 4 --pretty"
+        "command": "=cmd /c cd /d {{ $json.repo_root }} && python n8n-automatioin\\export_publish_jobs.py {{ $json.base_dir }} --platform youtube --platform facebook {{ $json.schedule_args }} --pretty"
       },
       "id": "11111111-1111-4111-8111-111111111104",
       "name": "4 Export jobs (Python)",
