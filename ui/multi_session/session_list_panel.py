@@ -22,6 +22,28 @@ from PyQt6.QtWidgets import (
 )
 
 from core.session import Session
+
+# session_listing stores progress as circled digits, not step IDs
+STEP_LABEL_TO_ID = {
+    "Step 1": "step1_transcribe",
+    "Step 2": "step2_translate",
+    "Step 3": "step3_burn",
+    "Step 4": "step4_separate",
+    "Step 5": "step5_tts",
+    "Step 6": "step6_add_voice",
+    "Step 7": "step7_publish_info",
+}
+STEP_ID_TO_MARKER = {
+    "step1_transcribe": "①",
+    "step2_translate": "②",
+    "step3_burn": "③",
+    "step4_separate": "④",
+    "step5_tts": "⑤",
+    "step6_add_voice": "⑥",
+    "step7_publish_info": "⑦",
+}
+
+
 class SessionListPanel(QWidget):
     """Left panel: list of sessions với checkbox chọn để chạy."""
 
@@ -135,9 +157,22 @@ class SessionListPanel(QWidget):
         filter_row = QHBoxLayout()
         filter_row.setSpacing(6)
 
-        filter_label = QLabel("Filter select:")
-        filter_label.setStyleSheet("color:#a0a8ff;font-size:11px;font-weight:600;")
-        filter_row.addWidget(filter_label)
+        st_lbl = QLabel("Status:")
+        st_lbl.setStyleSheet("color:#a0a8ff;font-size:11px;font-weight:600;")
+        filter_row.addWidget(st_lbl)
+
+        self._status_filter_combo = QComboBox()
+        self._status_filter_combo.addItems(["All", "Done", "Not done"])
+        self._status_filter_combo.setFixedHeight(24)
+        self._status_filter_combo.setFixedWidth(88)
+        self._status_filter_combo.setToolTip(
+            "All rows: Done = Step 6 finished (⑥). Per step: Done = that step marker is in done list."
+        )
+        filter_row.addWidget(self._status_filter_combo)
+
+        step_lbl = QLabel("Step:")
+        step_lbl.setStyleSheet("color:#a0a8ff;font-size:11px;font-weight:600;")
+        filter_row.addWidget(step_lbl)
 
         self._step_filter_combo = QComboBox()
         self._step_filter_combo.addItems(
@@ -145,22 +180,24 @@ class SessionListPanel(QWidget):
         )
         self._step_filter_combo.setFixedHeight(24)
         self._step_filter_combo.setFixedWidth(100)
-        self._step_filter_combo.setToolTip("Select the step to filter by")
+        self._step_filter_combo.setToolTip("Which step to test for Done / Not done")
         filter_row.addWidget(self._step_filter_combo)
 
-        self._status_filter_combo = QComboBox()
-        self._status_filter_combo.addItems(["All", "Done", "Not done"])
-        self._status_filter_combo.setFixedHeight(24)
-        self._status_filter_combo.setFixedWidth(90)
-        self._status_filter_combo.setToolTip("Select done or not done sessions for the chosen step")
-        filter_row.addWidget(self._status_filter_combo)
+        apply_btn = QPushButton("Apply filter")
+        apply_btn.setFixedHeight(24)
+        apply_btn.setFixedWidth(82)
+        apply_btn.setStyleSheet("font-size:11px;padding:2px 8px;")
+        apply_btn.setToolTip("Check only rows matching Status + Step below")
+        apply_btn.clicked.connect(self._select_filtered)
+        filter_row.addWidget(apply_btn)
 
-        filter_btn = QPushButton("Select")
-        filter_btn.setFixedHeight(24)
-        filter_btn.setFixedWidth(70)
-        filter_btn.setStyleSheet("font-size:11px;padding:2px 8px;")
-        filter_btn.clicked.connect(self._select_filtered)
-        filter_row.addWidget(filter_btn)
+        select_all_btn = QPushButton("Select all")
+        select_all_btn.setFixedHeight(24)
+        select_all_btn.setFixedWidth(76)
+        select_all_btn.setStyleSheet("font-size:11px;padding:2px 8px;")
+        select_all_btn.setToolTip("Reset Status & Step to All, then tick every session")
+        select_all_btn.clicked.connect(self._filter_select_all_flat)
+        filter_row.addWidget(select_all_btn)
 
         filter_row.addStretch()
         root.addLayout(filter_row)
@@ -530,20 +567,42 @@ class SessionListPanel(QWidget):
                     chk.setChecked(False)
         self.selection_changed.emit()
 
+    def _marker_for_step_id(self, step_id: str) -> str:
+        return STEP_ID_TO_MARKER.get(step_id, "")
+
+    def _step_done(self, session: dict, step_id: str | None) -> bool:
+        """True if session list data shows the step finished (uses ①…⑦ markers)."""
+        markers = session.get("done_steps") or []
+        if not step_id:
+            # "Whole session" done = final mixed video (Step 6)
+            return "⑥" in markers
+        m = self._marker_for_step_id(step_id)
+        return bool(m) and m in markers
+
+    def _filter_select_all_flat(self):
+        """Reset filters to All / All and tick every row."""
+        self._status_filter_combo.blockSignals(True)
+        self._step_filter_combo.blockSignals(True)
+        self._status_filter_combo.setCurrentText("All")
+        self._step_filter_combo.setCurrentText("All")
+        self._status_filter_combo.blockSignals(False)
+        self._step_filter_combo.blockSignals(False)
+        self._select_all()
+
     def _select_filtered(self):
         step_name = self._step_filter_combo.currentText()
-        status_name = self._status_filter_combo.currentText().lower()
+        status_raw = self._status_filter_combo.currentText().strip().lower()
+        # Accept EN + common VN phrasing
+        if status_raw in ("not done", "notdone", "chưa xong", "chua xong"):
+            status_name = "not done"
+        elif status_raw == "done" or status_raw == "xong":
+            status_name = "done"
+        else:
+            status_name = "all"
 
-        step_map = {
-            "Step 1": "step1_transcribe",
-            "Step 2": "step2_translate",
-            "Step 3": "step3_burn",
-            "Step 4": "step4_separate",
-            "Step 5": "step5_tts",
-            "Step 6": "step6_add_voice",
-            "Step 7": "step7_publish_info",
-        }
-        selected_step = step_map.get(step_name)
+        selected_step_id = (
+            None if step_name == "All" else STEP_LABEL_TO_ID.get(step_name)
+        )
 
         for i in range(self._list.count()):
             item = self._list.item(i)
@@ -557,21 +616,13 @@ class SessionListPanel(QWidget):
             if idx is None or idx >= len(self._sessions):
                 continue
             session = self._sessions[idx]
-            done_steps = session.get("done_steps", [])
+            step_finished = self._step_done(session, selected_step_id)
 
-            if selected_step is None:
-                if status_name == "all":
-                    chk.setChecked(True)
-                elif status_name == "done":
-                    chk.setChecked(bool(done_steps))
-                else:
-                    chk.setChecked(not bool(done_steps))
+            if status_name == "all":
+                chk.setChecked(True)
+            elif status_name == "done":
+                chk.setChecked(step_finished)
             else:
-                if status_name == "all":
-                    chk.setChecked(True)
-                elif status_name == "done":
-                    chk.setChecked(selected_step in done_steps)
-                else:
-                    chk.setChecked(selected_step not in done_steps)
+                chk.setChecked(not step_finished)
 
         self.selection_changed.emit()
