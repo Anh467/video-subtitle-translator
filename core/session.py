@@ -8,8 +8,13 @@ Features:
 """
 
 import json
+import shutil
 from datetime import datetime
 from pathlib import Path
+
+VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".flv", ".wmv"}
+THUMB_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+INFO_EXTS = {".json"}
 
 
 class Session:
@@ -40,6 +45,138 @@ class Session:
         obj.subtitle_studio = meta.get("subtitle_studio", {}) or {}
         # thumbnail is detected from folder, not stored in meta
         return obj
+
+    @staticmethod
+    def _find_video_folders(root: str) -> list[Path]:
+        root_path = Path(root)
+        found = []
+        for path in root_path.rglob("*"):
+            if not path.is_dir():
+                continue
+            names = [p.name for p in path.iterdir() if p.is_file()]
+            if not names:
+                continue
+            video_files = [p for p in path.iterdir() if p.is_file() and p.suffix.lower() in VIDEO_EXTS]
+            if not video_files:
+                continue
+            image_files = [p for p in path.iterdir() if p.is_file() and p.suffix.lower() in THUMB_EXTS]
+            info_files = [p for p in path.iterdir() if p.is_file() and p.suffix.lower() in INFO_EXTS and p.name.lower() != "session.json"]
+            if image_files and info_files:
+                found.append(path)
+        return sorted(found, key=lambda p: p.name.lower())
+
+    @staticmethod
+    def _unique_session_folder(base_dir: str, name: str) -> Path:
+        folder = Path(base_dir) / name
+        if not folder.exists():
+            return folder
+        counter = 2
+        while True:
+            candidate = Path(base_dir) / f"{name}_{counter}"
+            if not candidate.exists():
+                return candidate
+            counter += 1
+
+    @staticmethod
+    def _copy_thumbnail_to_session(src_thumb: Path, dst_folder: Path) -> str:
+        dst = dst_folder / "thumbnail.png"
+        try:
+            if src_thumb.suffix.lower() != ".png":
+                from PIL import Image
+
+                image = Image.open(src_thumb)
+                image = image.convert("RGB")
+                image.save(dst, format="PNG")
+            else:
+                shutil.copy2(str(src_thumb), dst)
+        except Exception:
+            # Fallback to copy original extension if conversion fails
+            dst = dst_folder / f"thumbnail{src_thumb.suffix.lower()}"
+            shutil.copy2(str(src_thumb), dst)
+        return str(dst)
+
+    @staticmethod
+    def _extract_session_metadata_from_json(info_file: Path) -> dict:
+        try:
+            data = json.loads(info_file.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+        title = ""
+        description = ""
+
+        if isinstance(data.get("caption"), str) and data.get("caption").strip():
+            title = data["caption"].strip()
+        if isinstance(data.get("desc"), str) and data.get("desc").strip():
+            description = data["desc"].strip()
+
+        if not title and description:
+            title = description.split("\n", 1)[0].strip()[:120]
+
+        if title and not description:
+            description = title
+
+        return {"title": title, "description": description}
+
+    @classmethod
+    def create_from_video_folder(cls, base_dir: str, folder_path: str) -> "Session":
+        source_dir = Path(folder_path)
+        if not source_dir.exists() or not source_dir.is_dir():
+            raise FileNotFoundError(f"Video folder not found: {folder_path}")
+
+        video_file = next(
+            (p for p in sorted(source_dir.iterdir()) if p.is_file() and p.suffix.lower() in VIDEO_EXTS),
+            None,
+        )
+        if video_file is None:
+            raise FileNotFoundError(f"No supported video file found in {folder_path}")
+
+        thumbnail_file = next(
+            (p for p in sorted(source_dir.iterdir()) if p.is_file() and p.suffix.lower() in THUMB_EXTS),
+            None,
+        )
+        if thumbnail_file is None:
+            raise FileNotFoundError(f"No thumbnail image found in {folder_path}")
+
+        session_folder = cls._unique_session_folder(base_dir, source_dir.name)
+        session_folder.mkdir(parents=True, exist_ok=True)
+
+        obj = object.__new__(cls)
+        obj.folder = session_folder
+        obj.source_file = str(video_file)
+        obj.created = datetime.now().isoformat()
+        obj.title = ""
+        obj.description = ""
+        obj._thumb_background = ""
+        obj.subtitle_studio = {}
+
+        info_file = next(
+            (
+                p
+                for p in sorted(source_dir.iterdir())
+                if p.is_file() and p.suffix.lower() == ".json" and p.name.lower() != "session.json"
+            ),
+            None,
+        )
+        if info_file is not None:
+            metadata = cls._extract_session_metadata_from_json(info_file)
+            obj.title = metadata.get("title", "")
+            obj.description = metadata.get("description", "")
+
+        obj._copy_thumbnail_to_session(thumbnail_file, session_folder)
+        obj._save_meta()
+        return obj
+
+    @classmethod
+    def import_sessions_from_workspace(cls, base_dir: str, workspace_root: str) -> list[str]:
+        created = []
+        for folder in cls._find_video_folders(workspace_root):
+            try:
+                session = cls.create_from_video_folder(base_dir, str(folder))
+                created.append(str(session.folder))
+            except Exception:
+                continue
+        return created
 
     @staticmethod
     def list_sessions(base_dir: str) -> list[dict]:

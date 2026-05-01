@@ -29,6 +29,7 @@ from PyQt6.QtWidgets import (
     QTextEdit,
     QVBoxLayout,
     QWidget,
+    QFileDialog,
 )
 
 from core.session import Session
@@ -130,6 +131,20 @@ class SessionListPanel(QWidget):
         )
         self._btn_add.clicked.connect(self._add_session)
         hdr.addWidget(self._btn_add)
+
+        self._btn_import = QPushButton("↓")
+        self._btn_import.setFixedWidth(28)
+        self._btn_import.setFixedHeight(24)
+        self._btn_import.setToolTip(
+            "Import workspace folders as sessions for multi-session processing"
+        )
+        self._btn_import.setStyleSheet(
+            "QPushButton{background:#2a2a4a;color:#80b6ff;border:1px solid #2a4a7a;"
+            "font-size:14px;font-weight:bold;border-radius:4px;padding:0;}"
+            "QPushButton:hover{background:#3a3a5a;border-color:#80b6ff;}"
+        )
+        self._btn_import.clicked.connect(self._import_sessions)
+        hdr.addWidget(self._btn_import)
 
         root.addLayout(hdr)
 
@@ -403,6 +418,41 @@ class SessionListPanel(QWidget):
                 if idx is not None and self._sessions[idx]["name"] == created[0]:
                     self._list.setCurrentItem(item)
                     break
+
+    def _import_sessions(self):
+        if not self._base_dir:
+            QMessageBox.warning(
+                self,
+                "No folder",
+                "Base folder not set.\nChoose a session base folder in the main window first.",
+            )
+            return
+
+        root_folder = QFileDialog.getExistingDirectory(
+            self,
+            "Select workspace root folder to import",
+            "",
+        )
+        if not root_folder:
+            return
+
+        created = Session.import_sessions_from_workspace(self._base_dir, root_folder)
+        if created:
+            self.refresh()
+            self.session_added.emit()
+            QMessageBox.information(
+                self,
+                "Import complete",
+                f"Imported {len(created)} session(s) from workspace.\n\n"
+                f"Created {len(created)} new session folder(s) in the base directory.",
+            )
+            return
+
+        QMessageBox.information(
+            self,
+            "Nothing imported",
+            "No valid video folders were found in the selected workspace root.",
+        )
 
     def _on_current_changed(self, current, _previous):
         if current is None:
