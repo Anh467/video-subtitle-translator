@@ -18,7 +18,9 @@ stored in each session's `session.json`.
   - published_at
 - Orders jobs by `published_at` and session folder name
 - Assigns a `scheduled_at` timestamp in 4-hour increments
+- Scans session folders recursively by default
 - Skips sessions already marked as posted for selected platforms
+- Skips sessions already exported in previous runs by default
 - Writes back markers after a platform schedules/uploads the post
 
 ## 2. Run the export script
@@ -28,6 +30,28 @@ From the repository root run:
 ```powershell
 python n8n-automatioin/export_publish_jobs.py "D:\Downloads\workspace\horror_story" --platform youtube --platform facebook --schedule-interval-hours 4 --pretty
 ```
+
+Useful options:
+
+- `--debug`: print reasons each session folder is kept/skipped (to stderr)
+- `--non-recursive`: only scan direct child folders of `base_dir`
+- `--thumbnail-pattern "<glob>"`: add custom thumbnail filename patterns; repeatable
+- `--include-exported`: include sessions already exported before
+- `--no-mark-exported`: do not write exported markers
+- `--info-file`: filename for the run summary info JSON under `base_dir`
+
+Example with debug and custom thumbnail patterns:
+
+```powershell
+python n8n-automatioin/export_publish_jobs.py "D:\Downloads\workspace\horror_story" --platform youtube --platform facebook --schedule-interval-hours 4 --thumbnail-pattern "*.jpg" --thumbnail-pattern "cover_*.*" --debug --pretty
+```
+
+After each run, the exporter now writes:
+
+- Per-session marker file: `exported_publish_job.json` inside each exported session folder
+- Run summary file: `export_publish_jobs_info.json` in `base_dir` (or custom `--info-file`)
+
+This lets you know which sessions were already exported and avoids exporting them again in the next run.
 
 If the folder contains jobs, the output includes `scheduled_at` for each one:
 
@@ -81,8 +105,10 @@ python n8n-automatioin/export_publish_jobs.py {{$node["Set"].json["base_dir"]}} 
 4. `Code` node to parse stdout and return one item per job:
 
 ```js
-const output = JSON.parse(items[0].json["text"] || items[0].json["stdout"] || items[0].json["data"]);
-return output.jobs.map(job => ({ json: job }));
+const output = JSON.parse(
+  items[0].json["text"] || items[0].json["stdout"] || items[0].json["data"],
+);
+return output.jobs.map((job) => ({ json: job }));
 ```
 
 5. `SplitInBatches` to process jobs sequentially
@@ -140,7 +166,7 @@ Use this general node structure in n8n:
 ```js
 const outputText = $json["stdout"] || $json["text"] || $json["data"];
 const parsed = JSON.parse(outputText);
-return parsed.jobs.map(job => ({ json: job }));
+return parsed.jobs.map((job) => ({ json: job }));
 ```
 
 ### Example `SplitInBatches`
@@ -207,15 +233,21 @@ Then process the generated jobs in n8n.
 ## 7. Notes
 
 - The exporter reads `published_at` from `session.json` first.
+- The exporter scans session folders recursively by default.
 - If missing, it falls back to the folder name prefix `YYYY-MM-DD_...`.
 - Jobs are ordered by original publish date and then by folder name.
 - `scheduled_at` is set every 4 hours in order.
 - Use `--include-posted` to re-export already-posted sessions.
+- Use `--include-exported` to include sessions already exported in prior runs.
+- Use `--debug` to print why each session folder is skipped.
+- Use one or more `--thumbnail-pattern` values when your thumbnail file does not follow `thumbnail.*`.
 
 ## 8. Troubleshooting
 
 - If there are no jobs, confirm session folders contain `session.json`.
 - If metadata is missing, check `step7_publish_info.json` or `session.json`.
+- If a folder is skipped and you do not know why, rerun with `--debug`.
+- If thumbnail files use custom names, pass explicit patterns via `--thumbnail-pattern`.
 - If YouTube upload fails, verify OAuth redirect URI and permission scopes.
 - If Facebook posting fails, verify the page token and required permissions.
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,6 +11,19 @@ POST_MARKERS = {
     "youtube": "posted_youtube.json",
     "facebook": "posted_facebook.json",
 }
+
+EXPORTED_MARKER = "exported_publish_job.json"
+
+DEFAULT_THUMBNAIL_PATTERNS = (
+    "thumbnail.*",
+    "thumb.*",
+    "*thumbnail*.*",
+    "*thumb*.*",
+    "cover.*",
+    "poster.*",
+)
+
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 
 
 @dataclass
@@ -30,6 +44,7 @@ class PublishJob:
     missing: list[str]
     youtube_posted: bool
     facebook_posted: bool
+    exported: bool
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -67,11 +82,31 @@ def _find_video(session_dir: Path) -> str:
     return ""
 
 
-def _find_thumbnail(session_dir: Path) -> str:
-    for ext in (".jpg", ".jpeg", ".png", ".webp"):
-        candidate = session_dir / f"thumbnail{ext}"
-        if candidate.exists():
-            return str(candidate)
+def _find_thumbnail(
+    session_dir: Path,
+    thumbnail_patterns: tuple[str, ...] | None = None,
+) -> str:
+    patterns = tuple(thumbnail_patterns or DEFAULT_THUMBNAIL_PATTERNS)
+    candidates: list[Path] = []
+
+    search_dirs = [session_dir]
+    result_dir = session_dir / "result"
+    if result_dir.exists():
+        search_dirs.append(result_dir)
+
+    for folder in search_dirs:
+        for pattern in patterns:
+            for candidate in folder.glob(pattern):
+                if not candidate.is_file():
+                    continue
+                if candidate.suffix.lower() not in IMAGE_EXTENSIONS:
+                    continue
+                candidates.append(candidate)
+
+    # Keep newest candidate if multiple files match configured patterns.
+    candidates = sorted(candidates, key=lambda item: item.stat().st_mtime, reverse=True)
+    if candidates:
+        return str(candidates[0])
     return ""
 
 
@@ -145,7 +180,10 @@ def _extract_hashtags_from_text(text: str) -> list[str]:
     return [part for part in text.split() if part.startswith("#")]
 
 
-def build_publish_job(session_dir: str | Path) -> PublishJob | None:
+def build_publish_job(
+    session_dir: str | Path,
+    thumbnail_patterns: tuple[str, ...] | None = None,
+) -> PublishJob | None:
     session_path = Path(session_dir)
     meta_path = session_path / "session.json"
     info_path = session_path / "step7_publish_info.json"
@@ -157,7 +195,10 @@ def build_publish_job(session_dir: str | Path) -> PublishJob | None:
     info = _load_json(info_path) if info_path.exists() else {}
 
     video_path = _find_video(session_path)
-    thumbnail_path = _find_thumbnail(session_path)
+    thumbnail_path = _find_thumbnail(
+        session_path,
+        thumbnail_patterns=thumbnail_patterns,
+    )
     title = str(info.get("title", "") or meta.get("title", "") or "").strip()
     description = str(
         info.get("description", "") or meta.get("description", "") or ""
@@ -197,6 +238,7 @@ def build_publish_job(session_dir: str | Path) -> PublishJob | None:
         missing=missing,
         youtube_posted=(session_path / POST_MARKERS["youtube"]).exists(),
         facebook_posted=(session_path / POST_MARKERS["facebook"]).exists(),
+        exported=(session_path / EXPORTED_MARKER).exists(),
     )
 
 
@@ -205,29 +247,65 @@ def scan_publish_jobs(
     platforms: tuple[str, ...] = ("youtube", "facebook"),
     include_incomplete: bool = False,
     include_posted: bool = False,
+    include_exported: bool = False,
+    recursive: bool = True,
+    debug: bool = False,
+    thumbnail_patterns: tuple[str, ...] | None = None,
 ) -> list[PublishJob]:
     root = Path(base_dir)
     if not root.exists():
         raise FileNotFoundError(f"Base dir not found: {root}")
 
+    def _debug(message: str) -> None:
+        if debug:
+            print(message, file=sys.stderr)
+
+    if recursive:
+        session_dirs = sorted(
+            {path.parent for path in root.rglob("session.json")},
+            key=lambda path: str(path).lower(),
+        )
+        _debug(f"[debug] recursive scan found {len(session_dirs)} session folders")
+    else:
+        session_dirs = sorted(
+            [path for path in root.iterdir() if path.is_dir()],
+            key=lambda path: path.name.lower(),
+        )
+        _debug(f"[debug] non-recursive scan found {len(session_dirs)} direct folders")
+
     jobs: list[PublishJob] = []
-    for item in sorted(root.iterdir(), key=lambda path: path.name.lower()):
-        if not item.is_dir():
-            continue
-        job = build_publish_job(item)
+    for item in session_dirs:
+        job = build_publish_job(item, thumbnail_patterns=thumbnail_patterns)
         if job is None:
+            _debug(f"[skip] {item}: missing session.json")
             continue
         if not include_incomplete and not job.ready:
+            _debug(
+                f"[skip] {item}: incomplete metadata/assets ({', '.join(job.missing)})"
+            )
             continue
         if not include_posted:
             already_posted = True
+            posted_platforms: list[str] = []
             for platform in platforms:
+                if platform == "youtube" and job.youtube_posted:
+                    posted_platforms.append("youtube")
                 if platform == "youtube" and not job.youtube_posted:
                     already_posted = False
+                if platform == "facebook" and job.facebook_posted:
+                    posted_platforms.append("facebook")
                 if platform == "facebook" and not job.facebook_posted:
                     already_posted = False
             if already_posted:
+                _debug(
+                    f"[skip] {item}: already posted for selected platforms "
+                    f"({', '.join(posted_platforms)})"
+                )
                 continue
+        if not include_exported and job.exported:
+            _debug(f"[skip] {item}: already exported ({EXPORTED_MARKER})")
+            continue
+        _debug(f"[keep] {item}: queued for export")
         jobs.append(job)
 
     def _job_sort_key(job: PublishJob):
@@ -253,6 +331,22 @@ def write_publish_marker(
         raise FileNotFoundError(f"Session folder not found: {session_path}")
 
     marker_path = session_path / POST_MARKERS[platform]
+    marker_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return str(marker_path)
+
+
+def write_export_marker(
+    session_folder: str | Path,
+    payload: dict,
+) -> str:
+    session_path = Path(session_folder)
+    if not session_path.exists():
+        raise FileNotFoundError(f"Session folder not found: {session_path}")
+
+    marker_path = session_path / EXPORTED_MARKER
     marker_path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",

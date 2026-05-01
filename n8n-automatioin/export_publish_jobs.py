@@ -5,7 +5,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from session_publish_jobs import scan_publish_jobs
+from session_publish_jobs import scan_publish_jobs, write_export_marker
 
 
 def parse_args() -> argparse.Namespace:
@@ -29,6 +29,39 @@ def parse_args() -> argparse.Namespace:
         "--include-posted",
         action="store_true",
         help="Include sessions already marked as posted for selected platforms",
+    )
+    parser.add_argument(
+        "--include-exported",
+        action="store_true",
+        help="Include sessions already marked as exported by this script",
+    )
+    parser.add_argument(
+        "--non-recursive",
+        action="store_true",
+        help="Scan only direct child folders of base_dir",
+    )
+    parser.add_argument(
+        "--thumbnail-pattern",
+        action="append",
+        dest="thumbnail_patterns",
+        help=(
+            "Glob pattern used to find thumbnail files. " "Can be passed multiple times"
+        ),
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Print debug reasons for skipped/kept session folders to stderr",
+    )
+    parser.add_argument(
+        "--no-mark-exported",
+        action="store_true",
+        help="Do not write per-session exported marker file",
+    )
+    parser.add_argument(
+        "--info-file",
+        default="export_publish_jobs_info.json",
+        help="Filename for run summary info under base_dir",
     )
     parser.add_argument(
         "--json-out",
@@ -70,6 +103,10 @@ def main() -> int:
         platforms=platforms,
         include_incomplete=args.include_incomplete,
         include_posted=args.include_posted,
+        include_exported=args.include_exported,
+        recursive=not args.non_recursive,
+        debug=args.debug,
+        thumbnail_patterns=tuple(args.thumbnail_patterns or []),
     )
 
     schedule_start = None
@@ -84,14 +121,54 @@ def main() -> int:
     for index, job in enumerate(jobs):
         job.scheduled_at = (schedule_start + interval * index).isoformat()
 
+    marker_paths: list[str] = []
+    if not args.no_mark_exported:
+        exported_at = datetime.now(timezone.utc).isoformat()
+        for job in jobs:
+            marker_payload = {
+                "exported_at": exported_at,
+                "scheduled_at": job.scheduled_at,
+                "platforms": list(platforms),
+                "session_name": job.session_name,
+                "session_folder": job.session_folder,
+            }
+            marker_paths.append(write_export_marker(job.session_folder, marker_payload))
+
     payload = {
         "base_dir": str(Path(args.base_dir)),
         "platforms": list(platforms),
         "count": len(jobs),
         "schedule_interval_hours": args.schedule_interval_hours,
         "schedule_start": schedule_start.isoformat(),
+        "mark_exported": not args.no_mark_exported,
         "jobs": [job.to_dict() for job in jobs],
     }
+
+    info_payload = {
+        "run_at": datetime.now(timezone.utc).isoformat(),
+        "base_dir": str(Path(args.base_dir)),
+        "platforms": list(platforms),
+        "count": len(jobs),
+        "mark_exported": not args.no_mark_exported,
+        "marker_paths": marker_paths,
+        "jobs": [
+            {
+                "session_name": job.session_name,
+                "session_folder": job.session_folder,
+                "scheduled_at": job.scheduled_at,
+                "exported": job.exported,
+            }
+            for job in jobs
+        ],
+    }
+
+    info_path = Path(args.base_dir) / args.info_file
+    info_path.write_text(
+        json.dumps(info_payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    payload["info_file"] = str(info_path)
     text = json.dumps(payload, ensure_ascii=False, indent=2 if args.pretty else None)
     if args.json_out:
         Path(args.json_out).write_text(text, encoding="utf-8")
