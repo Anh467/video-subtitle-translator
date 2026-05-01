@@ -25,6 +25,10 @@ DEFAULT_THUMBNAIL_PATTERNS = (
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 
+RESULT_VIDEO_SUFFIXES = frozenset(
+    {".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v", ".ts", ".m2ts"}
+)
+
 
 @dataclass
 class PublishJob:
@@ -57,14 +61,16 @@ def _load_json(path: Path) -> dict:
 def _find_video(session_dir: Path) -> str:
     result_dir = session_dir / "result"
     if result_dir.exists():
-        candidates = []
+        pool: list[Path] = []
         for pattern in ("result_output_*.*", "step6_output_*.*"):
-            candidates.extend(result_dir.glob(pattern))
-        candidates = sorted(
-            candidates, key=lambda item: item.stat().st_mtime, reverse=True
-        )
-        if candidates:
-            return str(candidates[0])
+            pool.extend(result_dir.rglob(pattern))
+        for path in result_dir.rglob("*"):
+            if path.is_file() and path.suffix.lower() in RESULT_VIDEO_SUFFIXES:
+                pool.append(path)
+        uniq = list({p.resolve(): p for p in pool}.values())
+        if uniq:
+            newest = max(uniq, key=lambda p: p.stat().st_mtime)
+            return str(newest)
 
     for pattern in (
         "result_output.*",
@@ -96,7 +102,8 @@ def _find_thumbnail(
 
     for folder in search_dirs:
         for pattern in patterns:
-            for candidate in folder.glob(pattern):
+            hits = set(folder.glob(pattern)) | set(folder.rglob(pattern))
+            for candidate in hits:
                 if not candidate.is_file():
                     continue
                 if candidate.suffix.lower() not in IMAGE_EXTENSIONS:
@@ -104,7 +111,11 @@ def _find_thumbnail(
                 candidates.append(candidate)
 
     # Keep newest candidate if multiple files match configured patterns.
-    candidates = sorted(candidates, key=lambda item: item.stat().st_mtime, reverse=True)
+    candidates = sorted(
+        {p.resolve(): p for p in candidates}.values(),
+        key=lambda item: item.stat().st_mtime,
+        reverse=True,
+    )
     if candidates:
         return str(candidates[0])
     return ""
@@ -251,6 +262,7 @@ def scan_publish_jobs(
     recursive: bool = True,
     debug: bool = False,
     thumbnail_patterns: tuple[str, ...] | None = None,
+    audit: list[tuple[str, str]] | None = None,
 ) -> list[PublishJob]:
     root = Path(base_dir)
     if not root.exists():
@@ -273,18 +285,25 @@ def scan_publish_jobs(
         )
         _debug(f"[debug] non-recursive scan found {len(session_dirs)} direct folders")
 
+    def _audit(row: tuple[str, str]) -> None:
+        if audit is not None:
+            audit.append(row)
+
     jobs: list[PublishJob] = []
     for item in session_dirs:
+        folder = str(item)
         job = build_publish_job(item, thumbnail_patterns=thumbnail_patterns)
         if job is None:
+            msg = "[skip] missing session.json"
             _debug(f"[skip] {item}: missing session.json")
+            _audit((folder, msg))
             continue
         if not include_incomplete and not job.ready:
-            _debug(
-                f"[skip] {item}: incomplete metadata/assets ({', '.join(job.missing)})"
-            )
+            detail = f"incomplete: {', '.join(job.missing)}"
+            _debug(f"[skip] {item}: incomplete metadata/assets ({', '.join(job.missing)})")
+            _audit((folder, f"[skip] {detail}"))
             continue
-        if not include_posted:
+        if not include_posted and platforms:
             already_posted = True
             posted_platforms: list[str] = []
             for platform in platforms:
@@ -301,11 +320,20 @@ def scan_publish_jobs(
                     f"[skip] {item}: already posted for selected platforms "
                     f"({', '.join(posted_platforms)})"
                 )
+                _audit(
+                    (
+                        folder,
+                        f"[skip] already posted ({', '.join(posted_platforms)})",
+                    )
+                )
                 continue
         if not include_exported and job.exported:
+            msg = f"[skip] already exported ({EXPORTED_MARKER})"
             _debug(f"[skip] {item}: already exported ({EXPORTED_MARKER})")
+            _audit((folder, msg))
             continue
         _debug(f"[keep] {item}: queued for export")
+        _audit((folder, "[included]"))
         jobs.append(job)
 
     def _job_sort_key(job: PublishJob):

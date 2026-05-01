@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -54,6 +55,14 @@ def parse_args() -> argparse.Namespace:
         help="Print debug reasons for skipped/kept session folders to stderr",
     )
     parser.add_argument(
+        "--audit",
+        action="store_true",
+        help=(
+            "After scan, print one line per candidate folder on stderr "
+            "(folder path + included or skip reason)"
+        ),
+    )
+    parser.add_argument(
         "--no-mark-exported",
         action="store_true",
         help="Do not write per-session exported marker file",
@@ -98,6 +107,7 @@ def _parse_datetime(value: str) -> datetime | None:
 def main() -> int:
     args = parse_args()
     platforms = tuple(args.platforms or ["youtube", "facebook"])
+    audit_rows: list[tuple[str, str]] | None = [] if args.audit else None
     jobs = scan_publish_jobs(
         base_dir=args.base_dir,
         platforms=platforms,
@@ -107,7 +117,11 @@ def main() -> int:
         recursive=not args.non_recursive,
         debug=args.debug,
         thumbnail_patterns=tuple(args.thumbnail_patterns or []),
+        audit=audit_rows,
     )
+    if audit_rows is not None:
+        for folder, outcome in audit_rows:
+            print(f"{outcome}\t{folder}", file=sys.stderr)
 
     schedule_start = None
     if args.schedule_start:
