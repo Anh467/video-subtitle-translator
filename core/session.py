@@ -54,8 +54,7 @@ class Session:
         for path in root_path.rglob("*"):
             if not path.is_dir():
                 continue
-            names = [p.name for p in path.iterdir() if p.is_file()]
-            if not names:
+            if not any(p.is_file() for p in path.iterdir()):
                 continue
             video_files = [
                 p
@@ -64,20 +63,7 @@ class Session:
             ]
             if not video_files:
                 continue
-            image_files = [
-                p
-                for p in path.iterdir()
-                if p.is_file() and p.suffix.lower() in THUMB_EXTS
-            ]
-            info_files = [
-                p
-                for p in path.iterdir()
-                if p.is_file()
-                and p.suffix.lower() in INFO_EXTS
-                and p.name.lower() != "session.json"
-            ]
-            if image_files and info_files:
-                found.append(path)
+            found.append(path)
         return sorted(found, key=lambda p: p.name.lower())
 
     @staticmethod
@@ -158,8 +144,6 @@ class Session:
             ),
             None,
         )
-        if thumbnail_file is None:
-            raise FileNotFoundError(f"No thumbnail image found in {folder_path}")
 
         session_folder = cls._unique_session_folder(base_dir, source_dir.name)
         session_folder.mkdir(parents=True, exist_ok=True)
@@ -188,7 +172,8 @@ class Session:
             obj.title = metadata.get("title", "")
             obj.description = metadata.get("description", "")
 
-        obj._copy_thumbnail_to_session(thumbnail_file, session_folder)
+        if thumbnail_file is not None:
+            obj._copy_thumbnail_to_session(thumbnail_file, session_folder)
         obj._save_meta()
         return obj
 
