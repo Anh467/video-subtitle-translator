@@ -1,8 +1,6 @@
 """Step 3 — burn / attach subtitles (UI + pipeline run)."""
 
-import json
 import os
-import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -27,7 +25,10 @@ from PyQt6.QtWidgets import (
 )
 
 from core.pipeline.base import BaseStep
-from core.pipeline.step3_burn.channel_profiles import load_channel_profiles, store_profile_image
+from core.pipeline.step3_burn.channel_profiles import (
+    load_channel_profiles,
+    store_profile_image,
+)
 from core.pipeline.step3_burn.constants import (
     ASS_PLAYRES_Y,
     BG_BOX_STYLES,
@@ -40,14 +41,23 @@ from core.pipeline.step3_burn.constants import (
     FONT_FAMILIES,
     OUTLINE_COLORS,
     PRESET_OPTIONS,
-    PREVIEW_ASPECTS,
     PREVIEW_ASPECT_AUTO,
+    PREVIEW_ASPECTS,
     SUB_POSITIONS,
 )
-from core.pipeline.step3_burn.delogo import auto_detect_sub_region
+from core.pipeline.step3_burn.delogo import (
+    auto_detect_sub_region,
+    compress_delogo_ranges_if_needed,
+    cue_ranges_from_translated_segments,
+    default_bottom_subtitle_band,
+    delogo_timeline_enable_expr,
+    looks_like_stale_top_left_preset,
+    probe_video_duration_sec,
+)
 from core.pipeline.step3_burn.ffmpeg_burn import hard_burn_cmd, soft_sub_cmd
 from core.pipeline.step3_burn.srt_writer import write_srt
 from core.pipeline.step3_burn.video_probe import get_video_size
+
 
 class BurnStep(BaseStep):
     STEP_ID = "step3_burn"
@@ -272,13 +282,31 @@ class BurnStep(BaseStep):
         # Delogo config
         delogo_cfg = config.get("delogo")
         if delogo_cfg and delogo_cfg.get("enabled"):
+            # Always auto-detect per-video region to support sources where hard subs
+            # appear mid-frame vs bottom-frame. This avoids manual tuning across batches.
+            detected = auto_detect_sub_region(input_video, w, h)
+            if detected:
+                ax, ay, aw, ah = detected
+                delogo_cfg = {**delogo_cfg, "x": ax, "y": ay, "w": aw, "h": ah}
+                log(f"🧠 Auto-detected delogo band: x={ax} y={ay} w={aw} h={ah}")
+
             dx, dy = delogo_cfg["x"], delogo_cfg["y"]
             dw, dh = delogo_cfg["w"], delogo_cfg["h"]
+            if looks_like_stale_top_left_preset(dx, dy, dw, dh, w, h):
+                bx, by, bw, bh = default_bottom_subtitle_band(w, h)
+                dx, dy, dw, dh = bx, by, bw, bh
+                delogo_cfg = {**delogo_cfg, "x": dx, "y": dy, "w": dw, "h": dh}
+                log(
+                    "⚠️  Delogo x,y,w,h looked like uninitialized top presets — "
+                    f"auto-switched to bottom subtitle band (~y={dy}, h≈{dh})."
+                )
             # Clamp to video bounds — delogo crashes if region extends outside frame
-            dx = max(0, min(dx, w - 1))
-            dy = max(0, min(dy, h - 1))
-            dw = max(1, min(dw, w - dx))
-            dh = max(1, min(dh, h - dy))
+            # NOTE: delogo is picky: region must be strictly inside the frame.
+            # Keep at least 1px margin to avoid "Logo area is outside of the frame".
+            dx = max(0, min(dx, w - 4))
+            dy = max(0, min(dy, h - 4))
+            dw = max(1, min(dw, (w - dx) - 1))
+            dh = max(1, min(dh, (h - dy) - 1))
             # Minimum size check — delogo needs at least 3x3 region
             if dw < 3 or dh < 3:
                 log(f"⚠️  Delogo region too small after clamping ({dw}x{dh}) — skipping")
@@ -288,6 +316,30 @@ class BurnStep(BaseStep):
                 delogo_cfg = {**delogo_cfg, "x": dx, "y": dy, "w": dw, "h": dh}
                 log(
                     f"🧹 Remove existing sub: delogo x={dx} y={dy} w={dw} h={dh} (clamped to {w}x{h})"
+                )
+
+        # Timed mask only when hard-burning (delogo touches pixels).
+        if mode == "hard" and delogo_cfg and delogo_cfg.get("enabled"):
+            vd = probe_video_duration_sec(input_video)
+            ranges = cue_ranges_from_translated_segments(
+                translated,
+                pad_start=0.22,
+                pad_end=0.38,
+                gap_merge_sec=0.52,
+                video_duration_sec=vd,
+            )
+            ranges = compress_delogo_ranges_if_needed(ranges)
+            expr = delogo_timeline_enable_expr(ranges)
+            if expr:
+                delogo_cfg = {**delogo_cfg, "enable_expr": expr}
+                log(
+                    f"🧭 Delogo only during cue windows ({len(ranges)} span(s)); "
+                    "gaps leave original picture unchanged"
+                )
+            else:
+                delogo_cfg = {k: v for k, v in delogo_cfg.items() if k != "enable_expr"}
+                log(
+                    "⚠️  No cue timing for delogo — applying region for full video duration"
                 )
 
         log(f"{'📎' if mode=='soft' else '🔥'} Burning subtitles ({mode})…")
@@ -591,9 +643,9 @@ class BurnStep(BaseStep):
         auto_row = QHBoxLayout()
         self._btn_auto_detect = QPushButton("Auto-detect region")
         self._btn_auto_detect.setToolTip(
-            "Tries to detect subtitle region automatically by\n"
-            "analyzing a sample frame from the source video.\n"
-            "Result may need manual adjustment."
+            "Samples bottom-of-frame at several timestamps and finds high-contrast\n"
+            "text rows (works for Chinese / coloured burned-in subs).\n"
+            "Falls back to a wide bottom band if needed — adjust x,y,w,h after."
         )
         self._btn_auto_detect.setStyleSheet(
             "QPushButton{background:#1a3a5a;color:#60aaff;border:1px solid #2a5a8a;"
@@ -636,7 +688,8 @@ class BurnStep(BaseStep):
 
         # Helpful hint
         hint2 = QLabel(
-            "Tip: In VLC → View → Advanced Controls → frame by frame to find coordinates."
+            "Remove-hard-sub runs only during Step 2 cue times ( FFmpeg enable ). "
+            "Auto-detect sets the band; VLC frame-step helps fine-tune x,y,w,h if needed."
         )
         hint2.setStyleSheet("color:#555;font-size:10px;")
         hint2.setWordWrap(True)
@@ -883,12 +936,16 @@ class BurnStep(BaseStep):
         else:
             x = vx + (video_w - text_w) // 2
 
+        # Match libass MarginV: bottom = distance from frame bottom to glyph bottom;
+        # top = from frame top to cap line. Baseline y is Qt drawText anchor.
+        mv = max(2, int(margin_v))
         if align in (8,):
-            y = vy + text_h + max(4, margin_v)
+            y = vy + mv + fm.ascent()
         elif align in (5,):
-            y = vy + (video_h + text_h) // 2
+            cy = vy + video_h // 2
+            y = int(cy + (fm.descent() - fm.ascent()) / 2)
         else:
-            y = vy + video_h - max(4, margin_v)
+            y = vy + video_h - mv - fm.descent()
 
         # Background box
         if bg_style != "none":
@@ -1008,6 +1065,8 @@ class BurnStep(BaseStep):
             self._brand_margin_pct_spin.setValue(float(config["brand_margin_pct"]))
         if self._brand_name_pct_spin and config.get("brand_name_pct") is not None:
             self._brand_name_pct_spin.setValue(float(config["brand_name_pct"]))
+        if self._preview_lbl:
+            QTimer.singleShot(0, self._refresh_preview)
 
     def collect_config(self):
         outline = self._outline_combo.currentText() if self._outline_combo else "black"
@@ -1113,4 +1172,3 @@ class BurnStep(BaseStep):
                 self._brand_name_pct_spin.value() if self._brand_name_pct_spin else 2.0
             ),
         }
-

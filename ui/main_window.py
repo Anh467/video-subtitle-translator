@@ -4,8 +4,9 @@ import os
 import time
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QThreadPool
+from PyQt6.QtCore import QEvent, QObject, Qt, QThreadPool
 from PyQt6.QtWidgets import (
+    QApplication,
     QDialog,
     QFileDialog,
     QFrame,
@@ -75,6 +76,9 @@ class MainWindow(QMainWindow):
         self._multi_window: MultiSessionWindow | None = None
         self._setup_ui()
         self._restore_last_workspace()
+        app = QApplication.instance()
+        if app:
+            app.installEventFilter(self)
 
     # ── UI ────────────────────────────────────────────────────────────────────
 
@@ -524,11 +528,7 @@ class MainWindow(QMainWindow):
 
     def _pick_base_dir(self):
         # Save current configs before switching workspace
-        old_base = self._sess_dir_edit.text().strip()
-        if old_base:
-            from core.config_store import save_step_configs
-
-            save_step_configs(old_base, self._steps)
+        self._persist_step_configs()
 
         d = QFileDialog.getExistingDirectory(self, "Choose base folder for sessions")
         if d:
@@ -544,12 +544,39 @@ class MainWindow(QMainWindow):
             if self._multi_window is not None:
                 self._multi_window.update_base_dir(d)
 
-    def closeEvent(self, event):
+    def _persist_step_configs(self):
+        """Write step UI to workspace .subsync_step_configs.json (safe to call often)."""
         base = self._sess_dir_edit.text().strip()
-        if base:
+        if not base or not os.path.isdir(base):
+            return
+        try:
             from core.config_store import save_step_configs
 
             save_step_configs(base, self._steps)
+        except Exception:
+            pass
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if (
+            watched is QApplication.instance()
+            and event.type() == QEvent.Type.ApplicationStateChange
+        ):
+            try:
+                st = QApplication.applicationState()
+            except Exception:
+                st = None
+            if (
+                st is not None
+                and st != Qt.ApplicationState.ApplicationActive
+                and hasattr(self, "_sess_dir_edit")
+            ):
+                self._persist_step_configs()
+        return super().eventFilter(watched, event)
+
+    def closeEvent(self, event):
+        self._persist_step_configs()
+        base = self._sess_dir_edit.text().strip()
+        if base:
             from PyQt6.QtCore import QSettings
 
             QSettings("SubSync", "SubSync").setValue("last_workspace", base)
@@ -884,6 +911,7 @@ class MainWindow(QMainWindow):
         self._update_previews(step, result)
         if self._queue and self._queue[0] is step:
             self._queue.pop(0)
+        self._persist_step_configs()
         self._run_next_in_queue()
 
     def _error_queue(self, step, msg):
@@ -998,6 +1026,7 @@ class MainWindow(QMainWindow):
             f"✅ {step.LABEL} complete"
             + (f" → {Path(out_path).name}" if out_path else "")
         )
+        self._persist_step_configs()
 
     def _error(self, step, msg):
         card = self._card_for(step)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -53,6 +54,8 @@ class SessionListPanel(QWidget):
     session_added = pyqtSignal()
     # Emits when selected session checkboxes change
     selection_changed = pyqtSignal()
+    # Emitted after a session folder is removed from disk (workspace path)
+    session_deleted = pyqtSignal(str)
 
     STATUS_ICONS = {
         "idle": "⬜",
@@ -398,7 +401,95 @@ class SessionListPanel(QWidget):
             lambda _=False, folder=s["folder"]: self._open_session_folder(folder)
         )
         h.addWidget(btn_open)
+
+        btn_del = QPushButton("🗑")
+        btn_del.setFixedSize(26, 22)
+        btn_del.setToolTip(
+            "Delete this session folder from the workspace (all files inside — cannot undo)"
+        )
+        btn_del.setStyleSheet(
+            "QPushButton{background:#2a1618;color:#f08080;border:1px solid #5a2a30;"
+            "border-radius:4px;padding:0;font-size:10px;}"
+            "QPushButton:hover{background:#3a2428;border-color:#c05060;}"
+        )
+        fname = Path(s["folder"]).name
+        btn_del.clicked.connect(
+            lambda _=False, folder=s["folder"], nm=fname: self._delete_session_folder(
+                folder, nm
+            )
+        )
+        h.addWidget(btn_del)
         return container
+
+    def _running_host_blocks_delete(self, folder: str) -> str | None:
+        """Multi runner: refuse delete while this folder’s job is running."""
+        fp = Path(folder)
+        host = self.parent()
+        while host is not None:
+            worker = getattr(host, "_worker", None)
+            cur = getattr(host, "_current_session", None)
+            if worker is not None and cur is not None:
+                try:
+                    if Path(cur.folder).resolve() == fp.resolve():
+                        return (
+                            "This session is currently processing. Stop the queue or "
+                            "wait until it finishes before deleting the folder."
+                        )
+                except OSError:
+                    pass
+            host = host.parent()
+        return None
+
+    def _delete_session_folder(self, folder: str, display_name: str) -> None:
+        if not self._base_dir.strip():
+            QMessageBox.warning(self, "No workspace", "Set a session base folder first.")
+            return
+        base = Path(self._base_dir).resolve()
+        try:
+            target = Path(folder).resolve()
+            target.relative_to(base)
+        except (ValueError, OSError):
+            QMessageBox.warning(
+                self,
+                "Cannot delete",
+                "Folder is outside the workspace base directory — aborted for safety.",
+            )
+            return
+
+        blocked = self._running_host_blocks_delete(str(target))
+        if blocked:
+            QMessageBox.warning(self, "Cannot delete", blocked)
+            return
+
+        txt = (
+            f"Permanently delete session folder \"{display_name}\" and everything inside?\n\n"
+            f"{target}"
+        )
+        ans = QMessageBox.question(
+            self,
+            "Delete session",
+            txt,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            shutil.rmtree(target)
+        except OSError as e:
+            QMessageBox.warning(
+                self,
+                "Delete failed",
+                f"Could not remove folder:\n{e}\n\nClose files using this folder and try again.",
+            )
+            return
+
+        self._session_status.pop(folder, None)
+        self._session_step_status.pop(folder, None)
+        self.session_deleted.emit(folder)
+        self.refresh()
+        self.selection_changed.emit()
 
     def _update_row(self, folder: str):
         for i in range(self._list.count()):

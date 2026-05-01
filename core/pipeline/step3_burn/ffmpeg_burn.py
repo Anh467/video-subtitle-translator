@@ -98,12 +98,14 @@ def hard_burn_cmd(
         dx, dy = delogo["x"], delogo["y"]
         dw, dh = delogo["w"], delogo["h"]
         # Defensive clamp — values may come from user spinboxes without validation
-        dx = max(0, min(dx, video_w - 1))
-        dy = max(0, min(dy, video_h - 1))
-        dw = max(3, min(dw, video_w - dx))
-        dh = max(3, min(dh, video_h - dy))
+        # Keep at least 1px margin (delogo fails if region touches frame border)
+        dx = max(0, min(dx, video_w - 4))
+        dy = max(0, min(dy, video_h - 4))
+        dw = max(3, min(dw, (video_w - dx) - 1))
+        dh = max(3, min(dh, (video_h - dy) - 1))
         if dw >= 3 and dh >= 3:
-            vf_base = f"{delogo_filter(dx, dy, dw, dh)},{sub_filter}"
+            en = delogo.get("enable_expr")
+            vf_base = f"{delogo_filter(dx, dy, dw, dh, enable_expr=en)},{sub_filter}"
         else:
             vf_base = sub_filter  # skip delogo if region invalid
     else:

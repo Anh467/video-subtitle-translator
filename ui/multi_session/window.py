@@ -89,6 +89,16 @@ class MultiSessionWindow(QMainWindow):
         self._session_panel.session_added.connect(self._schedule_selected_cost_summary)
         self._schedule_selected_cost_summary()
 
+    def closeEvent(self, event):
+        self._persist_parent_step_configs()
+        super().closeEvent(event)
+
+    def _persist_parent_step_configs(self):
+        p = self.parent()
+        fn = getattr(p, "_persist_step_configs", None)
+        if callable(fn):
+            fn()
+
     # ── UI ────────────────────────────────────────────────────────────────────
 
     def _setup_ui(self):
@@ -133,6 +143,7 @@ class MultiSessionWindow(QMainWindow):
         # Left: session list only
         self._session_panel = SessionListPanel()
         self._session_panel.session_clicked.connect(self._on_session_clicked)
+        self._session_panel.session_deleted.connect(self._on_session_deleted)
         self._session_panel.setMinimumWidth(340)
         self._session_panel.setMaximumWidth(500)
         self._top_split.addWidget(self._session_panel)
@@ -445,6 +456,47 @@ class MultiSessionWindow(QMainWindow):
             if callable(refresh):
                 refresh()
             break
+
+    def _on_session_deleted(self, folder: str):
+        """Remove queued jobs for a deleted workspace folder and clear previews if needed."""
+        try:
+            fp = Path(folder).resolve()
+        except OSError:
+            fp = Path(folder)
+
+        def same_path(other) -> bool:
+            try:
+                return Path(other).resolve() == fp
+            except OSError:
+                return os.path.normpath(str(other)) == os.path.normpath(str(folder))
+
+        self._job_queue = [
+            (sd, st)
+            for sd, st in self._job_queue
+            if not same_path(sd.get("folder", ""))
+        ]
+
+        for k in list(self._multi_session_stats.keys()):
+            if same_path(k):
+                self._multi_session_stats.pop(k, None)
+
+        self._multi_failed_sessions = {
+            x for x in self._multi_failed_sessions if not same_path(x)
+        }
+
+        se = self._subtitle_editor
+        sess = getattr(se, "_session", None)
+        if sess is not None and same_path(sess.folder):
+            se.clear()
+            self._info_editor.clear()
+
+        if (
+            self._current_session is not None
+            and same_path(self._current_session.folder)
+        ):
+            self._current_session = None
+
+        self._schedule_selected_cost_summary()
 
     def _on_session_clicked(self, sess_data: dict):
         """Load session into info editor, subtitle editor + restore step card statuses."""
@@ -839,6 +891,7 @@ class MultiSessionWindow(QMainWindow):
         if self._job_queue and self._job_queue[0][1] is step:
             self._job_queue.pop(0)
 
+        self._persist_parent_step_configs()
         self._run_next()
 
     def _on_error(self, step, sess_data: dict, msg: str):
