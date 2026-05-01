@@ -10,7 +10,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from PyQt6.QtCore import QSize, Qt, QThreadPool, pyqtSignal
+from PyQt6.QtCore import QObject, QRunnable, QSize, Qt, QThreadPool, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -32,13 +32,73 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from core.session import Session
 from core.pipeline.step1_transcribe import WHISPER_API_COST_PER_MINUTE
 from core.pipeline.step2_translate import TRANSLATION_COST_PER_1M_CHARS
 from core.pipeline.step5_tts import COST_PER_1M as TTS_COST_PER_1M
+from core.session import Session
 from ui.widgets.session_info_editor import SessionInfoEditor
 from ui.widgets.step_card import StepCard
 from ui.widgets.subtitle_editor import SubtitleEditor
+
+
+class CostWorkerSignals(QObject):
+    finished = pyqtSignal(int, float, float, float, bool)
+
+
+class SelectedCostWorker(QRunnable):
+    def __init__(
+        self,
+        request_id: int,
+        sessions: list[dict],
+        translate_backend: str,
+        tts_backend: str,
+    ):
+        super().__init__()
+        self.setAutoDelete(True)
+        self.request_id = request_id
+        self.sessions = sessions
+        self.translate_backend = translate_backend
+        self.tts_backend = tts_backend
+        self.signals = CostWorkerSignals()
+
+    def run(self):
+        total_step1 = 0.0
+        total_step2 = 0.0
+        total_step5 = 0.0
+        step1_unknown = False
+
+        if self.tts_backend == "all":
+            step5_rate = sum(TTS_COST_PER_1M.values())
+        else:
+            step5_rate = TTS_COST_PER_1M.get(self.tts_backend, 0.0)
+        step2_rate = TRANSLATION_COST_PER_1M_CHARS.get(self.translate_backend, 0.0)
+
+        for sess_data in self.sessions:
+            try:
+                session = Session.load(sess_data["folder"])
+            except Exception:
+                continue
+
+            duration_minutes = session.step1_duration_minutes()
+            if duration_minutes is None:
+                step1_unknown = True
+            else:
+                total_step1 += duration_minutes * WHISPER_API_COST_PER_MINUTE
+
+            if session.step1_done:
+                total_step2 += session.step1_transcript_chars() / 1_000_000 * step2_rate
+
+            if session.step2_done:
+                total_step5 += session.step2_translated_chars() / 1_000_000 * step5_rate
+
+        self.signals.finished.emit(
+            self.request_id,
+            total_step1,
+            total_step2,
+            total_step5,
+            step1_unknown,
+        )
+
 
 # ── Session list panel ────────────────────────────────────────────────────────
 
@@ -562,15 +622,23 @@ class MultiSessionWindow(QMainWindow):
         # so config edits here and in main window stay in sync
         self._cards: list[StepCard] = []
 
+        self._cost_request_id = 0
+        self._cost_timer = QTimer(self)
+        self._cost_timer.setSingleShot(True)
+        self._cost_timer.setInterval(120)
+        self._cost_timer.timeout.connect(self._run_selected_cost_worker)
+
         self._setup_ui()
         if base_dir:
             self._session_panel.set_base_dir(base_dir)
         # Autofill API keys into newly created step widgets
         self._autofill_keys()
 
-        self._session_panel.selection_changed.connect(self._update_selected_cost_summary)
-        self._session_panel.session_added.connect(self._update_selected_cost_summary)
-        self._update_selected_cost_summary()
+        self._session_panel.selection_changed.connect(
+            self._schedule_selected_cost_summary
+        )
+        self._session_panel.session_added.connect(self._schedule_selected_cost_summary)
+        self._schedule_selected_cost_summary()
 
     # ── UI ────────────────────────────────────────────────────────────────────
 
@@ -744,7 +812,9 @@ class MultiSessionWindow(QMainWindow):
         ctrl_h.addWidget(self._prog_lbl)
 
         self._cost_summary_lbl = QLabel("No sessions selected")
-        self._cost_summary_lbl.setStyleSheet("color:#a0c8ff;font-size:11px;font-weight:600;")
+        self._cost_summary_lbl.setStyleSheet(
+            "color:#a0c8ff;font-size:11px;font-weight:600;"
+        )
         ctrl_h.addWidget(self._cost_summary_lbl)
         ctrl_h.addStretch()
         root.addWidget(self._run_ctrl)
@@ -975,6 +1045,52 @@ class MultiSessionWindow(QMainWindow):
             return "?"
         return f"${value:.3f}"
 
+    def _schedule_selected_cost_summary(self):
+        selected = self._session_panel.get_selected_sessions()
+        if not selected:
+            self._cost_summary_lbl.setText("No sessions selected")
+            self._cost_timer.stop()
+            return
+
+        self._cost_summary_lbl.setText("Calculating cost…")
+        self._cost_request_id += 1
+        self._cost_timer.start()
+
+    def _run_selected_cost_worker(self):
+        selected = self._session_panel.get_selected_sessions()
+        if not selected:
+            self._cost_summary_lbl.setText("No sessions selected")
+            return
+
+        request_id = self._cost_request_id
+        translate_backend = self._step2_backend_key()
+        tts_backend = self._step5_backend_key()
+        worker = SelectedCostWorker(
+            request_id, list(selected), translate_backend, tts_backend
+        )
+        worker.signals.finished.connect(self._on_selected_costs_ready)
+        self._pool.start(worker)
+
+    def _on_selected_costs_ready(
+        self,
+        request_id: int,
+        step1: float,
+        step2: float,
+        step5: float,
+        step1_unknown: bool,
+    ):
+        if request_id != self._cost_request_id:
+            return
+
+        total = step1 + step2 + step5
+        step1_text = self._format_usd(step1)
+        if step1_unknown:
+            step1_text += "*"
+
+        self._cost_summary_lbl.setText(
+            f"{len(self._session_panel.get_selected_sessions())} selected | Step1: {step1_text} | Step2: {self._format_usd(step2)} | Step5: {self._format_usd(step5)} | Total: {self._format_usd(total)}"
+        )
+
     def _step2_backend_key(self) -> str:
         for step in self._steps:
             if getattr(step, "STEP_ID", "") == "step2_translate":
@@ -1029,21 +1145,7 @@ class MultiSessionWindow(QMainWindow):
         return total_step1, total_step2, total_step5, step1_unknown
 
     def _update_selected_cost_summary(self):
-        selected = self._session_panel.get_selected_sessions()
-        count = len(selected)
-        if count == 0:
-            self._cost_summary_lbl.setText("No sessions selected")
-            return
-
-        step1, step2, step5, step1_unknown = self._compute_selected_costs()
-        total = step1 + step2 + step5
-        step1_text = self._format_usd(step1)
-        if step1_unknown:
-            step1_text += "*"
-
-        self._cost_summary_lbl.setText(
-            f"{count} selected | Step1: {step1_text} | Step2: {self._format_usd(step2)} | Step5: {self._format_usd(step5)} | Total: {self._format_usd(total)}"
-        )
+        self._schedule_selected_cost_summary()
 
     # ── Run logic ─────────────────────────────────────────────────────────────
 

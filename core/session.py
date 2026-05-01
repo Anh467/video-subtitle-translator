@@ -562,8 +562,12 @@ class Session:
         """Return audio/video duration in seconds, preferring step1 transcript if available."""
         if self.step1_done:
             try:
-                segs = json.loads(self.step1_json.read_text(encoding="utf-8")).get("segments", [])
-                ends = [float(s.get("end", 0.0)) for s in segs if s.get("end") is not None]
+                segs = json.loads(self.step1_json.read_text(encoding="utf-8")).get(
+                    "segments", []
+                )
+                ends = [
+                    float(s.get("end", 0.0)) for s in segs if s.get("end") is not None
+                ]
                 if ends:
                     return max(ends)
             except Exception:
