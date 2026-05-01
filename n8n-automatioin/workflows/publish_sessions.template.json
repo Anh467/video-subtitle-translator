@@ -138,7 +138,7 @@
       "parameters": {
         "mode": "runOnceForEachItem",
         "language": "javaScript",
-        "jsCode": "function parseIsoUtcMs(raw) {\n  let sa = String(raw || '').trim();\n  if (!sa) return NaN;\n  if (!sa.includes('T') && sa.includes(' ')) sa = sa.replace(' ', 'T');\n  sa = sa.replace(/(\\d{2}:\\d{2}:\\d{2}\\.\\d{3})\\d+/, '$1');\n  return Date.parse(sa);\n}\nconst item = $input.item;\nif (item.json.error) {\n  throw new Error('Read video (YouTube): ' + String(item.json.error));\n}\nif (!item.binary?.data) {\n  throw new Error('Read video (YouTube): missing binary.data');\n}\nconst meta = $('6b Carry job → Read').item?.json ?? {};\nconst sa = String(meta.scheduled_at || '').trim();\nif (!sa) {\n  throw new Error(\n    'YouTube: scheduled_at trống — Studio coi là \\\"Riêng tư\\\" (không \\\"Đã lên lịch\\\"); kiểm tra exporter + node 6b.'\n    ,\n  );\n}\nconst publishMs = parseIsoUtcMs(sa);\nif (!Number.isFinite(publishMs)) {\n  throw new Error(\n    'YouTube: scheduled_at không parse được (ISO RFC3339, có offset ví dụ +07:00): ' + sa\n    ,\n  );\n}\nconst skewMs = 5000;\nif (publishMs <= Date.now() + skewMs) {\n  throw new Error(\n    'YouTube: scheduled_at đã qua hoặc sát \\\"giờ chạy workflow\\\" (< vài giây tới). PublishAt không còn trong tương lai. Giá trị: '\n      + sa\n      + '. Chạy lại export để \\\"scheduled_at\\\" mới, hoặc chỉnh SCHEDULE_START/SCHEDULE_INTERVAL_HOURS trong node 2.'\n    ,\n  );\n}\nreturn item;"
+        "jsCode": "function parseIsoUtcMs(raw) {\n  let sa = String(raw || '').trim();\n  if (!sa) return NaN;\n  if (!sa.includes('T') && sa.includes(' ')) sa = sa.replace(' ', 'T');\n  sa = sa.replace(/(\\d{2}:\\d{2}:\\d{2}\\.\\d{3})\\d+/, '$1');\n  return Date.parse(sa);\n}\nconst item = $input.item;\nif (item.json.error) {\n  throw new Error('Read video (YouTube): ' + String(item.json.error));\n}\nif (!item.binary?.data) {\n  throw new Error('Read video (YouTube): missing binary.data');\n}\nconst meta = $('6b Carry job → Read').item?.json ?? {};\nconst sa = String(meta.scheduled_at || '').trim();\nif (!sa) {\n  throw new Error(\n    'YouTube: scheduled_at trống — Studio coi là \\\"Riêng tư\\\" (không \\\"Đã lên lịch\\\"); kiểm tra exporter + node 6b.'\n    ,\n  );\n}\nconst publishMs = parseIsoUtcMs(sa);\nif (!Number.isFinite(publishMs)) {\n  throw new Error(\n    'YouTube: scheduled_at không parse được (ISO RFC3339, có offset ví dụ +07:00): ' + sa\n    ,\n  );\n}\nconst skewMs = 5000;\nif (publishMs <= Date.now() + skewMs) {\n  throw new Error(\n    'YouTube: scheduled_at đã qua hoặc sát \\\"giờ chạy workflow\\\" (< vài giây tới). PublishAt không còn trong tương lai. Giá trị: '\n      + sa\n      + '. Chạy lại export để \\\"scheduled_at\\\" mới, hoặc chỉnh SCHEDULE_START/SCHEDULE_INTERVAL_HOURS trong node 2.'\n    ,\n  );\n}\nconst tp = String(meta.thumbnail_path || '').trim();\nif (!tp) {\n  throw new Error(\n    'YouTube: thiếu thumbnail_path — cần file ảnh để upload thumbnail (và Studio/COPPA). Kiểm tra session + export.'\n    ,\n  );\n}\nreturn item;"
       },
       "id": "11111111-1111-4111-8111-111111111108",
       "name": "8 Check read OK",
@@ -148,6 +148,24 @@
         620,
         980
       ]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "fileSelector": "={{ String($('6b Carry job → Read').item.json.thumbnail_path || '').split(String.fromCharCode(92)).join('/') }}",
+        "options": {
+          "dataPropertyName": "thumbnail"
+        }
+      },
+      "id": "11111111-1111-4111-8111-111111111120",
+      "name": "8c Read thumbnail (YouTube)",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        620,
+        1060
+      ],
+      "continueOnFail": false
     },
     {
       "parameters": {
@@ -161,7 +179,8 @@
           "description": "={{ $('6b Carry job → Read').item.json.description }}",
           "privacyStatus": "private",
           "publishAt": "={{ $('6b Carry job → Read').item.json.scheduled_at }}",
-          "tags": "={{ ($('6b Carry job → Read').item.json.hashtags || []).join(',') }}"
+          "tags": "={{ ($('6b Carry job → Read').item.json.hashtags || []).join(',') }}",
+          "selfDeclaredMadeForKids": false
         }
       },
       "id": "11111111-1111-4111-8111-111111111109",
@@ -182,7 +201,7 @@
       "parameters": {
         "mode": "runOnceForEachItem",
         "language": "javaScript",
-        "jsCode": "const item = $input.item;\nconst j = item.json || {};\nconst meta = $('6b Carry job → Read').item?.json || {};\nif (j.error) {\n  throw new Error('YouTube API: ' + JSON.stringify(j.error).slice(0, 800));\n}\nconst id =\n  j.id || j.uploadId || j.video_id || j.videoId || j.data?.id || j.data?.uploadId;\nif (!id) {\n  throw new Error(\n    'YouTube: no video id (expected id/uploadId/video_id): ' + JSON.stringify(j).slice(0, 800),\n  );\n}\nitem.json = { ...meta, ...j, id: String(id) };\nreturn item;"
+        "jsCode": "const item = $input.item;\nconst j = item.json || {};\nconst meta = $('6b Carry job → Read').item?.json || {};\nif (j.error) {\n  throw new Error('YouTube API: ' + JSON.stringify(j.error).slice(0, 800));\n}\nconst id =\n  j.id || j.uploadId || j.video_id || j.videoId || j.data?.id || j.data?.uploadId;\nif (!id) {\n  throw new Error(\n    'YouTube: no video id (expected id/uploadId/video_id): ' + JSON.stringify(j).slice(0, 800),\n  );\n}\nitem.json = { ...meta, ...j, id: String(id) };\nconst thumb = $('8c Read thumbnail (YouTube)').item?.binary?.thumbnail;\nif (!thumb) {\n  throw new Error(\n    'YouTube: thiếu binary thumbnail (8c). Kiểm tra thumbnail_path và file ảnh (≤2MB, jpeg/png).',\n  );\n}\nitem.binary = { ...(item.binary || {}), thumbnail: thumb };\nreturn item;"
       },
       "id": "11111111-1111-4111-8111-111111111110",
       "name": "10 Check YouTube OK",
@@ -195,8 +214,48 @@
     },
     {
       "parameters": {
+        "method": "POST",
+        "url": "https://www.googleapis.com/upload/youtube/v3/thumbnails/set",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "youTubeOAuth2Api",
+        "sendQuery": true,
+        "specifyQuery": "keypair",
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "videoId",
+              "value": "={{ $json.id }}"
+            },
+            {
+              "name": "uploadType",
+              "value": "media"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "binaryData",
+        "inputDataFieldName": "thumbnail",
+        "options": {}
+      },
+      "id": "11111111-1111-4111-8111-111111111121",
+      "name": "10b YouTube set thumbnail (HTTP)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        620,
+        1380
+      ],
+      "credentials": {
+        "youTubeOAuth2Api": {
+          "name": "YouTube OAuth2 - publish workspace"
+        }
+      },
+      "continueOnFail": false
+    },
+    {
+      "parameters": {
         "executeOnce": false,
-        "command": "=python {{ $json.repo_root }}/n8n-automatioin/mark_publish_result.py \"{{ $json.session_folder }}\" --platform youtube --remote-id {{ $json.id }} --url https://www.youtube.com/watch?v={{ $json.id }} --scheduled-at \"{{ $json.scheduled_at }}\""
+        "command": "=python {{ $('10 Check YouTube OK').item.json.repo_root }}/n8n-automatioin/mark_publish_result.py \"{{ $('10 Check YouTube OK').item.json.session_folder }}\" --platform youtube --remote-id {{ $('10 Check YouTube OK').item.json.id }} --url https://www.youtube.com/watch?v={{ $('10 Check YouTube OK').item.json.id }} --scheduled-at \"{{ $('10 Check YouTube OK').item.json.scheduled_at }}\""
       },
       "id": "11111111-1111-4111-8111-111111111112",
       "name": "11 Mark YouTube đã đăng",
@@ -225,7 +284,7 @@
       "parameters": {
         "mode": "runOnceForEachItem",
         "language": "javaScript",
-        "jsCode": "const cur = $input.item;\nconst job = $('5 Split jobs (+ giữ config)').item.json;\nconst merged = { ...job, ...(cur.json || {}) };\nconst p = String(merged.video_path || '').trim();\nif (!p) {\n  throw new Error('Missing video_path before Facebook read (item pairing?). session=' + String(merged.session_name || '?'));\n}\nmerged.video_path = p.split(String.fromCharCode(92)).join('/');\nreturn { json: merged, binary: cur.binary };"
+        "jsCode": "const cur = $input.item;\nconst job = $('5 Split jobs (+ giữ config)').item.json;\nconst yt = $('10 Check YouTube OK').item?.json || {};\nconst merged = { ...job, ...yt, ...(cur.json || {}) };\nconst p = String(merged.video_path || '').trim();\nif (!p) {\n  throw new Error('Missing video_path before Facebook read (item pairing?). session=' + String(merged.session_name || '?'));\n}\nmerged.video_path = p.split(String.fromCharCode(92)).join('/');\nreturn { json: merged, binary: cur.binary };"
       },
       "id": "11111111-1111-4111-8111-111111111162",
       "name": "12b Carry job → Read FB",
@@ -472,6 +531,17 @@
       ]
     },
     "10 Check YouTube OK": {
+      "main": [
+        [
+          {
+            "node": "10b YouTube set thumbnail (HTTP)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "10b YouTube set thumbnail (HTTP)": {
       "main": [
         [
           {

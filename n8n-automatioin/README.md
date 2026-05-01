@@ -198,7 +198,7 @@ There are two workflow files under `n8n-automatioin/workflows/`:
 
 | File | Purpose |
 |------|---------|
-| **`publish_sessions.template.json`** | Full path: export jobs → read video from disk → **YouTube upload** → markers → **Facebook Graph** (video) → markers, with **Code** assertion steps and **Execute Command** logging. |
+| **`publish_sessions.template.json`** | Full path: export jobs → read video from disk → **read thumbnail** → **YouTube upload** (audience **not made for kids**) → **`thumbnails.set` via HTTP Request** → markers → **Facebook Graph** (video) → markers, with **Code** assertion steps and **Execute Command** logging. |
 | **`publish_sessions_error.template.json`** | Optional **Error Trigger** chain that appends one JSON line to an error log via `workflow_log_append.py`. |
 
 #### Import steps (main workflow)
@@ -215,7 +215,7 @@ There are two workflow files under `n8n-automatioin/workflows/`:
    The snippet trims **`workspace`**/`base_dir`, derives **`log_file`**, builds **`schedule_args`**, and outputs **`repo_root`**, **`base_dir`**, **`log_file`**, **`facebook_page_id`**, **`schedule_args`**, … for downstream nodes.
 
 4. **Credentials (single naming convention)** — in n8n **Credentials**, create and authorize:
-   - **YouTube OAuth2 API** named exactly **`YouTube OAuth2 - publish workspace`** (used by the **YouTube upload** node).
+   - **YouTube OAuth2 API** named exactly **`YouTube OAuth2 - publish workspace`** (used by **YouTube upload** and **HTTP Request `10b`** — same scopes as upload must allow **`thumbnails.set`**; image **≤ ~2 MB**, **JPEG / PNG**. If **10b** errors, re-authorize OAuth or adjust the credential in **HTTP Request** after import.).
    - **Facebook Graph API** named exactly **`Facebook Graph API - page token`** (Page access token with video upload permissions).
 
    After import, if n8n reports missing credentials, open each node and **re-select** credentials with these names (or rename your saved credentials to match the names in the workflow JSON).
@@ -234,6 +234,8 @@ There are two workflow files under `n8n-automatioin/workflows/`:
 
 **Facebook vs YouTube scheduling** — **YouTube** uses **`status.privacyStatus=private`** plus **`publishAt`** (ISO string from **`scheduled_at`**). **Facebook** **`/videos`** uses **`published=false`**, **`scheduled_publish_time`**, and **`unpublished_content_type=SCHEDULED`** as in the template.
 
+**YouTube audience (COPPA) + thumbnail** — The upload node sets **`selfDeclaredMadeForKids: false`** (not made for kids). **`thumbnail_path`** must be present; **`8c Read thumbnail`** loads the bytes and **`10b`** calls the Data API **`thumbnails.set`** upload endpoint (**separate from** the multipart video upload).
+
 After import, n8n may migrate node versions (e.g. **Set** v1 → newer); that is normal.
 
 If the run fails with **`Unrecognized node type: n8n-nodes-base.executeCommand`**, your host is still **excluding** that node (common on **n8n 2.x** defaults) or you are on **n8n Cloud** — see **Section 3.3** (`NODES_EXCLUDE`, self‑hosting).
@@ -245,7 +247,7 @@ End-to-end order (aligned with **`publish_sessions.template.json`**):
 1. **`Execute workflow`** → **`2 Publishing config`** (**`Code`**): constants **`WORKSPACE`**, **`REPO_ROOT`**, **`FACEBOOK_PAGE_ID`**, schedule (**optional input overrides from Webhook/Cron**).
 2. Parallel: **log workflow start**, and **`Execute Command`** → **`export_publish_jobs.py`** **`{{ $json.schedule_args }}`** (plus **`base_dir`** / platforms / **`--pretty`**).
 3. **`5 Split jobs (+ giữ config)`** (`Code`) — merges exporter JSON stdout with **`cfg`** from **`2 Publishing config`**, one row per job (jobs already sorted **`published_at`** ASC in Python).
-4. Các node theo **từng job**: log → đọc file video → upload YouTube/Facebook → `mark_publish_result.py` (**template không dùng `Split In Batches`** — mỗi job là một luồng item).
+4. Các node theo **từng job**: log → đọc file video (**`7`**) → kiểm tra (**`8`**) → đọc thumbnail (**`8c`**) → **YouTube upload** (**`9`**) → ghép **`id`** với binary **`thumbnail`** (**`10`**) → **HTTP thumbnails.set** (**`10b`**) → `mark_publish_result.py` → tiếp tục **Facebook**… (**template không dùng `Split In Batches`** — mỗi job là một luồng item).
 
 ### Exporter via `Execute Command` (single PowerShell-style line)
 
