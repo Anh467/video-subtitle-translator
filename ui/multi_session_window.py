@@ -14,6 +14,7 @@ from PyQt6.QtCore import QSize, Qt, QThreadPool, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -29,10 +30,12 @@ from PyQt6.QtWidgets import (
     QTextEdit,
     QVBoxLayout,
     QWidget,
-    QFileDialog,
 )
 
 from core.session import Session
+from core.pipeline.step1_transcribe import WHISPER_API_COST_PER_MINUTE
+from core.pipeline.step2_translate import TRANSLATION_COST_PER_1M_CHARS
+from core.pipeline.step5_tts import COST_PER_1M as TTS_COST_PER_1M
 from ui.widgets.session_info_editor import SessionInfoEditor
 from ui.widgets.step_card import StepCard
 from ui.widgets.subtitle_editor import SubtitleEditor
@@ -47,6 +50,8 @@ class SessionListPanel(QWidget):
     session_clicked = pyqtSignal(dict)
     # Emits after a new session is created
     session_added = pyqtSignal()
+    # Emits when selected session checkboxes change
+    selection_changed = pyqtSignal()
 
     STATUS_ICONS = {
         "idle": "⬜",
@@ -175,6 +180,7 @@ class SessionListPanel(QWidget):
         self._sessions = Session.list_sessions(self._base_dir)
         self._apply_sort()
         self._rebuild_list(preserve_checked=True)
+        self.selection_changed.emit()
 
     def get_selected_sessions(self) -> list[dict]:
         result = []
@@ -253,6 +259,7 @@ class SessionListPanel(QWidget):
         chk = QCheckBox()
         chk.setChecked(False)
         chk.setFixedWidth(20)
+        chk.stateChanged.connect(self._emit_selection_changed)
         h.addWidget(chk)
 
         status = self._session_status.get(s["folder"], "idle")
@@ -461,6 +468,9 @@ class SessionListPanel(QWidget):
         if idx is not None and 0 <= idx < len(self._sessions):
             self.session_clicked.emit(self._sessions[idx])
 
+    def _emit_selection_changed(self, _state: int):
+        self.selection_changed.emit()
+
     def _on_sort_changed(self, _text: str):
         self._sort_by = (
             "video" if self._sort_by_combo.currentText().lower() == "video" else "time"
@@ -503,6 +513,7 @@ class SessionListPanel(QWidget):
                 chk = w.findChild(QCheckBox)
                 if chk:
                     chk.setChecked(True)
+        self.selection_changed.emit()
 
     def _deselect_all(self):
         for i in range(self._list.count()):
@@ -511,6 +522,7 @@ class SessionListPanel(QWidget):
                 chk = w.findChild(QCheckBox)
                 if chk:
                     chk.setChecked(False)
+        self.selection_changed.emit()
 
 
 # ── Multi-Session Window ──────────────────────────────────────────────────────
@@ -555,6 +567,10 @@ class MultiSessionWindow(QMainWindow):
             self._session_panel.set_base_dir(base_dir)
         # Autofill API keys into newly created step widgets
         self._autofill_keys()
+
+        self._session_panel.selection_changed.connect(self._update_selected_cost_summary)
+        self._session_panel.session_added.connect(self._update_selected_cost_summary)
+        self._update_selected_cost_summary()
 
     # ── UI ────────────────────────────────────────────────────────────────────
 
@@ -726,6 +742,10 @@ class MultiSessionWindow(QMainWindow):
         self._prog_lbl = QLabel("")
         self._prog_lbl.setStyleSheet("color:#888;font-size:11px;")
         ctrl_h.addWidget(self._prog_lbl)
+
+        self._cost_summary_lbl = QLabel("No sessions selected")
+        self._cost_summary_lbl.setStyleSheet("color:#a0c8ff;font-size:11px;font-weight:600;")
+        ctrl_h.addWidget(self._cost_summary_lbl)
         ctrl_h.addStretch()
         root.addWidget(self._run_ctrl)
 
@@ -950,9 +970,85 @@ class MultiSessionWindow(QMainWindow):
         self._info_editor.load_session(session)
         self._session_panel.refresh()
 
+    def _format_usd(self, value: float | None) -> str:
+        if value is None:
+            return "?"
+        return f"${value:.3f}"
+
+    def _step2_backend_key(self) -> str:
+        for step in self._steps:
+            if getattr(step, "STEP_ID", "") == "step2_translate":
+                config = step.collect_config()
+                return config.get("backend", "openai")
+        return "openai"
+
+    def _step5_backend_key(self) -> str:
+        for step in self._steps:
+            if getattr(step, "STEP_ID", "") == "step5_tts":
+                config = step.collect_config()
+                backend_label = config.get("backend", "gtts")
+                return backend_label
+        return "gtts"
+
+    def _compute_selected_costs(self) -> tuple[float, float, float, bool]:
+        selected = self._session_panel.get_selected_sessions()
+        if not selected:
+            return 0.0, 0.0, 0.0, False
+
+        total_step1 = 0.0
+        total_step2 = 0.0
+        total_step5 = 0.0
+        step1_unknown = False
+
+        translation_backend = self._step2_backend_key()
+        step5_backend = self._step5_backend_key()
+        if step5_backend == "all":
+            step5_rate = sum(TTS_COST_PER_1M.values())
+        else:
+            step5_rate = TTS_COST_PER_1M.get(step5_backend, 0.0)
+        step2_rate = TRANSLATION_COST_PER_1M_CHARS.get(translation_backend, 0.0)
+
+        for sess_data in selected:
+            try:
+                session = Session.load(sess_data["folder"])
+            except Exception:
+                continue
+
+            duration_minutes = session.step1_duration_minutes()
+            if duration_minutes is None:
+                step1_unknown = True
+            else:
+                total_step1 += duration_minutes * WHISPER_API_COST_PER_MINUTE
+
+            if session.step1_done:
+                total_step2 += session.step1_transcript_chars() / 1_000_000 * step2_rate
+
+            if session.step2_done:
+                total_step5 += session.step2_translated_chars() / 1_000_000 * step5_rate
+
+        return total_step1, total_step2, total_step5, step1_unknown
+
+    def _update_selected_cost_summary(self):
+        selected = self._session_panel.get_selected_sessions()
+        count = len(selected)
+        if count == 0:
+            self._cost_summary_lbl.setText("No sessions selected")
+            return
+
+        step1, step2, step5, step1_unknown = self._compute_selected_costs()
+        total = step1 + step2 + step5
+        step1_text = self._format_usd(step1)
+        if step1_unknown:
+            step1_text += "*"
+
+        self._cost_summary_lbl.setText(
+            f"{count} selected | Step1: {step1_text} | Step2: {self._format_usd(step2)} | Step5: {self._format_usd(step5)} | Total: {self._format_usd(total)}"
+        )
+
     # ── Run logic ─────────────────────────────────────────────────────────────
 
     def _run_selected(self):
+        self._update_selected_cost_summary()
         sessions = self._session_panel.get_selected_sessions()
         if not sessions:
             QMessageBox.warning(self, "Nothing selected", "Check at least one session.")
@@ -961,6 +1057,7 @@ class MultiSessionWindow(QMainWindow):
 
     def _run_all_sessions(self):
         # Run ALL sessions regardless of checkbox state — do NOT call _select_all()
+        self._update_selected_cost_summary()
         all_sessions = self._session_panel._sessions
         if not all_sessions:
             QMessageBox.information(

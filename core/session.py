@@ -9,6 +9,7 @@ Features:
 
 import json
 import shutil
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -56,11 +57,25 @@ class Session:
             names = [p.name for p in path.iterdir() if p.is_file()]
             if not names:
                 continue
-            video_files = [p for p in path.iterdir() if p.is_file() and p.suffix.lower() in VIDEO_EXTS]
+            video_files = [
+                p
+                for p in path.iterdir()
+                if p.is_file() and p.suffix.lower() in VIDEO_EXTS
+            ]
             if not video_files:
                 continue
-            image_files = [p for p in path.iterdir() if p.is_file() and p.suffix.lower() in THUMB_EXTS]
-            info_files = [p for p in path.iterdir() if p.is_file() and p.suffix.lower() in INFO_EXTS and p.name.lower() != "session.json"]
+            image_files = [
+                p
+                for p in path.iterdir()
+                if p.is_file() and p.suffix.lower() in THUMB_EXTS
+            ]
+            info_files = [
+                p
+                for p in path.iterdir()
+                if p.is_file()
+                and p.suffix.lower() in INFO_EXTS
+                and p.name.lower() != "session.json"
+            ]
             if image_files and info_files:
                 found.append(path)
         return sorted(found, key=lambda p: p.name.lower())
@@ -125,14 +140,22 @@ class Session:
             raise FileNotFoundError(f"Video folder not found: {folder_path}")
 
         video_file = next(
-            (p for p in sorted(source_dir.iterdir()) if p.is_file() and p.suffix.lower() in VIDEO_EXTS),
+            (
+                p
+                for p in sorted(source_dir.iterdir())
+                if p.is_file() and p.suffix.lower() in VIDEO_EXTS
+            ),
             None,
         )
         if video_file is None:
             raise FileNotFoundError(f"No supported video file found in {folder_path}")
 
         thumbnail_file = next(
-            (p for p in sorted(source_dir.iterdir()) if p.is_file() and p.suffix.lower() in THUMB_EXTS),
+            (
+                p
+                for p in sorted(source_dir.iterdir())
+                if p.is_file() and p.suffix.lower() in THUMB_EXTS
+            ),
             None,
         )
         if thumbnail_file is None:
@@ -154,7 +177,9 @@ class Session:
             (
                 p
                 for p in sorted(source_dir.iterdir())
-                if p.is_file() and p.suffix.lower() == ".json" and p.name.lower() != "session.json"
+                if p.is_file()
+                and p.suffix.lower() == ".json"
+                and p.name.lower() != "session.json"
             ),
             None,
         )
@@ -168,7 +193,9 @@ class Session:
         return obj
 
     @classmethod
-    def import_sessions_from_workspace(cls, base_dir: str, workspace_root: str) -> list[str]:
+    def import_sessions_from_workspace(
+        cls, base_dir: str, workspace_root: str
+    ) -> list[str]:
         created = []
         for folder in cls._find_video_folders(workspace_root):
             try:
@@ -530,6 +557,61 @@ class Session:
         d = json.loads(self.step1_json.read_text(encoding="utf-8"))
         segs = [Segment(s["start"], s["end"], s["text"]) for s in d["segments"]]
         return TranscriptResult(d["text"], segs, d["language"], d["source_file"])
+
+    def step1_duration_seconds(self) -> float | None:
+        """Return audio/video duration in seconds, preferring step1 transcript if available."""
+        if self.step1_done:
+            try:
+                segs = json.loads(self.step1_json.read_text(encoding="utf-8")).get("segments", [])
+                ends = [float(s.get("end", 0.0)) for s in segs if s.get("end") is not None]
+                if ends:
+                    return max(ends)
+            except Exception:
+                pass
+
+        try:
+            result = subprocess.run(
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "format=duration",
+                    "-of",
+                    "default=noprint_wrappers=1:nokey=1",
+                    str(self.source_file),
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            return float(result.stdout.strip())
+        except Exception:
+            return None
+
+    def step1_duration_minutes(self) -> float | None:
+        seconds = self.step1_duration_seconds()
+        if seconds is None:
+            return None
+        return max(seconds / 60.0, 0.0)
+
+    def step1_transcript_chars(self) -> int:
+        if not self.step1_done:
+            return 0
+        try:
+            transcript = self.load_transcript()
+            return len(transcript.text.strip())
+        except Exception:
+            return 0
+
+    def step2_translated_chars(self) -> int:
+        if not self.step2_done:
+            return 0
+        try:
+            segments = self.load_translated()
+            return sum(len(s.translated.strip()) for s in segments)
+        except Exception:
+            return 0
 
     # ── step 2 ────────────────────────────────────────────────────────────────
     def save_translated(self, segments):
