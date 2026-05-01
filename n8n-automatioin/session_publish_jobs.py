@@ -4,7 +4,7 @@ import json
 import re
 import sys
 from dataclasses import asdict, dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 POST_MARKERS = {
@@ -38,12 +38,16 @@ def load_export_marker(path: Path | str) -> dict | None:
         return None
 
 
-def export_marker_should_block_export(
-    session_path: Path | str,
-    *,
-    stale_pending_hours: float | None = None,
-) -> tuple[bool, str]:
-    """Whether the next export_scan should omit this folder (unless --include-exported)."""
+def export_marker_should_block_export(session_path: Path | str) -> tuple[bool, str]:
+    """Whether the next export_scan should omit this folder (unless --include-exported).
+
+    Skips mainly **completed** uploads (terminal success). **pending_n8n** is **not**
+    skipped: exporter/Python may succeed while n8n fails—those sessions stay in the
+    next batch.
+
+    Legacy markers (**no ``status`` key**) still block to avoid surprise duplicate
+    bursts from old installs.
+    """
     sp = Path(session_path).resolve(strict=False)
     marker_path = sp / EXPORTED_MARKER
     if not marker_path.exists():
@@ -73,34 +77,8 @@ def export_marker_should_block_export(
     if status_s != EXPORT_STATUS_PENDING:
         return True, f"export_marker_unknown_status_{status_s}"
 
-    if stale_pending_hours is None or stale_pending_hours <= 0:
-        return True, "pending_n8n_blocks_until_ttl_or_include_exported"
-
-    exported_at_raw = data.get("exported_at")
-    exported_at = _parse_iso_maybe(exported_at_raw)
-    if exported_at is None:
-        return True, "pending_n8n_no_exported_at"
-
-    now = datetime.now(timezone.utc)
-    if exported_at.tzinfo is None:
-        exported_at = exported_at.replace(tzinfo=timezone.utc)
-    age = now - exported_at
-    if age >= timedelta(hours=stale_pending_hours):
-        return False, ""
-    return True, "pending_n8n_within_ttl_still_blocked"
-
-
-def _parse_iso_maybe(value: object) -> datetime | None:
-    if value is None or not str(value).strip():
-        return None
-    s = str(value).strip().replace("Z", "+00:00")
-    try:
-        dt = datetime.fromisoformat(s)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt
-    except ValueError:
-        return None
+    # Queued-to-n8n but not verified posted — include again unless user fixed marker.
+    return False, ""
 
 
 def refresh_export_marker_status(session_folder: str | Path) -> None:
@@ -481,7 +459,6 @@ def scan_publish_jobs(
     debug: bool = False,
     thumbnail_patterns: tuple[str, ...] | None = None,
     audit: list[tuple[str, str]] | None = None,
-    pending_export_stale_hours: float | None = None,
 ) -> list[PublishJob]:
     root = Path(base_dir)
     if not root.exists():
@@ -547,10 +524,7 @@ def scan_publish_jobs(
                 )
                 continue
         if not include_exported:
-            block, block_detail = export_marker_should_block_export(
-                item,
-                stale_pending_hours=pending_export_stale_hours,
-            )
+            block, block_detail = export_marker_should_block_export(item)
             if block:
                 msg = f"[skip] export marker blocks rescan ({EXPORTED_MARKER}"
                 if block_detail:

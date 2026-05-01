@@ -32,8 +32,8 @@ Mở node 2 Publishing config (sửa 1 lần trong Code), sửa đầu file cho 
 const REPO_ROOT = String.raw`/repo`;
 const WORKSPACE = String.raw`/workspace`;
 const FACEBOOK_PAGE_ID = 'ID_FANPAGE_CUA_BAN';
-const SCHEDULE_INTERVAL_HOURS = 4;   // hoặc 24, tùy bạn
-const SCHEDULE_START = '';          // hoặc chuỗi ISO nếu cần
+const SCHEDULE_INTERVAL_HOURS = 24;   // hoặc 24, tùy bạn
+const SCHEDULE_START = '2026-05-02T22:00:00+07:00';          // hoặc chuỗi ISO nếu cần
 Save workflow.
 
 5) Gắn credential

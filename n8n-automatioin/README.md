@@ -52,11 +52,9 @@ After each run, the exporter now writes:
 - Per-session marker file: `exported_publish_job.json` inside each exported session folder (includes **`status`**; see below)
 - Run summary file: `export_publish_jobs_info.json` in `base_dir` (or custom `--info-file`)
 
-**`exported_publish_job.json` → `status`:** **`pending_n8n`** after the Python exporter writes the marker (“đã enqueue JSON, chưa chắc n8n đã chạy”). **`partial`** once some **`posted_<platform>.json`** markers exist; **`completed`** when every platform listed in **`platforms`** on that file exists. **`mark_publish_result.py`** refreshes **`status`** + **`posted_*`** after each successful mark. **`failed`** is reserved so you can set it manually if a step upstream failed but you kept the file ( **`failed`** is **not** treated as blocking re-export ). Files **without `status`** (older runs) behave like before: they still block re-scan.
+**`exported_publish_job.json` → `status`:** **`pending_n8n`** after the Python exporter writes the marker. **`partial`** once some **`posted_<platform>.json`** markers exist; **`completed`** when every platform listed in **`platforms`** on that file exists. **`mark_publish_result.py`** refreshes **`status`** + **`posted_*`** after each successful mark. **`failed`** does **not** block re-scan (nor does **`pending_n8n`**): if **Node 4** / exporter succeeded but **n8n crashed**, the folder can appear again in **`jobs`** on the next cron so you don’t silently “lose” the session (**`completed`** and legacy files **without `status`** still block by default unless **`--include-exported`**). Duplicate uploads while **`partial`** are mitigated because **`posted_*`** markers exclude already-posted platforms from the scanner.
 
-If **cron/export** runs but **n8n never picks up**: use **`export_publish_jobs.py --pending-export-stale-hours H`** (Workflow node **“2 Publishing config”** exposes **`PENDING_EXPORT_STALE_HOURS`** or webhook field **`pending_export_stale_hours`**) so **`pending_n8n`** older than **H** hours can be queued again—**`partial`** is still blocked unless you **`--include-exported`** so you avoid duplicate uploads on platforms already posted.
-
-This keeps most sessions deduplicated while still allowing recovery after a stalled workflow.
+Former **`--pending-export-stale-hours`** flag **was removed**; **`pending_n8n`** no longer skips the exporter scan (**`completed`** and legacy markers without **`status`** still do).
 
 If the folder contains jobs, the output includes `scheduled_at` for each one:
 
