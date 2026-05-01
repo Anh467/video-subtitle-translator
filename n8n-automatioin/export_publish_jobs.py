@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from automation.session_publish_jobs import scan_publish_jobs
+from session_publish_jobs import scan_publish_jobs
 
 
 def parse_args() -> argparse.Namespace:
@@ -34,11 +35,31 @@ def parse_args() -> argparse.Namespace:
         help="Optional path to save the JSON payload in addition to stdout",
     )
     parser.add_argument(
+        "--schedule-interval-hours",
+        type=float,
+        default=4.0,
+        help="Interval in hours between scheduled publish jobs",
+    )
+    parser.add_argument(
+        "--schedule-start",
+        default="",
+        help="Optional ISO-8601 start datetime for the first scheduled post",
+    )
+    parser.add_argument(
         "--pretty",
         action="store_true",
         help="Pretty-print output JSON",
     )
     return parser.parse_args()
+
+
+def _parse_datetime(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
 
 
 def main() -> int:
@@ -51,10 +72,24 @@ def main() -> int:
         include_posted=args.include_posted,
     )
 
+    schedule_start = None
+    if args.schedule_start:
+        schedule_start = _parse_datetime(args.schedule_start)
+    if schedule_start is None and jobs:
+        schedule_start = _parse_datetime(jobs[0].published_at)
+    if schedule_start is None:
+        schedule_start = datetime.now(timezone.utc)
+
+    interval = timedelta(hours=args.schedule_interval_hours)
+    for index, job in enumerate(jobs):
+        job.scheduled_at = (schedule_start + interval * index).isoformat()
+
     payload = {
         "base_dir": str(Path(args.base_dir)),
         "platforms": list(platforms),
         "count": len(jobs),
+        "schedule_interval_hours": args.schedule_interval_hours,
+        "schedule_start": schedule_start.isoformat(),
         "jobs": [job.to_dict() for job in jobs],
     }
     text = json.dumps(payload, ensure_ascii=False, indent=2 if args.pretty else None)

@@ -1,38 +1,53 @@
 # Automation For n8n Publish Flow
 
-This folder contains a complete helper set so n8n only needs to provide a `base_dir`
-that contains all session folders. The scripts will automatically discover:
+This folder contains helpers for n8n so it can publish multiple sessions from one
+workspace folder to YouTube and Facebook. The export script now also assigns a
+scheduled publish time every 4 hours based on the original `published_at` value
+stored in each session's `session.json`.
 
-- final video output
-- title
-- description
-- hashtags
-- thumbnail
-- already-posted markers
+## 1. What this automation does
 
-## 1. Export publish jobs
+- Scans a workspace folder containing many session subfolders
+- Reads `session.json` from each session
+- Uses session metadata for:
+  - final video path
+  - thumbnail
+  - title
+  - description
+  - hashtags
+  - published_at
+- Orders jobs by `published_at` and session folder name
+- Assigns a `scheduled_at` timestamp in 4-hour increments
+- Skips sessions already marked as posted for selected platforms
+- Writes back markers after a platform schedules/uploads the post
 
-Run this from the project root:
+## 2. Run the export script
+
+From the repository root run:
 
 ```powershell
-python automation/export_publish_jobs.py "D:\sessions" --platform youtube --platform facebook --pretty
+python n8n-automatioin/export_publish_jobs.py "D:\Downloads\workspace\horror_story" --platform youtube --platform facebook --schedule-interval-hours 4 --pretty
 ```
 
-Output JSON shape:
+If the folder contains jobs, the output includes `scheduled_at` for each one:
 
 ```json
 {
-  "base_dir": "D:/sessions",
+  "base_dir": "D:/Downloads/workspace/horror_story",
   "platforms": ["youtube", "facebook"],
-  "count": 2,
+  "count": 3,
+  "schedule_interval_hours": 4.0,
+  "schedule_start": "2026-04-17T08:00:00+00:00",
   "jobs": [
     {
-      "session_folder": "D:/sessions/demo_20260429_101010",
-      "video_path": "D:/sessions/demo_20260429_101010/result/step6_output_demo.mp4",
-      "thumbnail_path": "D:/sessions/demo_20260429_101010/thumbnail.jpg",
+      "session_folder": "D:/Downloads/workspace/horror_story/2026-04-17_...",
+      "video_path": "...",
+      "thumbnail_path": "...",
       "title": "...",
       "description": "...",
-      "hashtags": ["#abc", "#xyz"],
+      "hashtags": ["#悬疑"],
+      "published_at": "2026-04-17",
+      "scheduled_at": "2026-04-17T08:00:00+00:00",
       "ready": true,
       "missing": [],
       "youtube_posted": false,
@@ -42,64 +57,168 @@ Output JSON shape:
 }
 ```
 
-## 2. Mark a session as scheduled/uploaded
+### Notes on published_at
 
-After n8n uploads or schedules to a platform, write a marker file back into the
-same session folder.
+- The export uses the `published_at` value from `session.json` first.
+- If `published_at` is missing, it falls back to the session folder name
+  prefix like `2026-04-17_...`.
+- Jobs are sorted by that timestamp so the oldest original publish date is
+  scheduled first.
 
-YouTube example:
+## 3. Use it in n8n
 
-```powershell
-python automation/mark_publish_result.py "D:\sessions\demo_20260429_101010" --platform youtube --remote-id abc123 --url "https://youtube.com/watch?v=abc123" --scheduled-at "2026-04-30T09:00:00Z"
-```
+### Recommended workflow
 
-Facebook example:
-
-```powershell
-python automation/mark_publish_result.py "D:\sessions\demo_20260429_101010" --platform facebook --remote-id 998877 --scheduled-at "2026-04-30T09:30:00Z"
-```
-
-This creates either:
-
-- `posted_youtube.json`
-- `posted_facebook.json`
-
-## 3. Suggested n8n structure
-
-Use `Execute Command` for the scan step:
+1. `Manual Trigger` or `Cron Trigger`
+2. `Set` node with a field like `base_dir` set to your workspace folder
+   e.g. `D:\Downloads\workspace\horror_story`
+3. `Execute Command` node to run:
 
 ```powershell
-python automation/export_publish_jobs.py "{{$json.base_dir}}" --platform youtube --platform facebook --pretty
+python n8n-automatioin/export_publish_jobs.py {{$node["Set"].json["base_dir"]}} --platform youtube --platform facebook --schedule-interval-hours 4 --pretty
 ```
 
-Then in n8n:
+4. `Code` node to parse stdout and return one item per job:
 
-1. `Manual Trigger` or `Form Trigger`
+```js
+const output = JSON.parse(items[0].json["text"] || items[0].json["stdout"] || items[0].json["data"]);
+return output.jobs.map(job => ({ json: job }));
+```
+
+5. `SplitInBatches` to process jobs sequentially
+6. YouTube upload node
+   - Video file: `{{$json["video_path"]}}`
+   - Title: `{{$json["title"]}}`
+   - Description: `{{$json["description"]}}`
+   - Publish at / scheduled time: `{{$json["scheduled_at"]}}`
+7. Facebook post node
+   - Use page/post scheduling support
+   - Schedule publish time: `{{$json["scheduled_at"]}}`
+   - Message: `{{$json["description"]}}`
+   - Add thumbnail or video media as required
+8. `Execute Command` node after each upload to mark the session as posted:
+
+```powershell
+python n8n-automatioin/mark_publish_result.py "{{$json["session_folder"]}}" --platform youtube --remote-id "{{$node["YouTube"].json["videoId"]}}" --url "{{$node["YouTube"].json["url"]}}" --scheduled-at "{{$json["scheduled_at"]}}"
+```
+
+and similarly for Facebook:
+
+```powershell
+python n8n-automatioin/mark_publish_result.py "{{$json["session_folder"]}}" --platform facebook --remote-id "{{$node["Facebook"].json["postId"]}}" --url "{{$node["Facebook"].json["permalink_url"]}}" --scheduled-at "{{$json["scheduled_at"]}}"
+```
+
+## 4. Example n8n workflow
+
+Use this general node structure in n8n:
+
+1. `Manual Trigger` or `Cron Trigger`
 2. `Set` node with `base_dir`
-3. `Execute Command` node calling `export_publish_jobs.py`
-4. `Code` node to parse the command stdout JSON and return one item per job
-5. `Split In Batches`
-6. YouTube/Facebook upload nodes
-7. `Execute Command` node calling `mark_publish_result.py`
+3. `Execute Command` node running the exporter
+4. `Code` node to parse JSON output
+5. `SplitInBatches` node
+6. YouTube upload node
+7. Facebook upload node
+8. `Execute Command` nodes to write posted marker files
 
-## 4. Discovery rules used by the scanner
+### Example `Execute Command` node
 
-- Session folder must contain both `session.json` and `step7_publish_info.json`
-- Video priority:
-  1. `result/step6_output_*.*`
-  2. `step6_output.*`
-  3. `step5_output.*`
-  4. `step3_output.*`
-- Thumbnail priority:
-  1. `thumbnail.jpg`
-  2. `thumbnail.jpeg`
-  3. `thumbnail.png`
-  4. `thumbnail.webp`
+- Command: `python`
+- Arguments:
+  - `n8n-automatioin/export_publish_jobs.py`
+  - `{{$json["base_dir"]}}`
+  - `--platform`
+  - `youtube`
+  - `--platform`
+  - `facebook`
+  - `--schedule-interval-hours`
+  - `4`
+  - `--pretty`
 
-## 5. Notes
+### Example `Code` node
 
-- n8n does not need to store the schedule itself. It should call YouTube/Facebook
-  APIs with schedule time, and the platforms will keep the schedule.
-- By default, `export_publish_jobs.py` skips sessions already marked as posted for
-  all selected platforms.
-- Add `--include-posted` if you want to re-export everything.
+```js
+const outputText = $json["stdout"] || $json["text"] || $json["data"];
+const parsed = JSON.parse(outputText);
+return parsed.jobs.map(job => ({ json: job }));
+```
+
+### Example `SplitInBatches`
+
+- Batch size: `1`
+- Keep input data
+
+### Example YouTube node settings
+
+- Video file: `{{$json["video_path"]}}`
+- Title: `{{$json["title"]}}`
+- Description: `{{$json["description"]}}`
+- Scheduled at: `{{$json["scheduled_at"]}}`
+- Thumbnail: `{{$json["thumbnail_path"]}}`
+
+### Example Facebook node settings
+
+- Video or Post text: `{{$json["description"]}}`
+- Scheduled publish time: `{{$json["scheduled_at"]}}`
+- Add video/media from `{{$json["video_path"]}}` or thumbnail if available
+
+## 5. OAuth credentials for YouTube and Facebook
+
+### YouTube API credentials
+
+1. Open Google Cloud Console: https://console.cloud.google.com/
+2. Create/select a project.
+3. Enable `YouTube Data API v3`.
+4. Go to `APIs & Services > Credentials`.
+5. Create `OAuth client ID`:
+   - Application type: `Web application`
+   - Authorized redirect URI: your n8n callback URL, e.g. `https://<your-n8n-host>/rest/oauth2-credential/callback`
+6. Copy `Client ID` and `Client secret`.
+7. In n8n, create a YouTube OAuth2 credential using these values and authorize it.
+
+> Note: YouTube video upload in n8n generally requires OAuth2 authorization, not a plain API key.
+
+### Facebook / Meta credentials
+
+1. Open Meta for Developers: https://developers.facebook.com/
+2. Create a new App.
+3. Add `Facebook Login` and `Pages API`.
+4. In `Settings > Basic`, copy `App ID` and `App Secret`.
+5. In the app, generate a Page access token with these scopes:
+   - `pages_manage_posts`
+   - `pages_read_engagement`
+   - `pages_manage_engagement`
+   - `pages_show_list`
+   - `pages_read_user_content`
+6. In n8n, create a Facebook credential and authorize with the app.
+
+> If the Facebook node accepts a direct access token, use the Page access token.
+
+## 6. What to run
+
+From the repository root:
+
+```powershell
+python n8n-automatioin/export_publish_jobs.py "D:\Downloads\workspace\horror_story" --platform youtube --platform facebook --schedule-interval-hours 4 --pretty
+```
+
+Then process the generated jobs in n8n.
+
+## 7. Notes
+
+- The exporter reads `published_at` from `session.json` first.
+- If missing, it falls back to the folder name prefix `YYYY-MM-DD_...`.
+- Jobs are ordered by original publish date and then by folder name.
+- `scheduled_at` is set every 4 hours in order.
+- Use `--include-posted` to re-export already-posted sessions.
+
+## 8. Troubleshooting
+
+- If there are no jobs, confirm session folders contain `session.json`.
+- If metadata is missing, check `step7_publish_info.json` or `session.json`.
+- If YouTube upload fails, verify OAuth redirect URI and permission scopes.
+- If Facebook posting fails, verify the page token and required permissions.
+
+## 9. Reminder
+
+Always test with a small number of sessions first.

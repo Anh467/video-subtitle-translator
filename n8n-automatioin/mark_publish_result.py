@@ -4,7 +4,7 @@ import argparse
 import json
 from datetime import datetime, timezone
 
-from automation.session_publish_jobs import write_publish_marker
+from session_publish_jobs import write_publish_marker
 
 
 def parse_args() -> argparse.Namespace:

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 POST_MARKERS = {
@@ -22,6 +24,8 @@ class PublishJob:
     title: str
     description: str
     hashtags: list[str]
+    published_at: str
+    scheduled_at: str
     ready: bool
     missing: list[str]
     youtube_posted: bool
@@ -79,22 +83,92 @@ def _normalize_hashtags(value) -> list[str]:
     return []
 
 
+def _extract_published_at(meta: dict, folder_name: str) -> str:
+    published_at = str(meta.get("published_at", "") or "").strip()
+    if published_at:
+        return published_at
+
+    for key in (
+        "publishedAt",
+        "published_at",
+        "publish_date",
+        "uploadedAt",
+        "upload_date",
+        "uploadDate",
+        "published",
+        "create_time",
+    ):
+        if key in meta and meta[key] not in (None, "", 0):
+            value = meta[key]
+            if key == "create_time" and isinstance(value, (int, float)):
+                try:
+                    return (
+                        datetime.utcfromtimestamp(value)
+                        .replace(tzinfo=timezone.utc)
+                        .isoformat()
+                    )
+                except Exception:
+                    pass
+            candidate = str(value).strip()
+            if candidate:
+                return candidate
+
+    match = re.match(r"^(\d{4}[-_]\d{2}[-_]\d{2})", folder_name)
+    if match:
+        date_text = match.group(1).replace("_", "-")
+        try:
+            return datetime.fromisoformat(date_text).date().isoformat()
+        except ValueError:
+            return date_text
+
+    return ""
+
+
+def _parse_datetime(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value)
+    except ValueError:
+        try:
+            dt = datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _extract_hashtags_from_text(text: str) -> list[str]:
+    if not isinstance(text, str):
+        return []
+    return [part for part in text.split() if part.startswith("#")]
+
+
 def build_publish_job(session_dir: str | Path) -> PublishJob | None:
     session_path = Path(session_dir)
     meta_path = session_path / "session.json"
     info_path = session_path / "step7_publish_info.json"
 
-    if not meta_path.exists() or not info_path.exists():
+    if not meta_path.exists():
         return None
 
     meta = _load_json(meta_path)
-    info = _load_json(info_path)
+    info = _load_json(info_path) if info_path.exists() else {}
 
     video_path = _find_video(session_path)
     thumbnail_path = _find_thumbnail(session_path)
-    title = str(info.get("title", "") or "").strip()
-    description = str(info.get("description", "") or "").strip()
-    hashtags = _normalize_hashtags(info.get("hashtags", []))
+    title = str(info.get("title", "") or meta.get("title", "") or "").strip()
+    description = str(
+        info.get("description", "") or meta.get("description", "") or ""
+    ).strip()
+    hashtags = _normalize_hashtags(info.get("hashtags", meta.get("hashtags", "")))
+    if not hashtags:
+        hashtags = _extract_hashtags_from_text(title) or _extract_hashtags_from_text(
+            description
+        )
+
+    published_at = _extract_published_at(meta, session_path.name)
 
     missing = []
     if not video_path:
@@ -110,13 +184,15 @@ def build_publish_job(session_dir: str | Path) -> PublishJob | None:
         session_folder=str(session_path),
         session_name=session_path.name,
         source_file=str(meta.get("source_file", "") or ""),
-        publish_info_path=str(info_path),
+        publish_info_path=str(info_path) if info_path.exists() else "",
         session_meta_path=str(meta_path),
         video_path=video_path,
         thumbnail_path=thumbnail_path,
         title=title,
         description=description,
         hashtags=hashtags,
+        published_at=published_at,
+        scheduled_at="",
         ready=not missing,
         missing=missing,
         youtube_posted=(session_path / POST_MARKERS["youtube"]).exists(),
@@ -153,6 +229,15 @@ def scan_publish_jobs(
             if already_posted:
                 continue
         jobs.append(job)
+
+    def _job_sort_key(job: PublishJob):
+        dt = _parse_datetime(job.published_at)
+        return (
+            dt if dt is not None else datetime.max.replace(tzinfo=timezone.utc),
+            job.session_name.lower(),
+        )
+
+    jobs.sort(key=_job_sort_key)
     return jobs
 
 
