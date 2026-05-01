@@ -7,50 +7,30 @@
       "name": "Execute workflow",
       "type": "n8n-nodes-base.manualTrigger",
       "typeVersion": 1,
-      "position": [620, -140]
-    },
-    {
-      "parameters": {
-        "values": {
-          "string": [
-            {
-              "name": "workspace",
-              "value": "D:\\Downloads\\workspace\\horror_story"
-            },
-            {
-              "name": "schedule_interval_hours",
-              "value": "4"
-            },
-            {
-              "name": "schedule_start",
-              "value": ""
-            }
-          ]
-        },
-        "options": {}
-      },
-      "id": "11111111-1111-4111-8111-111111111102",
-      "name": "1 Workspace (folder chứa các session)",
-      "type": "n8n-nodes-base.set",
-      "typeVersion": 1,
-      "position": [620, 20]
+      "position": [
+        620,
+        -140
+      ]
     },
     {
       "parameters": {
         "mode": "runOnceForAllItems",
         "language": "javaScript",
-        "jsCode": "// === CHỈNH MỘT LẦN: clone repo + Fanpage Facebook (không phải profile cá nhân) ===\nconst REPO_ROOT = String.raw`D:\\Nguyen-Anh-Viet\\Tutorial\\Python\\audio-to-text\\video-subtitle-translator`;\n// ID Fanpage dạng số (hoặc username trang nếu API chấp nhận). Node \"15 Facebook\" gọi Graph: POST /{PAGE_ID}/videos.\nconst FACEBOOK_PAGE_ID = 'YOUR_PAGE_ID';\n\nlet base_dir = String($json.workspace || '').trim();\nif (!base_dir) {\n  throw new Error('Cần \"workspace\": đường dẫn thư mục chứa các folder session.');\n}\nbase_dir = base_dir.replace(/[/\\\\]+$/, '');\nconst norm = base_dir.replace(/\\\\/g, '/').replace(/\\/+$/, '');\nconst log_file = `${norm}/n8n_publish_run.jsonl`;\n\nlet hours = Number($json.schedule_interval_hours);\nif (!Number.isFinite(hours) || hours <= 0) hours = 4;\nlet schedule_args = `--schedule-interval-hours ${hours}`;\nconst schedule_start = String($json.schedule_start || '').trim();\nif (schedule_start) {\n  schedule_args += schedule_start.includes(' ')\n    ? ` --schedule-start \"${schedule_start.replace(/\"/g, '')}\"`\n    : ` --schedule-start ${schedule_start}`;\n}\n\nreturn [\n  {\n    json: {\n      workspace: base_dir,\n      base_dir,\n      repo_root: REPO_ROOT,\n      log_file,\n      facebook_page_id: FACEBOOK_PAGE_ID,\n      schedule_interval_hours: hours,\n      schedule_start,\n      schedule_args,\n    },\n  },\n];"
+        "jsCode": "// ============================================================\n// CHỈ SỬA BLOCK NÀY — không cần node Set; Execute → node này.\n// ============================================================\n// Docker (compose map repo→/repo, session→/workspace):\nconst REPO_ROOT = String.raw`/repo`;\nconst WORKSPACE = String.raw`/workspace`;\n// Windows (native n8n): thay ví dụ\n// const REPO_ROOT = String.raw`D:\\\\path\\\\to\\\\video-subtitle-translator`;\n// const WORKSPACE = String.raw`D:\\\\Downloads\\\\workspace\\\\horror_story`;\n\nconst FACEBOOK_PAGE_ID = '61560996974889';\nconst SCHEDULE_INTERVAL_HOURS = 4;\nconst SCHEDULE_START = '';\n// Nếu cron/n8n không chạy: sau N giờ cho phép quét lại session pending_n8n. 0=tắt.\nconst PENDING_EXPORT_STALE_HOURS = 0;\n// Webhook/Cron có thể gửi workspace / schedule_* — khi có thì được ưu tiên.\n\nconst winDrivePath = (p) => /^[a-zA-Z]:[\\\\/]/.test(String(p || '').trim());\nconst useInputWs = ($json.workspace !== undefined && $json.workspace !== null && String($json.workspace).trim() !== '');\nlet base_dir = String(useInputWs ? $json.workspace : WORKSPACE).trim();\nbase_dir = base_dir.replace(/[/\\\\]+$/, '');\n\nconst repoWin = winDrivePath(REPO_ROOT);\nconst baseWin = winDrivePath(base_dir);\nif (repoWin !== baseWin) {\n  throw new Error(\n    'REPO_ROOT và workspace phải cùng kiểu Windows hoặc cùng Linux/Docker (/repo + /workspace). Không trộn D: với / trong container.',\n  );\n}\n\nconst norm = base_dir.replace(/\\\\/g, '/').replace(/\\/+$/, '');\nconst log_file = `${norm}/n8n_publish_run.jsonl`;\n\nlet hours = Number($json.schedule_interval_hours);\nif (!Number.isFinite(hours) || hours <= 0) hours = SCHEDULE_INTERVAL_HOURS;\nlet schedule_args = `--schedule-interval-hours ${hours}`;\nlet schedule_start = '';\nif ($json.schedule_start !== undefined && $json.schedule_start !== null && String($json.schedule_start).trim() !== '') {\n  schedule_start = String($json.schedule_start).trim();\n} else {\n  schedule_start = String(SCHEDULE_START || '').trim();\n}\nif (schedule_start) {\n  schedule_args += schedule_start.includes(' ')\n    ? ` --schedule-start \"${schedule_start.replace(/\"/g, '')}\"`\n    : ` --schedule-start ${schedule_start}`;\n}\n\nlet staleHours = Number($json.pending_export_stale_hours);\nif (!Number.isFinite(staleHours) || staleHours <= 0) {\n  staleHours = PENDING_EXPORT_STALE_HOURS;\n}\nif (Number.isFinite(staleHours) && staleHours > 0) {\n  schedule_args += ` --pending-export-stale-hours ${staleHours}`;\n}\n\nreturn [\n  {\n    json: {\n      workspace: base_dir,\n      base_dir,\n      repo_root: REPO_ROOT,\n      log_file,\n      facebook_page_id: FACEBOOK_PAGE_ID,\n      schedule_interval_hours: hours,\n      schedule_start,\n      schedule_args,\n    },\n  },\n];"
       },
       "id": "11111111-1111-4111-8111-111111111119",
       "name": "2 Publishing config (sửa 1 lần trong Code)",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [620, 180]
+      "position": [
+        620,
+        20
+      ]
     },
     {
       "parameters": {
-        "content": "## Một cổng vào • Một cú nhấp\n\n**Lỗi** `Unrecognized node type … executeCommand`? n8n **2+** và **Cloud** thường **chặn** node này. Cần **self-host** và bật node: biến **`NODES_EXCLUDE=[]`** rồi restart (chi tiết README **§3.3**).\n\n**Mỗi lần chạy** — node **`1 Workspace`**:\n- **`workspace`**: thư mục cha các session.\n- **`schedule_interval_hours`**: khoảng cách giữa từng video (mặc định `4`).\n- **`schedule_start`**: thời điểm **video đầu tiên** (ISO-8601), ví dụ `2026-05-01T08:00:00+07:00`. Để **trống** → Python dùng `published_at` của session đầu (cùng thứ tự cũ→mới).\n\n**Một lần duy nhất**: **`2 Publishing config`** → `REPO_ROOT`, **`FACEBOOK_PAGE_ID` = ID Fanpage** (số trang bạn quản trị; **không** phải ID profile cá nhân). Node **15 Facebook** gọi API `…/{PAGE_ID}/videos` — video lên **đúng Fanpage đó**.\n\n**Facebook**: Credential **`Facebook Graph API - page token`** phải là **Page Access Token** (token của **Fanpage** / quyền đăng bài lên trang), không dùng token chỉ để đăng lên dòng thời gian cá nhân.\n\n**Thứ tự**: job theo `published_at` tăng dần; mỗi job lệch **`schedule_interval_hours`** so với job trước tính từ **`schedule_start`** (hoặc mốc mặc định).\n\n**Credentials**: `YouTube OAuth2 - publish workspace`, `Facebook Graph API - page token`.\n\n**Khác**: `N8N_RESTRICT_FILE_ACCESS_TO` nếu cần đọc video.",
-        "height": 500,
+        "content": "## Một cổng vào • **Chỉ sửa 1 Code node**\n\n**Một lần** — mở **`2 Publishing config`**: chỉnh `REPO_ROOT`, `WORKSPACE`, `FACEBOOK_PAGE_ID`, `SCHEDULE_INTERVAL_HOURS`, `SCHEDULE_START` trong code (**không còn node Set**). Manual trigger chỉ nhấn **Execute**.\n\n**Docker:** `REPO_ROOT`=`/repo`, `WORKSPACE`=`/workspace` (khớp **docker-compose**). **Không có ổ `D:`** trong container.\n\n**Webhook/Cron:** gửi kèm `workspace` hoặc `schedule_*` thì được ưu tiên thay các hằng trên.\n\n**Credentials:** `YouTube OAuth2 - publish workspace`, `Facebook Graph API - page token` (token **Fanpage**).\n\n**Lỗi** `executeCommand` / **`NODES_EXCLUDE`:** README §3.3.",
+        "height": 580,
         "width": 560,
         "color": 5
       },
@@ -58,57 +38,87 @@
       "name": "Hướng dẫn",
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
-      "position": [60, -180]
+      "position": [
+        60,
+        -180
+      ]
     },
     {
       "parameters": {
         "executeOnce": true,
-        "command": "=cmd /c cd /d {{ $('2 Publishing config (sửa 1 lần trong Code)').item.json.repo_root }} && python n8n-automatioin\\workflow_log_append.py {{ $('2 Publishing config (sửa 1 lần trong Code)').item.json.log_file }} workflow_start --level INFO --message export_begin_workspace={{ $('2 Publishing config (sửa 1 lần trong Code)').item.json.base_dir }}"
+        "command": "=python {{ $('2 Publishing config (sửa 1 lần trong Code)').item.json.repo_root }}/n8n-automatioin/workflow_log_append.py {{ $('2 Publishing config (sửa 1 lần trong Code)').item.json.log_file }} workflow_start --level INFO --message export_begin_workspace={{ $('2 Publishing config (sửa 1 lần trong Code)').item.json.base_dir }}"
       },
       "id": "11111111-1111-4111-8111-111111111103",
       "name": "3 Log • start",
       "type": "n8n-nodes-base.executeCommand",
       "typeVersion": 1,
-      "position": [880, 100]
+      "position": [
+        880,
+        100
+      ]
     },
     {
       "parameters": {
         "executeOnce": true,
-        "command": "=cmd /c cd /d {{ $json.repo_root }} && python n8n-automatioin\\export_publish_jobs.py {{ $json.base_dir }} --platform youtube --platform facebook {{ $json.schedule_args }} --pretty"
+        "command": "=python {{ $json.repo_root }}/n8n-automatioin/export_publish_jobs.py {{ $json.base_dir }} --platform youtube --platform facebook {{ $json.schedule_args }} --pretty"
       },
       "id": "11111111-1111-4111-8111-111111111104",
       "name": "4 Export jobs (Python)",
       "type": "n8n-nodes-base.executeCommand",
       "typeVersion": 1,
-      "position": [620, 340]
+      "position": [
+        620,
+        340
+      ]
     },
     {
       "parameters": {
         "mode": "runOnceForAllItems",
         "language": "javaScript",
-        "jsCode": "const item = $input.first().json;\nconst cfg = $('2 Publishing config (sửa 1 lần trong Code)').first().json;\nconst text = item.stdout ?? item.text ?? '';\nif (item.exitCode !== 0 && item.exitCode !== undefined) {\n  throw new Error(item.stderr || `export failed (exit ${item.exitCode})`);\n}\nconst parsed = JSON.parse(text || '{}');\nif (!Array.isArray(parsed.jobs)) {\n  throw new Error('Exporter JSON must contain a jobs array');\n}\nreturn parsed.jobs.map((job) => ({\n  json: {\n    ...job,\n    repo_root: cfg.repo_root,\n    base_dir: cfg.base_dir,\n    log_file: cfg.log_file,\n    facebook_page_id: cfg.facebook_page_id,\n  },\n}));"
+        "jsCode": "const item = $input.first().json;\nconst cfg = $('2 Publishing config (sửa 1 lần trong Code)').first().json;\nconst text = item.stdout ?? item.text ?? '';\nif (item.exitCode !== 0 && item.exitCode !== undefined) {\n  throw new Error(item.stderr || `export failed (exit ${item.exitCode})`);\n}\nconst parsed = JSON.parse(text || '{}');\nif (!Array.isArray(parsed.jobs)) {\n  throw new Error('Exporter JSON must contain a jobs array');\n}\nif (parsed.jobs.length === 0) {\n  const bd = parsed.base_dir || cfg.base_dir || '';\n  const c = parsed.count;\n  const cnt = c === undefined ? '?' : String(c);\n  throw new Error(\n    'Exporter trả về 0 job (count=' + cnt + ', base_dir=' + bd + '). '\n      + 'Không phải lỗi If/Switch: node sau chỉ chạy khi có ít nhất một job. Kiểm tra workspace hoặc volume Docker; session có đủ video, title, description, thumbnail không; có marker exported-posted không. '\n      + 'Chạy ngoài n8n: export_publish_jobs.py đúng base_dir và thêm các cờ debug và audit.',\n  );\n}\nreturn parsed.jobs.map((job) => ({\n  json: {\n    ...job,\n    repo_root: cfg.repo_root,\n    base_dir: cfg.base_dir,\n    log_file: cfg.log_file,\n    facebook_page_id: cfg.facebook_page_id,\n  },\n}));"
       },
       "id": "11111111-1111-4111-8111-111111111105",
       "name": "5 Split jobs (+ giữ config)",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [620, 500]
+      "position": [
+        620,
+        500
+      ]
     },
     {
       "parameters": {
         "executeOnce": false,
-        "command": "=cmd /c cd /d {{ $json.repo_root }} && python n8n-automatioin\\workflow_log_append.py {{ $json.log_file }} job_begin --level INFO --message session={{ $json.session_name }}"
+        "command": "=python {{ $json.repo_root }}/n8n-automatioin/workflow_log_append.py {{ $json.log_file }} job_begin --level INFO --message session={{ $json.session_name }}"
       },
       "id": "11111111-1111-4111-8111-111111111106",
       "name": "6 Log • job begin",
       "type": "n8n-nodes-base.executeCommand",
       "typeVersion": 1,
-      "position": [620, 660]
+      "position": [
+        620,
+        660
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "const cur = $input.item;\nconst job = $('5 Split jobs (+ giữ config)').item.json;\nconst merged = { ...job, ...(cur.json || {}) };\nconst p = String(merged.video_path || '').trim();\nif (!p) {\n  throw new Error('Missing video_path after job begin log (item pairing?). session=' + String(merged.session_name || '?'));\n}\nmerged.video_path = p.split(String.fromCharCode(92)).join('/');\nreturn { json: merged, binary: cur.binary };"
+      },
+      "id": "11111111-1111-4111-8111-111111111161",
+      "name": "6b Carry job → Read",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        620,
+        740
+      ]
     },
     {
       "parameters": {
         "operation": "read",
-        "fileSelector": "={{ $('5 Split jobs (+ giữ config)').item.json.video_path.split(String.fromCharCode(92)).join('/') }}",
+        "fileSelector": "={{ $json.video_path }}",
         "options": {
           "dataPropertyName": "data"
         }
@@ -117,7 +127,10 @@
       "name": "7 Read video (YouTube)",
       "type": "n8n-nodes-base.readWriteFile",
       "typeVersion": 1,
-      "position": [620, 820],
+      "position": [
+        620,
+        820
+      ],
       "continueOnFail": true,
       "alwaysOutputData": true
     },
@@ -125,34 +138,40 @@
       "parameters": {
         "mode": "runOnceForEachItem",
         "language": "javaScript",
-        "jsCode": "const item = $input.item;\nif (item.json.error) {\n  throw new Error('Read video (YouTube): ' + String(item.json.error));\n}\nif (!item.binary?.data) {\n  throw new Error('Read video (YouTube): missing binary.data');\n}\nreturn item;"
+        "jsCode": "const item = $input.item;\nif (item.json.error) {\n  throw new Error('Read video (YouTube): ' + String(item.json.error));\n}\nif (!item.binary?.data) {\n  throw new Error('Read video (YouTube): missing binary.data');\n}\nconst meta = $('6b Carry job → Read').item?.json ?? {};\nconst sa = String(meta.scheduled_at || '').trim();\nif (!sa) {\n  throw new Error(\n    'YouTube: scheduled_at trống — API chỉ có private, Studio hiện \\\"Riêng tư\\\" (không \\\"Đã lên lịch\\\"). Exporter và node 6b phải có scheduled_at.'\n      ,\n    );\n}\nconst publishMs = Date.parse(sa.includes(' ') ? sa.trim().replace(' ', 'T') : sa.trim());\nif (!Number.isFinite(publishMs)) {\n  throw new Error('YouTube: scheduled_at không phải ISO datetime hợp lệ: ' + sa);\n}\nconst minAheadMs = 11 * 60 * 1000;\nif (publishMs < Date.now() + minAheadMs) {\n  throw new Error(\n    'YouTube: publishAt phải cách \\\"now\\\" ít nhất ~11 phút (RFC3339 tương lai). Nhận được: '\n      + sa\n      + ' — chỉnh schedule_start / interval trong export.'\n      ,\n    );\n}\nreturn item;"
       },
       "id": "11111111-1111-4111-8111-111111111108",
       "name": "8 Check read OK",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [620, 980]
+      "position": [
+        620,
+        980
+      ]
     },
     {
       "parameters": {
         "resource": "video",
         "operation": "upload",
-        "title": "={{ $('5 Split jobs (+ giữ config)').item.json.title }}",
+        "title": "={{ $('6b Carry job → Read').item.json.title }}",
         "regionCode": "US",
         "categoryId": "22",
         "binaryProperty": "data",
         "options": {
-          "description": "={{ $('5 Split jobs (+ giữ config)').item.json.description }}",
+          "description": "={{ $('6b Carry job → Read').item.json.description }}",
           "privacyStatus": "private",
-          "publishAt": "={{ $('5 Split jobs (+ giữ config)').item.json.scheduled_at }}",
-          "tags": "={{ (($('5 Split jobs (+ giữ config)').item.json.hashtags) || []).join(',') }}"
+          "publishAt": "={{ $('6b Carry job → Read').item.json.scheduled_at }}",
+          "tags": "={{ ($('6b Carry job → Read').item.json.hashtags || []).join(',') }}"
         }
       },
       "id": "11111111-1111-4111-8111-111111111109",
       "name": "9 YouTube upload",
       "type": "n8n-nodes-base.youTube",
       "typeVersion": 1,
-      "position": [620, 1140],
+      "position": [
+        620,
+        1140
+      ],
       "credentials": {
         "youTubeOAuth2Api": {
           "name": "YouTube OAuth2 - publish workspace"
@@ -163,40 +182,64 @@
       "parameters": {
         "mode": "runOnceForEachItem",
         "language": "javaScript",
-        "jsCode": "const j = $input.item.json;\nif (j.error) {\n  throw new Error('YouTube API: ' + JSON.stringify(j.error).slice(0, 800));\n}\nif (!j.id) {\n  throw new Error('YouTube: no video id in response: ' + JSON.stringify(j).slice(0, 800));\n}\nreturn $input.item;"
+        "jsCode": "const item = $input.item;\nconst j = item.json || {};\nconst meta = $('6b Carry job → Read').item?.json || {};\nif (j.error) {\n  throw new Error('YouTube API: ' + JSON.stringify(j.error).slice(0, 800));\n}\nconst id =\n  j.id || j.uploadId || j.video_id || j.videoId || j.data?.id || j.data?.uploadId;\nif (!id) {\n  throw new Error(\n    'YouTube: no video id (expected id/uploadId/video_id): ' + JSON.stringify(j).slice(0, 800),\n  );\n}\nitem.json = { ...meta, ...j, id: String(id) };\nreturn item;"
       },
       "id": "11111111-1111-4111-8111-111111111110",
       "name": "10 Check YouTube OK",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [620, 1300]
+      "position": [
+        620,
+        1300
+      ]
     },
     {
       "parameters": {
         "executeOnce": false,
-        "command": "=cmd /c cd /d {{ $('5 Split jobs (+ giữ config)').item.json.repo_root }} && python n8n-automatioin\\mark_publish_result.py \"{{ $('5 Split jobs (+ giữ config)').item.json.session_folder }}\" --platform youtube --remote-id {{ $json.id }} --url https://www.youtube.com/watch?v={{ $json.id }} --scheduled-at \"{{ $('5 Split jobs (+ giữ config)').item.json.scheduled_at }}\""
+        "command": "=python {{ $json.repo_root }}/n8n-automatioin/mark_publish_result.py \"{{ $json.session_folder }}\" --platform youtube --remote-id {{ $json.id }} --url https://www.youtube.com/watch?v={{ $json.id }} --scheduled-at \"{{ $json.scheduled_at }}\""
       },
       "id": "11111111-1111-4111-8111-111111111112",
       "name": "11 Mark YouTube đã đăng",
       "type": "n8n-nodes-base.executeCommand",
       "typeVersion": 1,
-      "position": [620, 1460]
+      "position": [
+        620,
+        1460
+      ]
     },
     {
       "parameters": {
         "executeOnce": false,
-        "command": "=cmd /c cd /d {{ $('5 Split jobs (+ giữ config)').item.json.repo_root }} && python n8n-automatioin\\workflow_log_append.py {{ $('5 Split jobs (+ giữ config)').item.json.log_file }} youtube_ok --level INFO --message video_id={{ $('9 YouTube upload').item.json.id }} session={{ $('5 Split jobs (+ giữ config)').item.json.session_name }}"
+        "command": "=python {{ $('10 Check YouTube OK').item.json.repo_root }}/n8n-automatioin/workflow_log_append.py {{ $('10 Check YouTube OK').item.json.log_file }} youtube_ok --level INFO --message video_id={{ $('10 Check YouTube OK').item.json.id }} session={{ $('10 Check YouTube OK').item.json.session_name }}"
       },
       "id": "11111111-1111-4111-8111-111111111111",
       "name": "12 Log • YouTube OK",
       "type": "n8n-nodes-base.executeCommand",
       "typeVersion": 1,
-      "position": [620, 1620]
+      "position": [
+        620,
+        1620
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "const cur = $input.item;\nconst job = $('5 Split jobs (+ giữ config)').item.json;\nconst merged = { ...job, ...(cur.json || {}) };\nconst p = String(merged.video_path || '').trim();\nif (!p) {\n  throw new Error('Missing video_path before Facebook read (item pairing?). session=' + String(merged.session_name || '?'));\n}\nmerged.video_path = p.split(String.fromCharCode(92)).join('/');\nreturn { json: merged, binary: cur.binary };"
+      },
+      "id": "11111111-1111-4111-8111-111111111162",
+      "name": "12b Carry job → Read FB",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        620,
+        1700
+      ]
     },
     {
       "parameters": {
         "operation": "read",
-        "fileSelector": "={{ $('5 Split jobs (+ giữ config)').item.json.video_path.split(String.fromCharCode(92)).join('/') }}",
+        "fileSelector": "={{ $json.video_path }}",
         "options": {
           "dataPropertyName": "data"
         }
@@ -205,7 +248,10 @@
       "name": "13 Read video (Facebook)",
       "type": "n8n-nodes-base.readWriteFile",
       "typeVersion": 1,
-      "position": [620, 1780],
+      "position": [
+        620,
+        1780
+      ],
       "continueOnFail": true,
       "alwaysOutputData": true
     },
@@ -219,14 +265,17 @@
       "name": "14 Check read OK • FB",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [620, 1940]
+      "position": [
+        620,
+        1940
+      ]
     },
     {
       "parameters": {
         "hostUrl": "graph-video.facebook.com",
         "httpRequestMethod": "POST",
         "graphApiVersion": "v21.0",
-        "node": "={{ $('5 Split jobs (+ giữ config)').item.json.facebook_page_id }}",
+        "node": "={{ $('12b Carry job → Read FB').item.json.facebook_page_id }}",
         "edge": "videos",
         "sendBinaryData": true,
         "binaryPropertyName": "source:data",
@@ -235,7 +284,23 @@
             "parameter": [
               {
                 "name": "description",
-                "value": "={{ $('5 Split jobs (+ giữ config)').item.json.description }}"
+                "value": "={{ $('12b Carry job → Read FB').item.json.description }}"
+              },
+              {
+                "name": "title",
+                "value": "={{ $('12b Carry job → Read FB').item.json.title }}"
+              },
+              {
+                "name": "published",
+                "value": "={{ false }}"
+              },
+              {
+                "name": "scheduled_publish_time",
+                "value": "={{ Number($('12b Carry job → Read FB').item.json.scheduled_publish_unix) }}"
+              },
+              {
+                "name": "unpublished_content_type",
+                "value": "={{ 'SCHEDULED' }}"
               }
             ]
           }
@@ -245,7 +310,10 @@
       "name": "15 Facebook • upload video",
       "type": "n8n-nodes-base.facebookGraphApi",
       "typeVersion": 1,
-      "position": [620, 2100],
+      "position": [
+        620,
+        2100
+      ],
       "credentials": {
         "facebookGraphApi": {
           "name": "Facebook Graph API - page token"
@@ -264,44 +332,42 @@
       "name": "16 Check Facebook OK",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [620, 2260]
+      "position": [
+        620,
+        2260
+      ]
     },
     {
       "parameters": {
         "executeOnce": false,
-        "command": "=cmd /c cd /d {{ $('5 Split jobs (+ giữ config)').item.json.repo_root }} && python n8n-automatioin\\mark_publish_result.py \"{{ $('5 Split jobs (+ giữ config)').item.json.session_folder }}\" --platform facebook --remote-id {{ $json.id }} --url https://www.facebook.com/watch/?v={{ $json.id }} --scheduled-at \"{{ $('5 Split jobs (+ giữ config)').item.json.scheduled_at }}\""
+        "command": "=python {{ $('14 Check read OK • FB').item.json.repo_root }}/n8n-automatioin/mark_publish_result.py \"{{ $('14 Check read OK • FB').item.json.session_folder }}\" --platform facebook --remote-id {{ $json.id }} --url https://www.facebook.com/watch/?v={{ $json.id }} --scheduled-at \"{{ $('14 Check read OK • FB').item.json.scheduled_at }}\""
       },
       "id": "11111111-1111-4111-8111-111111111118",
       "name": "17 Mark Facebook đã đăng",
       "type": "n8n-nodes-base.executeCommand",
       "typeVersion": 1,
-      "position": [620, 2420]
+      "position": [
+        620,
+        2420
+      ]
     },
     {
       "parameters": {
         "executeOnce": false,
-        "command": "=cmd /c cd /d {{ $('5 Split jobs (+ giữ config)').item.json.repo_root }} && python n8n-automatioin\\workflow_log_append.py {{ $('5 Split jobs (+ giữ config)').item.json.log_file }} facebook_ok --level INFO --message fb_video_id={{ $('15 Facebook • upload video').item.json.id }} session={{ $('5 Split jobs (+ giữ config)').item.json.session_name }}"
+        "command": "=python {{ $('14 Check read OK • FB').item.json.repo_root }}/n8n-automatioin/workflow_log_append.py {{ $('14 Check read OK • FB').item.json.log_file }} facebook_ok --level INFO --message fb_video_id={{ $('15 Facebook • upload video').item.json.id }} session={{ $('14 Check read OK • FB').item.json.session_name }}"
       },
       "id": "11111111-1111-4111-8111-111111111117",
       "name": "18 Log • Facebook OK",
       "type": "n8n-nodes-base.executeCommand",
       "typeVersion": 1,
-      "position": [620, 2580]
+      "position": [
+        620,
+        2580
+      ]
     }
   ],
   "connections": {
     "Execute workflow": {
-      "main": [
-        [
-          {
-            "node": "1 Workspace (folder chứa các session)",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "1 Workspace (folder chứa các session)": {
       "main": [
         [
           {
@@ -351,6 +417,17 @@
       ]
     },
     "6 Log • job begin": {
+      "main": [
+        [
+          {
+            "node": "6b Carry job → Read",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "6b Carry job → Read": {
       "main": [
         [
           {
@@ -417,6 +494,17 @@
       ]
     },
     "12 Log • YouTube OK": {
+      "main": [
+        [
+          {
+            "node": "12b Carry job → Read FB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "12b Carry job → Read FB": {
       "main": [
         [
           {

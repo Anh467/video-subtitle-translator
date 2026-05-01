@@ -6,7 +6,11 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from session_publish_jobs import scan_publish_jobs, write_export_marker
+from session_publish_jobs import (
+    EXPORT_STATUS_PENDING,
+    scan_publish_jobs,
+    write_export_marker,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -92,6 +96,16 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Pretty-print output JSON",
     )
+    parser.add_argument(
+        "--pending-export-stale-hours",
+        type=float,
+        default=None,
+        help=(
+            "Re-include sessions whose export marker status is pending_n8n "
+            "and exported_at is older than this many hours "
+            "(recovery when cron/n8n never ran). Omit or <=0 disables."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -108,6 +122,9 @@ def main() -> int:
     args = parse_args()
     platforms = tuple(args.platforms or ["youtube", "facebook"])
     audit_rows: list[tuple[str, str]] | None = [] if args.audit else None
+    stale_hours = args.pending_export_stale_hours
+    if stale_hours is not None and stale_hours <= 0:
+        stale_hours = None
     jobs = scan_publish_jobs(
         base_dir=args.base_dir,
         platforms=platforms,
@@ -118,6 +135,7 @@ def main() -> int:
         debug=args.debug,
         thumbnail_patterns=tuple(args.thumbnail_patterns or []),
         audit=audit_rows,
+        pending_export_stale_hours=stale_hours,
     )
     if audit_rows is not None:
         for folder, outcome in audit_rows:
@@ -130,16 +148,27 @@ def main() -> int:
         schedule_start = _parse_datetime(jobs[0].published_at)
     if schedule_start is None:
         schedule_start = datetime.now(timezone.utc)
+    if schedule_start.tzinfo is None:
+        schedule_start = schedule_start.replace(tzinfo=timezone.utc)
+
+    min_start = datetime.now(timezone.utc) + timedelta(minutes=11)
+    if schedule_start < min_start:
+        schedule_start = min_start
 
     interval = timedelta(hours=args.schedule_interval_hours)
     for index, job in enumerate(jobs):
-        job.scheduled_at = (schedule_start + interval * index).isoformat()
+        slot = schedule_start + interval * index
+        if slot.tzinfo is None:
+            slot = slot.replace(tzinfo=timezone.utc)
+        job.scheduled_at = slot.isoformat()
+        job.scheduled_publish_unix = int(slot.timestamp())
 
     marker_paths: list[str] = []
     if not args.no_mark_exported:
         exported_at = datetime.now(timezone.utc).isoformat()
         for job in jobs:
             marker_payload = {
+                "status": EXPORT_STATUS_PENDING,
                 "exported_at": exported_at,
                 "scheduled_at": job.scheduled_at,
                 "platforms": list(platforms),
@@ -163,6 +192,7 @@ def main() -> int:
         "base_dir": str(Path(args.base_dir)),
         "platforms": list(platforms),
         "count": len(jobs),
+        "pending_export_stale_hours": stale_hours,
         "mark_exported": not args.no_mark_exported,
         "marker_paths": marker_paths,
         "jobs": [
@@ -171,6 +201,7 @@ def main() -> int:
                 "session_folder": job.session_folder,
                 "scheduled_at": job.scheduled_at,
                 "exported": job.exported,
+                "export_marker_status": job.export_marker_status,
             }
             for job in jobs
         ],
