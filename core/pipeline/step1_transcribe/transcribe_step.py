@@ -1,13 +1,7 @@
-"""Step 1 — Transcribe audio/video → transcript + timestamps.
-
-Backends:
-  local  → Whisper local model (free, needs RAM/GPU)
-  api    → OpenAI Whisper API (~$0.006/min, no local install needed)
-"""
+"""Step 1 — transcribe (UI + Whisper local/API)."""
 
 import os
 import time
-from dataclasses import dataclass
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
@@ -21,46 +15,14 @@ from PyQt6.QtWidgets import (
 )
 
 from core.pipeline.base import BaseStep, CancelledError
-
-SUPPORTED_AUDIO = {".mp3", ".wav", ".m4a", ".flac", ".ogg", ".aac", ".wma"}
-SUPPORTED_VIDEO = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".flv", ".wmv"}
-SUPPORTED_FORMATS = SUPPORTED_AUDIO | SUPPORTED_VIDEO
-WHISPER_MODELS = ["tiny", "base", "small", "medium", "large"]
-WHISPER_API_COST_PER_MINUTE = 0.006
-
-LANGUAGES = {
-    "Auto detect": None,
-    "Vietnamese": "vi",
-    "English": "en",
-    "Japanese": "ja",
-    "Korean": "ko",
-    "Chinese": "zh",
-    "French": "fr",
-    "German": "de",
-    "Spanish": "es",
-    "Thai": "th",
-    "Indonesian": "id",
-}
-
-
-def _fmt(s):
-    return f"{s:.2f}s" if s < 60 else f"{int(s//60)}m {s%60:.1f}s"
-
-
-@dataclass
-class Segment:
-    start: float
-    end: float
-    text: str
-
-
-@dataclass
-class TranscriptResult:
-    text: str
-    segments: list
-    language: str
-    source_file: str
-
+from core.pipeline.step1_transcribe.constants import (
+    LANGUAGES,
+    SUPPORTED_AUDIO,
+    SUPPORTED_VIDEO,
+    WHISPER_MODELS,
+)
+from core.pipeline.step1_transcribe.format_utils import format_elapsed
+from core.pipeline.step1_transcribe.models import Segment, TranscriptResult
 
 class TranscribeStep(BaseStep):
     STEP_ID = "step1_transcribe"
@@ -166,7 +128,7 @@ class TranscribeStep(BaseStep):
             )
             if r.returncode != 0:
                 raise RuntimeError(f"ffmpeg error:\n{r.stderr}")
-            log(f"✅ Audio extracted (+{_fmt(time.perf_counter()-t1)})")
+            log(f"✅ Audio extracted (+{format_elapsed(time.perf_counter()-t1)})")
             audio_path = tmp_audio
 
         if cancel.is_set():
@@ -193,7 +155,7 @@ class TranscribeStep(BaseStep):
             if tmp_audio and os.path.exists(tmp_audio):
                 os.unlink(tmp_audio)
 
-        log(f"✅ Transcription done (+{_fmt(time.perf_counter()-t1)})")
+        log(f"✅ Transcription done (+{format_elapsed(time.perf_counter()-t1)})")
 
         lang = getattr(response, "language", language or "unknown")
         raw_segs = getattr(response, "segments", []) or []
@@ -216,7 +178,7 @@ class TranscribeStep(BaseStep):
             significant = [g for g in gaps if g > 0.5]
             log(
                 f"🌐 Detected: {lang}  |  {len(segs)} segs  |  "
-                f"{_fmt(segs[-1].end if segs else 0)}"
+                f"{format_elapsed(segs[-1].end if segs else 0)}"
             )
             if significant:
                 log(
@@ -280,7 +242,7 @@ class TranscribeStep(BaseStep):
             )
             if r.returncode != 0:
                 raise RuntimeError(f"ffmpeg error:\n{r.stderr}")
-            log(f"✅ Audio extracted (+{_fmt(time.perf_counter()-t1)})")
+            log(f"✅ Audio extracted (+{format_elapsed(time.perf_counter()-t1)})")
             audio_path = tmp
 
         if cancel.is_set():
@@ -327,7 +289,7 @@ class TranscribeStep(BaseStep):
 
         if r.returncode != 0:
             raise RuntimeError(f"Whisper subprocess error:\n{r.stderr[-2000:]}")
-        log(f"✅ Transcription done (+{_fmt(time.perf_counter()-t1)})")
+        log(f"✅ Transcription done (+{format_elapsed(time.perf_counter()-t1)})")
 
         raw = json.loads(r.stdout)
         lang = raw.get("language", "unknown")
@@ -347,7 +309,7 @@ class TranscribeStep(BaseStep):
             significant_gaps = [g for g in gaps if g > 0.5]
             log(
                 f"🌐 Detected: {lang}  |  {len(segs)} segs  |  "
-                f"{_fmt(segs[-1].end if segs else 0)}"
+                f"{format_elapsed(segs[-1].end if segs else 0)}"
             )
             log(
                 f"   Gaps: {len(significant_gaps)} pauses >{0.5}s detected "

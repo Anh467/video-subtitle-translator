@@ -1,6 +1,4 @@
-"""
-Step 5 — TTS generation only (single or multi backend).
-"""
+"""Step 5 — Text-to-Speech (UI + backends)."""
 
 import json
 import os
@@ -20,28 +18,16 @@ from PyQt6.QtWidgets import (
 )
 
 from core.pipeline.base import BaseStep, CancelledError
-from core.pipeline.step5_budget import (
+from core.pipeline.selection import (
+    expand_tts_backends,
+    tts_backend_from_label,
+)
+from core.pipeline.step5_tts.budget import (
     COST_PER_1M,
     count_translated_chars,
     format_tts_cost_estimate,
 )
-from core.pipeline.selection import (
-    TTS_BACKEND_LABEL_TO_KEY,
-    expand_tts_backends,
-    tts_backend_from_label,
-)
-
-TTS_BACKENDS = dict(TTS_BACKEND_LABEL_TO_KEY)
-GTTS_LANGS = {
-    "Vietnamese": "vi",
-    "English": "en",
-    "Japanese": "ja",
-    "Korean": "ko",
-    "Chinese": "zh-CN",
-    "French": "fr",
-    "German": "de",
-    "Spanish": "es",
-}
+from core.pipeline.step5_tts.constants import GTTS_LANGS, TTS_BACKENDS
 
 class TTSStep(BaseStep):
     STEP_ID = "step5_tts"

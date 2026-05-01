@@ -1,4 +1,4 @@
-"""Translated-character counting and USD/VND cost hints for Step 5 TTS."""
+"""TTS cost table and translated-character estimates (USD/VND hints)."""
 
 from __future__ import annotations
 

@@ -1,4 +1,6 @@
-"""Step 7 — generate publish info (title, description, hashtags, thumbnail)."""
+"""Publish info pipeline (LLM text + thumbnail).
+
+(Package entry lives in ``core.pipeline.step7_publish``.)"""
 
 from __future__ import annotations
 
@@ -33,7 +35,7 @@ from PyQt6.QtWidgets import (
 
 from core.api_keys import get_key
 from core.pipeline.base import BaseStep, CancelledError
-from core.pipeline.step7_stop_words import STOP_WORDS
+from core.pipeline.step7_publish.stop_words import STOP_WORDS
 
 
 class PublishInfoStep(BaseStep):

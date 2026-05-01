@@ -46,7 +46,7 @@ def load_channel_profiles(base_dir: str) -> dict:
             display_name = entry.name
         if not display_name:
             continue
-        avatar_file = _find_avatar_in_dir(entry)
+        avatar_file = find_avatar_in_dir(entry)
         profiles[display_name] = {
             "avatar": str(avatar_file) if avatar_file else "",
             "folder": str(entry),
@@ -57,7 +57,7 @@ def load_channel_profiles(base_dir: str) -> dict:
 def store_profile_image(base_dir: str, src_path: str, profile_name: str) -> str:
     root = profiles_root(base_dir)
     root.mkdir(parents=True, exist_ok=True)
-    profile_dir = root / _safe_profile_dir_name(profile_name)
+    profile_dir = root / safe_profile_dir_name(profile_name)
     profile_dir.mkdir(parents=True, exist_ok=True)
     src = Path(src_path)
     ext = src.suffix.lower() or ".png"

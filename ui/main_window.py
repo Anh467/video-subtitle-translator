@@ -30,7 +30,7 @@ from core.pipeline.step3_burn import BurnStep
 from core.pipeline.step4_separate import SeparateStep
 from core.pipeline.step5_tts import TTSStep
 from core.pipeline.step6_add_voice import AddVoiceStep
-from core.pipeline.step7_publish_info import PublishInfoStep
+from core.pipeline.step7_publish import PublishInfoStep
 from core.session import Session
 from ui.multi_session_window import MultiSessionWindow
 from ui.widgets.drop_zone import SUPPORTED, DropZone

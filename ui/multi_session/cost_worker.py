@@ -6,7 +6,7 @@ from PyQt6.QtCore import QObject, QRunnable, pyqtSignal
 
 from core.pipeline.step1_transcribe import WHISPER_API_COST_PER_MINUTE
 from core.pipeline.step2_translate import TRANSLATION_COST_PER_1M_CHARS
-from core.pipeline.step5_budget import COST_PER_1M as TTS_COST_PER_1M
+from core.pipeline.step5_tts import COST_PER_1M as TTS_COST_PER_1M
 from core.session import Session
 
 

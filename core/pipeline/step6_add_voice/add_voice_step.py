@@ -1,4 +1,4 @@
-"""Step 6 — compose saved TTS assets and mux into final video."""
+"""Step 6 — mux TTS / BGM into final video."""
 
 import json
 import os
@@ -24,27 +24,12 @@ from PyQt6.QtWidgets import (
 )
 
 from core.pipeline.base import BaseStep, CancelledError
+from core.pipeline.step6_add_voice.constants import BACKEND_LABELS, MIX_MODES, VIDEO_EXTS
 from core.pipeline.tts_assets import (
     compose_timeline_audio,
     resolve_manifests,
     resolve_single_tts_path,
 )
-
-MIX_MODES = {
-    "TTS only (replace original)": "replace",
-    "TTS + Background music (Step 4)": "bgm_only",
-    "TTS + BGM + Original voice (low vol)": "full_mix",
-}
-VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".flv", ".wmv"}
-
-BACKEND_LABELS = {
-    "google_cloud_tts": "Google Cloud TTS",
-    "openai_tts": "OpenAI TTS",
-    "fpt": "FPT TTS",
-    "zalo": "Zalo TTS",
-    "gtts": "gTTS",
-    "elevenlabs": "ElevenLabs",
-}
 
 
 class AddVoiceStep(BaseStep):
