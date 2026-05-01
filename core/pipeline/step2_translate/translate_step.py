@@ -1,20 +1,5 @@
 """
-Step 2 — Translate transcript segments with context awareness.
-
-Backends:
-  google   → Chunk mode (free, no key) — gộp nhiều segment, ít lỗi hơn
-  gemini   → Gemini Flash (FREE, 1500 req/day) — context-aware, tốt nhất free
-  openai   → GPT-4o-mini — context-aware + verify pass, tốt nhất overall
-
-Context-aware modes (Gemini/OpenAI):
-  - Gửi N segment trước/sau làm context
-  - Tự extract character summary từ 20 segment đầu
-  - Optional: verify pass để fix đại từ/tên không nhất quán
-
-Optimization (concurrent mode):
-  - Gemini: 2 concurrent workers + adaptive retry thay vì sleep(4) cứng
-  - OpenAI: 5 concurrent workers (rate limit cao hơn nhiều)
-  - Google: đã có 3 workers từ trước, giữ nguyên
+Step 2 — Translate transcript segments (UI + backends).
 """
 
 import concurrent.futures
@@ -22,7 +7,6 @@ import os
 import re
 import threading
 import time
-from dataclasses import dataclass
 
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -41,132 +25,14 @@ from core.pipeline.selection import (
     translate_backend_from_index,
     verify_backend_from_index,
 )
-
-LANGUAGES = {
-    "Vietnamese": "vi",
-    "English": "en",
-    "Japanese": "ja",
-    "Korean": "ko",
-    "Chinese (Simplified)": "zh-CN",
-    "French": "fr",
-    "German": "de",
-    "Spanish": "es",
-    "Thai": "th",
-    "Indonesian": "id",
-}
-LANG_NAMES = {v: k for k, v in LANGUAGES.items()}
-
-# Approximate cost per 1M translated characters for Step 2.
-TRANSLATION_COST_PER_1M_CHARS = {
-    "gemini": 0.0,
-    "google": 0.0,
-    "openai": 2.0,
-    "openai_gpt4o": 2.0,
-}
-
-CHUNK_SEP = "|||"  # separator cho Google chunk mode
-
-
-@dataclass
-class TranslatedSegment:
-    start: float
-    end: float
-    original: str
-    translated: str
-
-
-# ── SmartFixer — rule-based + context logic ───────────────────────────────────
-
-
-class SmartFixer:
-    ZH_VI_RULES = [
-        (["cô ấy là bố", "bà ấy là bố", "cô ta là bố"], "爸爸", "Đây là bố"),
-        (["cô ấy là anh", "bà ấy là anh"], "哥哥", "Đây là anh"),
-        (["cô ấy là ông", "bà ấy là ông"], "爷爷", "Đây là ông"),
-        (["cô ấy là chú", "bà ấy là chú"], "叔叔", "Đây là chú"),
-        (["anh ấy là mẹ", "ông ấy là mẹ"], "妈妈", "Đây là mẹ"),
-        (["anh ấy là chị", "ông ấy là chị"], "姐姐", "Đây là chị"),
-        (["anh ấy là bà", "ông ấy là bà"], "奶奶", "Đây là bà"),
-        (["đây là của tôi bố"], "爸爸", "Đây là bố tôi"),
-        (["đây là của tôi mẹ"], "妈妈", "Đây là mẹ tôi"),
-    ]
-
-    WORD_FIXES_VI = {
-        "cô ấy là bố tôi": "Đây là bố tôi",
-        "cô ấy là anh tôi": "Đây là anh tôi",
-        "cô ấy là ông tôi": "Đây là ông tôi",
-        "bà ấy là bố tôi": "Đây là bố tôi",
-        "bà ấy là anh tôi": "Đây là anh tôi",
-        "anh ấy là mẹ tôi": "Đây là mẹ tôi",
-        "anh ấy là chị tôi": "Đây là chị tôi",
-        "ông ấy là mẹ tôi": "Đây là mẹ tôi",
-    }
-
-    def __init__(self, src_lang="zh", tgt_lang="vi"):
-        self.src_lang = src_lang.lower()
-        self.tgt_lang = tgt_lang.lower()
-
-    def fix(self, original, translated, prev_segs=None, next_segs=None):
-        t = translated.strip()
-        if not t:
-            return translated
-        t = self._word_fix(t)
-        if self.src_lang in ("zh", "zh-cn", "zh-tw"):
-            t = self._zh_pronoun_fix(original, t)
-        if prev_segs or next_segs:
-            t = self._context_pronoun_fix(original, t, prev_segs, next_segs)
-        return t
-
-    def _word_fix(self, text):
-        lower = text.lower()
-        for wrong, correct in self.WORD_FIXES_VI.items():
-            if wrong in lower:
-                return text[: len(text) - len(text.lstrip())] + correct
-        return text
-
-    def _zh_pronoun_fix(self, original, translated):
-        tl = translated.lower()
-        for patterns, zh_keyword, replacement in self.ZH_VI_RULES:
-            if zh_keyword in original:
-                for p in patterns:
-                    if p in tl:
-                        return (
-                            replacement
-                            + translated[translated.lower().index(p) + len(p) :]
-                        )
-        return translated
-
-    def _context_pronoun_fix(self, original, translated, prev_segs, next_segs):
-        tl = translated.lower()
-        all_neighbours = list(prev_segs or []) + list(next_segs or [])
-        neighbour_originals = " ".join(
-            s.original for s in all_neighbours if hasattr(s, "original")
-        )
-        neighbour_translated = " ".join(
-            s.translated for s in all_neighbours if hasattr(s, "translated")
-        )
-        if "爸爸" in neighbour_originals or "bố" in neighbour_translated:
-            if "cô ấy" in tl or "bà ấy" in tl:
-                fixed = (
-                    translated.replace("Cô ấy", "Ông ấy")
-                    .replace("cô ấy", "ông ấy")
-                    .replace("Bà ấy", "Ông ấy")
-                    .replace("bà ấy", "ông ấy")
-                )
-                if fixed != translated:
-                    return fixed
-        if "妈妈" in neighbour_originals or "mẹ" in neighbour_translated:
-            if "anh ấy" in tl or "ông ấy" in tl:
-                fixed = (
-                    translated.replace("Anh ấy", "Cô ấy")
-                    .replace("anh ấy", "cô ấy")
-                    .replace("Ông ấy", "Cô ấy")
-                    .replace("ông ấy", "cô ấy")
-                )
-                if fixed != translated:
-                    return fixed
-        return translated
-
+from core.pipeline.step2_translate.constants import (
+    CHUNK_SEP,
+    LANGUAGES,
+    LANG_NAMES,
+    TRANSLATION_COST_PER_1M_CHARS,
+)
+from core.pipeline.step2_translate.segment import TranslatedSegment
+from core.pipeline.step2_translate.smart_fixer import SmartFixer
 
 class TranslateStep(BaseStep):
     STEP_ID = "step2_translate"
