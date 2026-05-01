@@ -155,14 +155,51 @@ then reuse the workflow for each publish batch.
 If n8n receives `count: 0`, run Section 2 from the shell with **`--debug`** or
 **`--audit`** to see `incomplete`, `exported`, or `posted` skips before fixing the graph.
 
+### 3.6 Import a ready-made workflow (JSON templates)
+
+There are two workflow files under `n8n-automatioin/workflows/`:
+
+| File | Purpose |
+|------|---------|
+| **`publish_sessions.template.json`** | Full path: export jobs → read video from disk → **YouTube upload** → markers → **Facebook Graph** (video) → markers, with **Code** assertion steps and **Execute Command** logging. |
+| **`publish_sessions_error.template.json`** | Optional **Error Trigger** chain that appends one JSON line to an error log via `workflow_log_append.py`. |
+
+#### Import steps (main workflow)
+
+1. n8n → **Workflows** → **Import from File** (or drag onto the canvas).
+2. Open **`n8n-automatioin/workflows/publish_sessions.template.json`**.
+3. **One input field on each run** — **`Execute workflow`** exposes only **`workspace`**: parent folder containing your sessions (what you pass today as `--base-dir` / `workspace`).
+4. **Edit once after import** — open the **Code** node **`2 Publishing config (sửa 1 lần trong Code)`** and adjust:
+   - **`REPO_ROOT`**: repo root (`String.raw` …), folder that contains `n8n-automatioin/`.
+   - **`FACEBOOK_PAGE_ID`**: numeric Page ID for `/{page-id}/videos` (`YOUR_PAGE_ID` placeholder).
+   - The snippet trims **`workspace`** to **`base_dir`**, derives **`log_file`** as `<normalized workspace>/n8n_publish_run.jsonl`, and outputs one object (**`repo_root`, `base_dir`, `log_file`, `facebook_page_id`**) used by **`Execute Command`** and logging nodes downstream.
+5. **Credentials (single naming convention)** — in n8n **Credentials**, create and authorize:
+   - **YouTube OAuth2 API** named exactly **`YouTube OAuth2 - publish workspace`** (used by the **YouTube upload** node).
+   - **Facebook Graph API** named exactly **`Facebook Graph API - page token`** (Page access token with video upload permissions).
+
+   After import, if n8n reports missing credentials, open each node and **re-select** credentials with these names (or rename your saved credentials to match the names in the workflow JSON).
+
+6. **Read/Write Files from Disk** — the template reads `video_path` from the host. Self‑hosted n8n may require **`N8N_RESTRICT_FILE_ACCESS_TO`** (comma‑separated dirs) to include your **workspace** and **repo** directories. See [Read/Write Files from Disk](https://docs.n8n.io/integrations/builtin/core-nodes/n8n-nodes-base.readwritefile/).
+
+7. If **`repo_root` or paths contain spaces**, edit each **Execute Command** `cd /d` segment to wrap the path in quotes.
+
+8. **Logging** — Python helper **`n8n-automatioin/workflow_log_append.py`** appends one JSON object per line with `ts`, `level`, `event`, and optional `message` / `data`. The main workflow writes events such as `workflow_start`, `job_begin`, `youtube_ok`, `facebook_ok`.
+
+9. **Optional error workflow** — import **`publish_sessions_error.template.json`**, edit **Set error paths**, then in the **main** workflow’s **Settings**, set **Error workflow** to this workflow (or attach it in your n8n deployment as documented). Failed runs then append a row to your **error** JSONL with `event: workflow_error` and `level: ERROR`.
+
+**Job order** — `session_publish_jobs.py` outputs jobs sorted by **`published_at`** ascending (oldest first), so one **Execute** run posts in chronological “public time” order.
+
+After import, n8n may migrate node versions (e.g. **Set** v1 → newer); that is normal.
+**Execute Command** must be allowed (Section 3.3); use self‑hosted n8n if your host disables it.
+
 ## 4. Recommended workflow overview and node examples
 
-End-to-end order (matches Section 3.4):
+End-to-end order (aligned with **`publish_sessions.template.json`**):
 
-1. `Manual Trigger` or `Cron Trigger`
-2. `Set` with `base_dir` (e.g. `D:\Downloads\workspace\horror_story`)
-3. `Execute Command` → `export_publish_jobs.py`
-4. `Code` → parse exporter JSON stdout into one row per job
+1. **`Execute workflow`** (manual “sub‑workflow”) with **`workspace`** only, or a trigger that forwards the same field.
+2. **`2 Publishing config`** (`Code`) — fixed **`REPO_ROOT`**, **`FACEBOOK_PAGE_ID`**; trims **`workspace`** → **`base_dir`**, derives **`log_file`**.
+3. Parallel: **log workflow start**, and **`Execute Command`** → **`export_publish_jobs.py`** (uses **`base_dir`** from config).
+4. **`5 Split jobs (+ giữ config)`** (`Code`) — merges exporter JSON stdout with **`cfg`** from step 2, one row per job (jobs already sorted **`published_at`** ASC in Python).
 5. `Split In Batches` → size `1`
 6. YouTube upload node (with Credential)
 7. Facebook post node (with Credential)
@@ -171,10 +208,10 @@ End-to-end order (matches Section 3.4):
 ### Exporter via `Execute Command` (single PowerShell-style line)
 
 ```powershell
-python n8n-automatioin/export_publish_jobs.py {{$node["Set"].json["base_dir"]}} --platform youtube --platform facebook --schedule-interval-hours 4 --pretty
+cmd /c cd /d {{$json.repo_root}} && python n8n-automatioin\export_publish_jobs.py {{$json.base_dir}} --platform youtube --platform facebook --schedule-interval-hours 4 --pretty
 ```
 
-Adjust the **`Set`** node name in the expression if yours is not `"Set"`.
+This matches **`publish_sessions.template.json`**, where **`Execute Command`** runs on the **`2 Publishing config`** output (**`repo_root`** + **`base_dir`** per item).
 
 ### Exporter via `Execute Command` (split command / arguments)
 
