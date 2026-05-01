@@ -9,7 +9,7 @@ Current processing flow:
 1. Step 1 `Transcribe`: speech-to-text with timestamps.
 2. Step 2 `Translate`: translated subtitle segments.
 3. Step 3 `Burn Subtitle`: subtitle burn + optional delogo (remove existing sub) + optional channel branding overlay.
-4. Step 4 `Separate Voice`: split vocals/background.
+4. Step 4 `Separate Voice`: separate audio into vocals + background or 4-stem outputs (vocals, drums, bass, other).
 5. Step 5 `Text-to-Speech`: generate TTS assets only.
 6. Step 6 `Add Voice`: compose/mix/mux audio into final video.
 7. Step 7 `Publish Info`: generate title/description/hashtags and edited thumbnail.
@@ -31,9 +31,9 @@ Main design rule: Step 5 does API calls and stores reusable assets; Step 6 does 
 - `core/pipeline/step5_tts.py`
 - `core/pipeline/step6_add_voice.py`
 - `core/pipeline/step7_publish_info.py`
-- `automation/session_publish_jobs.py`: scan sessions to publish jobs payload.
-- `automation/export_publish_jobs.py`: CLI export JSON jobs for n8n.
-- `automation/mark_publish_result.py`: CLI write posted markers per platform.
+- `n8n-automatioin/session_publish_jobs.py`: scan sessions to publish jobs payload.
+- `n8n-automatioin/export_publish_jobs.py`: CLI export JSON jobs for n8n.
+- `n8n-automatioin/mark_publish_result.py`: CLI write posted markers per platform.
 - `ui/main_window.py`: orchestration, queue, session manager, key loading.
 - `ui/multi_session_window.py`: standalone multi-session runner window.
 - `ui/widgets/step_card.py`: auto-width step card widget.
@@ -54,10 +54,10 @@ Important outputs:
 - `step1_transcript.json`, `step1_transcript.txt`
 - `step2_translated.json`, `step2_translated.srt`
 - `step3_output.*`
-- `step4_vocals.mp3`, `step4_background.mp3`
+- `step4_vocals.mp3`, `step4_background.mp3`, `step4_drums.mp3`, `step4_bass.mp3`, `step4_other.mp3`
 - `step5_tts.mp3`
 - `step5_tts_assets/` (TTS assets per segment)
-- `step6_output.*`
+- `result/result_output_*.*` or `step6_output.*` — final mixed video/audio output
 - `step7_publish_info.json`
 - `thumb_background.*` (optional Step 7 foreground layer persisted per session)
 - `posted_youtube.json` / `posted_facebook.json` (optional automation markers)
@@ -77,6 +77,7 @@ Methods:
 - `session.thumbnail` — property returning thumbnail path or `""`
 - `session.save_thumb_background(src_path)` — copies image to `thumb_background.*`
 - `session.thumb_background` — property returning Step 7 foreground layer path or `""`
+- `step7_thumb_foreground.*` — optional shared Step 7 thumbnail foreground in the base folder
 
 ### Session List Ordering
 
@@ -95,7 +96,7 @@ Display priority:
 
 ### Channel Profiles Storage
 
-- Stored at `<base_dir>/.subsync_channel_profiles/` (shared across sessions of same base folder).
+- Stored at `<base_dir>/.subsync_channel_profiles/` and `<base_dir>/.subsync_channel_profiles.json` (shared across sessions of same base folder).
 - Each channel gets its own subfolder: `<safe_name>/avatar.<ext>` + `channel_name.txt`.
 - Profile scanning: `_load_channel_profiles(base_dir)` in `step3_burn.py`.
 
@@ -425,7 +426,7 @@ Layout: thumbnail preview (96×54) + upload/clear buttons on left; Title + Notes
 
 ## Automation (n8n helper)
 
-Folder: `automation/`
+Folder: `n8n-automatioin/`
 
 - `export_publish_jobs.py` scans session folders and outputs JSON jobs.
 - `session_publish_jobs.py` discovers video/title/description/hashtags/thumbnail and ready-state.
@@ -435,8 +436,9 @@ Video discovery priority in scanner:
 
 1. `result/step6_output_*.*`
 2. `step6_output.*`
-3. `step5_output.*`
-4. `step3_output.*`
+3. `result_output.*`
+4. `step5_output.*`
+5. `step3_output.*`
 
 Marker files used to skip already posted sessions:
 
