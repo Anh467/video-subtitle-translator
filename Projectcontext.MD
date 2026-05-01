@@ -49,7 +49,7 @@ Each run creates a session folder:
 
 Important outputs:
 
-- `session.json` — metadata: source_file, created, title, description
+- `session.json` — metadata: source_file, created, title, description, published_at
 - `thumbnail.*` — optional cover image (jpg/png/webp)
 - `step1_transcript.json`, `step1_transcript.txt`
 - `step2_translated.json`, `step2_translated.srt`

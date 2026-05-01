@@ -8,6 +8,7 @@ Features:
 """
 
 import json
+import re
 import shutil
 import subprocess
 from datetime import datetime
@@ -27,6 +28,7 @@ class Session:
         self.created = datetime.now().isoformat()
         self.title: str = ""
         self.description: str = ""
+        self.published_at: str = ""
         self._thumb_background: str = ""
         self.subtitle_studio: dict = {}
         self.folder.mkdir(parents=True, exist_ok=True)
@@ -42,6 +44,7 @@ class Session:
         obj.created = meta.get("created") or datetime.now().isoformat()
         obj.title = meta.get("title", "")
         obj.description = meta.get("description", "")
+        obj.published_at = meta.get("published_at", "")
         obj._thumb_background = meta.get("thumb_background", "")
         obj.subtitle_studio = meta.get("subtitle_studio", {}) or {}
         # thumbnail is detected from folder, not stored in meta
@@ -105,11 +108,31 @@ class Session:
 
         title = ""
         description = ""
+        published_at = ""
 
         if isinstance(data.get("caption"), str) and data.get("caption").strip():
             title = data["caption"].strip()
         if isinstance(data.get("desc"), str) and data.get("desc").strip():
             description = data["desc"].strip()
+
+        for key in ("publishedAt", "published_at", "publish_date", "uploadedAt", "upload_date", "uploadDate", "published"):
+            if key in data and data[key] is not None:
+                published_at = str(data[key]).strip()
+                if published_at:
+                    break
+
+        if not published_at:
+            for key in ("create_time", "upload_time", "published_time", "publish_timestamp", "created_at"):
+                if key in data and data[key] not in (None, "", 0):
+                    try:
+                        ts = int(data[key])
+                        if ts > 0:
+                            published_at = datetime.utcfromtimestamp(ts).isoformat()
+                            break
+                    except Exception:
+                        published_at = str(data[key]).strip()
+                        if published_at:
+                            break
 
         if not title and description:
             title = description.split("\n", 1)[0].strip()[:120]
@@ -117,7 +140,22 @@ class Session:
         if title and not description:
             description = title
 
-        return {"title": title, "description": description}
+        return {"title": title, "description": description, "published_at": published_at}
+
+    @staticmethod
+    def _extract_published_at_from_folder_name(folder_name: str) -> str:
+        if not folder_name:
+            return ""
+
+        match = re.match(r"^(\d{4}[-_]\d{2}[-_]\d{2})", folder_name)
+        if not match:
+            return ""
+
+        date_text = match.group(1).replace("_", "-")
+        try:
+            return datetime.strptime(date_text, "%Y-%m-%d").date().isoformat()
+        except ValueError:
+            return ""
 
     @classmethod
     def create_from_video_folder(cls, base_dir: str, folder_path: str) -> "Session":
@@ -171,6 +209,10 @@ class Session:
             metadata = cls._extract_session_metadata_from_json(info_file)
             obj.title = metadata.get("title", "")
             obj.description = metadata.get("description", "")
+            obj.published_at = metadata.get("published_at", "")
+
+        if not obj.published_at:
+            obj.published_at = cls._extract_published_at_from_folder_name(source_dir.name)
 
         if thumbnail_file is not None:
             obj._copy_thumbnail_to_session(thumbnail_file, session_folder)
@@ -248,6 +290,7 @@ class Session:
                         "source_file": meta.get("source_file", ""),
                         "title": meta.get("title", ""),
                         "description": meta.get("description", ""),
+                        "published_at": meta.get("published_at", ""),
                         "thumb_background": meta.get("thumb_background", ""),
                         "thumbnail": thumb,
                         "done_steps": done,
@@ -511,6 +554,7 @@ class Session:
                     "created": self.created,
                     "title": self.title,
                     "description": self.description,
+                    "published_at": self.published_at,
                     "thumb_background": self.thumb_background,
                     "subtitle_studio": self.subtitle_studio,
                 },

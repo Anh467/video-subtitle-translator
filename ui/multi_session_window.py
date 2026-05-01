@@ -213,6 +213,39 @@ class SessionListPanel(QWidget):
 
         root.addLayout(hdr)
 
+        filter_row = QHBoxLayout()
+        filter_row.setSpacing(6)
+
+        filter_label = QLabel("Filter select:")
+        filter_label.setStyleSheet("color:#a0a8ff;font-size:11px;font-weight:600;")
+        filter_row.addWidget(filter_label)
+
+        self._step_filter_combo = QComboBox()
+        self._step_filter_combo.addItems(
+            ["All", "Step 1", "Step 2", "Step 3", "Step 4", "Step 5", "Step 6", "Step 7"]
+        )
+        self._step_filter_combo.setFixedHeight(24)
+        self._step_filter_combo.setFixedWidth(100)
+        self._step_filter_combo.setToolTip("Select the step to filter by")
+        filter_row.addWidget(self._step_filter_combo)
+
+        self._status_filter_combo = QComboBox()
+        self._status_filter_combo.addItems(["All", "Done", "Not done"])
+        self._status_filter_combo.setFixedHeight(24)
+        self._status_filter_combo.setFixedWidth(90)
+        self._status_filter_combo.setToolTip("Select done or not done sessions for the chosen step")
+        filter_row.addWidget(self._status_filter_combo)
+
+        filter_btn = QPushButton("Select")
+        filter_btn.setFixedHeight(24)
+        filter_btn.setFixedWidth(70)
+        filter_btn.setStyleSheet("font-size:11px;padding:2px 8px;")
+        filter_btn.clicked.connect(self._select_filtered)
+        filter_row.addWidget(filter_btn)
+
+        filter_row.addStretch()
+        root.addLayout(filter_row)
+
         # List
         self._list = QListWidget()
         self._list.setStyleSheet(
@@ -582,6 +615,52 @@ class SessionListPanel(QWidget):
                 chk = w.findChild(QCheckBox)
                 if chk:
                     chk.setChecked(False)
+        self.selection_changed.emit()
+
+    def _select_filtered(self):
+        step_name = self._step_filter_combo.currentText()
+        status_name = self._status_filter_combo.currentText().lower()
+
+        step_map = {
+            "Step 1": "step1_transcribe",
+            "Step 2": "step2_translate",
+            "Step 3": "step3_burn",
+            "Step 4": "step4_separate",
+            "Step 5": "step5_tts",
+            "Step 6": "step6_add_voice",
+            "Step 7": "step7_publish_info",
+        }
+        selected_step = step_map.get(step_name)
+
+        for i in range(self._list.count()):
+            item = self._list.item(i)
+            w = self._list.itemWidget(item)
+            if not w:
+                continue
+            chk = w.findChild(QCheckBox)
+            if not chk:
+                continue
+            idx = item.data(Qt.ItemDataRole.UserRole)
+            if idx is None or idx >= len(self._sessions):
+                continue
+            session = self._sessions[idx]
+            done_steps = session.get("done_steps", [])
+
+            if selected_step is None:
+                if status_name == "all":
+                    chk.setChecked(True)
+                elif status_name == "done":
+                    chk.setChecked(bool(done_steps))
+                else:
+                    chk.setChecked(not bool(done_steps))
+            else:
+                if status_name == "all":
+                    chk.setChecked(True)
+                elif status_name == "done":
+                    chk.setChecked(selected_step in done_steps)
+                else:
+                    chk.setChecked(selected_step not in done_steps)
+
         self.selection_changed.emit()
 
 
