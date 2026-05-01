@@ -234,7 +234,7 @@ There are two workflow files under `n8n-automatioin/workflows/`:
 
 **Facebook vs YouTube scheduling** — **YouTube** uses **`status.privacyStatus=private`** plus **`publishAt`** (ISO string from **`scheduled_at`**). **Facebook** **`/videos`** uses **`published=false`**, **`scheduled_publish_time`**, and **`unpublished_content_type=SCHEDULED`** as in the template.
 
-**YouTube audience (COPPA) + thumbnail** — The upload node sets **`selfDeclaredMadeForKids: false`** (not made for kids). **`thumbnail_path`** must be present; **`8c Read thumbnail`** loads the bytes and **`10b`** calls the Data API **`thumbnails.set`** upload endpoint (**separate from** the multipart video upload).
+**YouTube audience (COPPA) + thumbnail** — The upload node sets **`selfDeclaredMadeForKids: false`** (not made for kids). **`thumbnail_path`** must be present; **`8c Read thumbnail YouTube`** loads the bytes and **`10b`** calls the Data API **`thumbnails.set`** upload endpoint (**separate from** the multipart video upload). **Code node `$('…')` references:** avoid **parentheses `()`** inside the **node display name** — n8n’s expression parser can mis-read them and throw *Invalid expression* / *read only property 'name'*.
 
 After import, n8n may migrate node versions (e.g. **Set** v1 → newer); that is normal.
 
