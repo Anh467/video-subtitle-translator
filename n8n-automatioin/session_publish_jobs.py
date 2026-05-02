@@ -169,6 +169,8 @@ class PublishJob:
     missing: list[str]
     youtube_posted: bool
     facebook_posted: bool
+    youtube_remote_id: str
+    facebook_remote_id: str
     exported: bool
     export_marker_status: str | None
 
@@ -178,6 +180,23 @@ class PublishJob:
 
 def _load_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _read_post_marker_remote_id(session_path: Path, platform_key: str) -> str:
+    """Best-effort remote_id from posted_<platform>.json (for n8n skip branches)."""
+    fname = POST_MARKERS.get(platform_key)
+    if not fname:
+        return ""
+    path = session_path / fname
+    if not path.exists():
+        return ""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return ""
+        return str(data.get("remote_id") or "").strip()
+    except (json.JSONDecodeError, OSError, TypeError):
+        return ""
 
 
 def _find_video(session_dir: Path) -> str:
@@ -423,6 +442,11 @@ def build_publish_job(
     if not thumbnail_path:
         missing.append("thumbnail")
 
+    yt_marker = session_path / POST_MARKERS["youtube"]
+    fb_marker = session_path / POST_MARKERS["facebook"]
+    youtube_posted_flag = yt_marker.exists()
+    facebook_posted_flag = fb_marker.exists()
+
     session_resolved = session_path.resolve(strict=False)
     return PublishJob(
         session_folder=session_resolved.as_posix(),
@@ -442,8 +466,10 @@ def build_publish_job(
         scheduled_publish_unix=0,
         ready=not missing,
         missing=missing,
-        youtube_posted=(session_path / POST_MARKERS["youtube"]).exists(),
-        facebook_posted=(session_path / POST_MARKERS["facebook"]).exists(),
+        youtube_posted=youtube_posted_flag,
+        facebook_posted=facebook_posted_flag,
+        youtube_remote_id=_read_post_marker_remote_id(session_path, "youtube"),
+        facebook_remote_id=_read_post_marker_remote_id(session_path, "facebook"),
         exported=exported,
         export_marker_status=export_marker_status,
     )
