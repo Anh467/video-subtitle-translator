@@ -23,6 +23,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from core.ffmpeg_utils import ffmpeg_executable
 from PyQt6.QtCore import QEvent, QRect, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QKeySequence, QPainter, QPen, QPixmap, QShortcut
 from PyQt6.QtWidgets import (
@@ -871,7 +872,7 @@ class SubtitleEditor(QWidget):
         frame_path = self._studio_tmp_dir / "frame.jpg"
         try:
             cmd = [
-                "ffmpeg",
+                ffmpeg_executable(),
                 "-y",
                 "-ss",
                 f"{sec:.3f}",

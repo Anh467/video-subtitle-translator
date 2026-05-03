@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from core.ffmpeg_utils import ffmpeg_executable, ffprobe_executable
 from core.pipeline.base import BaseStep, CancelledError
 from core.pipeline.step6_add_voice.constants import BACKEND_LABELS, MIX_MODES, VIDEO_EXTS
 from core.pipeline.tts_assets import (
@@ -225,7 +226,7 @@ class AddVoiceStep(BaseStep):
             orig_audio = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False).name
             r = subprocess.run(
                 [
-                    "ffmpeg",
+                    ffmpeg_executable(),
                     "-y",
                     "-i",
                     session.source_file,
@@ -279,7 +280,7 @@ class AddVoiceStep(BaseStep):
 
         conv = subprocess.run(
             [
-                "ffmpeg",
+                ffmpeg_executable(),
                 "-y",
                 "-i",
                 str(session.source_file),
@@ -355,7 +356,7 @@ class AddVoiceStep(BaseStep):
             f"{mix_inputs}amix=inputs={len(tracks)}:duration=first:dropout_transition=2[out]"
         )
         cmd = (
-            ["ffmpeg", "-y"]
+            [ffmpeg_executable(), "-y"]
             + inputs
             + [
                 "-filter_complex",
@@ -382,7 +383,7 @@ class AddVoiceStep(BaseStep):
         out.close()
         r = subprocess.run(
             [
-                "ffmpeg",
+                ffmpeg_executable(),
                 "-y",
                 "-i",
                 audio_path,
@@ -414,7 +415,7 @@ class AddVoiceStep(BaseStep):
             )
 
         cmd = [
-            "ffmpeg",
+            ffmpeg_executable(),
             "-y",
             "-i",
             video_path,
@@ -446,7 +447,7 @@ class AddVoiceStep(BaseStep):
 
     def _has_video_stream(self, media_path: str) -> bool:
         cmd = [
-            "ffprobe",
+            ffprobe_executable(),
             "-v",
             "error",
             "-select_streams",
@@ -461,7 +462,9 @@ class AddVoiceStep(BaseStep):
             r = subprocess.run(cmd, capture_output=True, text=True)
             return r.returncode == 0 and (r.stdout or "").strip().lower() == "video"
         except FileNotFoundError:
-            probe = self._run_cmd(["ffmpeg", "-hide_banner", "-i", media_path])
+            probe = self._run_cmd(
+                [ffmpeg_executable(), "-hide_banner", "-i", media_path]
+            )
             txt = self._tail_output(probe, max_chars=4000).lower()
             if "video:" in txt:
                 return True

@@ -626,17 +626,10 @@ class SessionListPanel(QWidget):
             self._sessions.sort(key=lambda s: s.get("mtime", 0), reverse=reverse)
 
     def _open_session_folder(self, folder: str):
-        import os
-        import subprocess
-        import sys
+        from core.mac_utils import reveal_in_finder
 
         try:
-            if sys.platform == "darwin":
-                subprocess.run(["open", folder], check=False)
-            elif sys.platform == "win32":
-                os.startfile(folder)
-            else:
-                subprocess.run(["xdg-open", folder], check=False)
+            reveal_in_finder(folder)
         except Exception:
             QMessageBox.warning(self, "Open folder", f"Cannot open folder:\n{folder}")
 

@@ -421,20 +421,12 @@ class MainWindow(QMainWindow):
     # ── Session management ────────────────────────────────────────────────────
 
     def _open_logs_folder(self):
-        import subprocess
-        import sys
-
         from core.log_file import FileLogger
+        from core.mac_utils import reveal_in_finder
 
         logger = FileLogger.get()
         if logger.log_path and logger.log_path.parent.exists():
-            p = str(logger.log_path.parent)
-            if sys.platform == "darwin":
-                subprocess.run(["open", p])
-            elif sys.platform == "win32":
-                os.startfile(p)
-            else:
-                subprocess.run(["xdg-open", p])
+            reveal_in_finder(logger.log_path.parent)
         else:
             base = self._sess_dir_edit.text().strip()
             if base:
@@ -786,16 +778,9 @@ class MainWindow(QMainWindow):
         if not self._session:
             QMessageBox.information(self, "No session", "Run a step first.")
             return
-        import subprocess
-        import sys
+        from core.mac_utils import reveal_in_finder
 
-        p = str(self._session.folder)
-        if sys.platform == "darwin":
-            subprocess.run(["open", p])
-        elif sys.platform == "win32":
-            os.startfile(p)
-        else:
-            subprocess.run(["xdg-open", p])
+        reveal_in_finder(self._session.folder)
 
     # ── File ──────────────────────────────────────────────────────────────────
 

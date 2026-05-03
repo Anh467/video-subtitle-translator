@@ -6,6 +6,8 @@ import re
 import subprocess
 from pathlib import Path
 
+from core.ffmpeg_utils import ffprobe_executable
+
 
 def format_srt_timestamp(s: float) -> str:
     h, r = divmod(int(s), 3600)
@@ -30,7 +32,7 @@ def media_duration_seconds_ffprobe(path: str) -> float:
         return 0.0
     try:
         cmd = [
-            "ffprobe",
+            ffprobe_executable(),
             "-v",
             "error",
             "-show_entries",

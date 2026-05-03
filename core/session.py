@@ -14,6 +14,8 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
+from core.ffmpeg_utils import ffprobe_executable
+
 VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".flv", ".wmv"}
 THUMB_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 INFO_EXTS = {".json"}
@@ -541,7 +543,7 @@ class Session:
         try:
             result = subprocess.run(
                 [
-                    "ffprobe",
+                    ffprobe_executable(),
                     "-v",
                     "error",
                     "-show_entries",

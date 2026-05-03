@@ -8,6 +8,8 @@ from pathlib import Path
 
 from PIL import Image
 
+from core.ffmpeg_utils import ffmpeg_executable, ffprobe_executable
+
 
 def escape_drawtext_text(text: str) -> str:
     return (
@@ -246,7 +248,7 @@ def _extract_bottom_strip_frame(
         return False
     r = subprocess.run(
         [
-            "ffmpeg",
+            ffmpeg_executable(),
             "-y",
             "-ss",
             f"{max(0.0, at_sec):.2f}",
@@ -343,7 +345,7 @@ def auto_detect_sub_region(
 def _probe_duration_sec(video_path: str) -> float | None:
     r = subprocess.run(
         [
-            "ffprobe",
+            ffprobe_executable(),
             "-v",
             "error",
             "-show_entries",

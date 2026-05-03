@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from core.ffmpeg_utils import ffmpeg_executable
 from core.pipeline.base import BaseStep
 from core.pipeline.step4_separate.constants import DEMUCS_MODELS, STEM_MODES
 
@@ -44,8 +45,7 @@ class SeparateStep(BaseStep):
 
             raise CancelledError()
 
-        # Convert source to WAV (torchaudio >=2.6 requires torchcodec to load MP4/M4A;
-        # WAV is always supported natively).  Also avoids UnicodeEncodeError on Windows.
+        # Convert source to WAV (torchaudio may need extra codecs for some containers).
         import shutil as _shutil
         import tempfile
 
@@ -53,7 +53,7 @@ class SeparateStep(BaseStep):
         tmp_input = tmp_dir / "demucs_input.wav"
         log("   Converting input to WAV for Demucs compatibility…")
         wav_cmd = [
-            "ffmpeg",
+            ffmpeg_executable(),
             "-y",
             "-i",
             str(source),
@@ -241,7 +241,7 @@ class SeparateStep(BaseStep):
         )
 
         r = subprocess.run(
-            ["ffmpeg", "-y"]
+            [ffmpeg_executable(), "-y"]
             + inputs
             + [
                 "-filter_complex",

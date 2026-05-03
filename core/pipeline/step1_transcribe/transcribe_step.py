@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from core.ffmpeg_utils import ffmpeg_executable
 from core.pipeline.base import BaseStep, CancelledError
 from core.pipeline.step1_transcribe.constants import (
     LANGUAGES,
@@ -106,7 +107,7 @@ class TranscribeStep(BaseStep):
             # Use 64k bitrate to stay well under 25MB limit
             r = subprocess.run(
                 [
-                    "ffmpeg",
+                    ffmpeg_executable(),
                     "-y",
                     "-i",
                     file_path,
@@ -222,7 +223,7 @@ class TranscribeStep(BaseStep):
             t1 = time.perf_counter()
             r = subprocess.run(
                 [
-                    "ffmpeg",
+                    ffmpeg_executable(),
                     "-y",
                     "-i",
                     file_path,

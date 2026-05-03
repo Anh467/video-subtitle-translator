@@ -16,6 +16,7 @@ import urllib.request
 from collections import Counter
 from pathlib import Path
 
+from core.ffmpeg_utils import ffmpeg_executable
 from PIL import Image, ImageDraw, ImageEnhance, ImageFont
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QPixmap
@@ -730,7 +731,7 @@ class PublishInfoStep(BaseStep):
         start = max(0.0, at_sec - 6.0)
         analyze_sec = 12.0
         cmd = [
-            "ffmpeg",
+            ffmpeg_executable(),
             "-y",
             "-ss",
             f"{start:.2f}",
@@ -762,7 +763,7 @@ class PublishInfoStep(BaseStep):
 
         # Fallback: exact timestamp frame.
         cmd2 = [
-            "ffmpeg",
+            ffmpeg_executable(),
             "-y",
             "-ss",
             f"{max(0.0, at_sec):.2f}",
@@ -823,8 +824,10 @@ class PublishInfoStep(BaseStep):
             draw = ImageDraw.Draw(overlay)
 
             font_paths = [
-                "C:/Windows/Fonts/arialbd.ttf",
-                "C:/Windows/Fonts/arial.ttf",
+                "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+                "/System/Library/Fonts/Supplemental/Arial.ttf",
+                "/Library/Fonts/Arial.ttf",
+                "/System/Library/Fonts/SFNS.ttf",
             ]
             font = None
             target_size = max(28, int(h * 0.060))

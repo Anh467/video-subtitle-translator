@@ -9,6 +9,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from core.ffmpeg_utils import ffmpeg_executable
+
 
 def resolve_single_tts_path(session, tts_source: str) -> str:
     if tts_source and Path(tts_source).exists():
@@ -129,7 +131,7 @@ def _speed_fit_audio(audio, audio_ms: int, target_ms: int):
         )
         r = subprocess.run(
             [
-                "ffmpeg",
+                ffmpeg_executable(),
                 "-y",
                 "-i",
                 tmp_in.name,

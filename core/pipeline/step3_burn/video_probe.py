@@ -3,12 +3,15 @@
 import json
 import subprocess
 
+from core.ffmpeg_utils import ffprobe_executable
+
+
 def get_video_size(video_path: str) -> tuple[int, int]:
     """Get video width x height using ffprobe."""
     try:
         r = subprocess.run(
             [
-                "ffprobe",
+                ffprobe_executable(),
                 "-v",
                 "error",
                 "-select_streams",
