@@ -201,7 +201,7 @@ Cửa sổ **SubSync** sẽ mở. **Giữ Terminal mở** trong lúc dùng app (
 | Hiện tượng | Việc nên làm |
 |-------------|----------------|
 | `command not found: python3.11` | Chạy lại bước 4 `brew install python@3.11`, hoặc dùng đường dẫn đầy đủ: `$(brew --prefix python@3.11)/bin/python3.11` |
-| `command not found: ffmpeg` | `brew install ffmpeg` |
+| `command not found: ffmpeg` | Làm lại **mục 4** (FFmpeg có libass), hoặc nếu chỉ thiếu PATH: `export PATH="/opt/homebrew/bin:$PATH"` rồi thử lại |
 | `No module named 'PyQt6'` | Đảm bảo đã `source venv/bin/activate` rồi `pip install -r requirements.txt` |
 | Cài `torch` / Whisper rất lâu hoặc lỗi | Kiểm tra mạng; thử lại `pip install -r requirements.txt`; dùng Python đúng 3.11 |
 | `audioop`, `audioop-lts`, hoặc `pydub` báo không có module | Trên **Python 3.13+**, chạy với **venv đang bật** (`source venv/bin/activate`): `pip install audioop-lts` hoặc cài lại `pip install -r requirements.txt` — gói `audioop-lts` đã nằm trong `requirements.txt` |
@@ -211,50 +211,80 @@ Cửa sổ **SubSync** sẽ mở. **Giữ Terminal mở** trong lúc dùng app (
 
 ## 12. Ghi chú quan trọng
 
-- **ffmpeg** phải có trên máy (đã cài ở bước 4) — SubSync dùng để xử lý video.
+- **ffmpeg** phải có trên máy khi chạy từ mã nguồn (đã cài ở bước 4) — SubSync dùng để xử lý video. Nếu bạn **đóng gói `.app`** theo mục 13 và nhúng `bin/ffmpeg`, máy người dùng **không** cần `brew install ffmpeg` nữa.
 - **API key** (Google Gemini, OpenAI, v.v.) nếu bước nào cần — cấu hình trong app theo hướng dẫn trong **README** chính của repo (mục API).
-- Nếu bạn muốn **biểu tượng trên Dock** như app App Store: cần người có Mac **đóng gói** sẵn file `.app` (PyInstaller) hoặc dùng **Shortcuts** trên macOS tạo lối tắt chạy 3 lệnh ở mục 9 — đó là bước nâng cao, không bắt buộc để dùng được.
+- Nếu bạn muốn **biểu tượng trên Dock** như app App Store: dùng bản `.app` ở mục 13, hoặc **Shortcuts** trên macOS tạo lối tắt chạy các lệnh ở mục 9.
 
 ---
 
-## 13. (Nâng cao) Đóng gói SubSync thành file `.app` bằng PyInstaller
+## 13. (Nâng cao) Đóng gói `SubSync.app` (PyInstaller + `bin/ffmpeg`)
 
-Mục này dành khi bạn muốn **một nhấp vào Finder** như app thường. **Việc tạo file `.app` phải chạy trên macOS** (GitHub Actions `macos-latest` hoặc máy Mac thật; không đóng gói Mac app từ Windows).
+**Chỉ build trên macOS.** Cách này nhúng **`ffmpeg` / `ffprobe`** vào app (`--add-data "bin:bin"`), nên máy cài app **không** cần cài FFmpeg qua Homebrew — vẫn nên dùng bản FFmpeg **có libass** (cùng nguồn như mục 4) khi copy vào `bin/`.
 
-Người dùng bản `.app` vẫn cần **đã `brew install ffmpeg`** (như mục 4) trừ khi bạn tự nhúng binary ffmpeg khi đóng gói — gọi FFmpeg qua **`FFMPEG_EXECUTABLE`** chỉ là tùy chọn (xem ô dưới).
+### 13.1. Tạo thư mục `bin/` và copy binary
 
-**Đường dẫn thật của `ffmpeg` trên Mac:** sau `brew install ffmpeg`, trong Terminal chạy `which ffmpeg`; thường là **`/opt/homebrew/bin/ffmpeg`** (chip Apple Silicon) hoặc **`/usr/local/bin/ffmpeg`** (Intel). Chỉ khi muốn **ép app dùng đúng file đó** (thay cho cái trên PATH) thì trong cùng phiên Terminal mới đó:
-
-```bash
-export FFMPEG_EXECUTABLE="$(which ffmpeg)"
-python main.py
-```
-
-### 13.1. Cài PyInstaller trong venv
+Trong thư mục gốc repo (đã `cd` vào đó, đã cài FFmpeg có `subtitles` ở mục 4):
 
 ```bash
-source venv/bin/activate
-pip install pyinstaller
+mkdir -p bin
+cp "$(brew --prefix ffmpeg)/bin/ffmpeg"  bin/
+cp "$(brew --prefix ffmpeg)/bin/ffprobe" bin/
 ```
 
-### 13.2. Lệnh gói tối thiểu (cửa sổ, không có console)
+Nếu lệnh trên báo lỗi, thử (Apple Silicon thường dùng đường này):
 
-Đổi `THU_MUC_DU_AN` bằng đường dẫn thực tới repo (kéo-thả folder vào Terminal cũng được):
+```bash
+mkdir -p bin
+cp /opt/homebrew/opt/ffmpeg/bin/ffmpeg  bin/
+cp /opt/homebrew/opt/ffmpeg/bin/ffprobe bin/
+```
+
+Kiểm tra filter phụ đề (phải in ra mô tả `subtitles`, không phải *Unknown filter*):
+
+```bash
+bin/ffmpeg -hide_banner -h filter=subtitles | head -n 3
+```
+
+### 13.2. Cài PyInstaller và chạy script build (khuyến nghị)
+
+Đổi `THU_MUC_DU_AN` thành đường dẫn thật tới repo:
 
 ```bash
 cd "THU_MUC_DU_AN"
-pyinstaller --windowed --name SubSync --clean main.py
+source venv/bin/activate
+pip install pyinstaller
+bash scripts/build_mac_app.sh
 ```
 
-Kết quả nằm trong thư mục **`dist/SubSync.app`**. Whisper / PyTorch / PyQt có thể cần **`--collect-all`** hoặc `--hidden-import` bổ sung nếu lúc chạy báo `ModuleNotFoundError` — bật **`--onedir`** thay cho onefile thường dễ gỡ lỗi hơn (`pyinstaller --windowed --name SubSync --onedir main.py`).
+Kết quả: **`dist/SubSync.app`**.
 
-### 13.3. Sau khi gói: Gatekeeper và thuộc tính tải về
+### 13.3. Lệnh PyInstaller tương đương (một block, nếu không dùng script)
 
-- Lần đầu có thể cần: **chuột phải** `SubSync.app` → **Open**.
-- Hoặc (chỉ dùng khi bạn hiểu rủi ro): trong Terminal đổi đường dẫn cho đúng file `.app`:  
-  `xattr -cr "/đường/đầy/đủ/tới/dist/SubSync.app"`
+Vẫn trong thư mục repo, đã có `bin/ffmpeg` và `bin/ffprobe`, venv đã `activate`:
 
-Kiểm thử trong Terminal vẫn nên được: **`ffmpeg -version`**.
+```bash
+pyinstaller main.py \
+  --name SubSync \
+  --windowed \
+  --noconfirm \
+  --clean \
+  --add-data "bin:bin" \
+  --hidden-import PyQt6 \
+  --hidden-import PyQt6.QtCore \
+  --hidden-import PyQt6.QtGui \
+  --hidden-import PyQt6.QtWidgets
+```
+
+*(Nếu thiếu module khi mở app: bổ sung `--hidden-import …` hoặc `--collect-all TênGói` theo báo lỗi. `--onefile` trên Mac thường **không** tạo `.app`; để có `SubSync.app` nên dùng lệnh trên, **không** thêm `--onefile`.)*
+
+### 13.4. Gatekeeper sau khi gói
+
+- Lần đầu: **chuột phải** `SubSync.app` → **Open**.
+- Hoặc (chỉ khi bạn hiểu rủi ro), sửa đường dẫn cho đúng:
+
+```bash
+xattr -cr "/đường/đầy/đủ/tới/dist/SubSync.app"
+```
 
 ---
 

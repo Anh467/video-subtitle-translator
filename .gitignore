@@ -41,6 +41,10 @@ ENV/
 *.manifest
 *.spec
 
+# Bundled ffmpeg/ffprobe (populate locally; see bin/README.txt)
+bin/ffmpeg
+bin/ffprobe
+
 # Installer logs
 
 pip-log.txt

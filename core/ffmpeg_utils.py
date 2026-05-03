@@ -10,6 +10,49 @@ import subprocess
 import sys
 from pathlib import Path
 
+
+def init_bundled_tools_path() -> None:
+    """
+    When running as a PyInstaller frozen app, prepend bundled ``bin/`` to ``PATH``.
+
+    Layout: ``--add-data "bin:bin"`` so ``ffmpeg`` / ``ffprobe`` live under
+    ``sys._MEIPASS/bin/``. Also prepends ``bin/`` next to the executable if present
+    (onedir / manual copy).
+    """
+    if not getattr(sys, "frozen", False):
+        return
+    sep = os.pathsep
+    prefixes: list[str] = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        b = Path(meipass) / "bin"
+        try:
+            if b.is_dir():
+                prefixes.append(str(b.resolve(strict=False)))
+        except OSError:
+            pass
+    try:
+        exe_dir = Path(sys.executable).resolve(strict=False).parent
+        for d in (exe_dir / "bin", exe_dir.parent / "Resources" / "bin"):
+            try:
+                if d.is_dir():
+                    prefixes.append(str(d.resolve(strict=False)))
+            except OSError:
+                continue
+    except OSError:
+        pass
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for p in prefixes:
+        if p not in seen:
+            seen.add(p)
+            ordered.append(p)
+    if not ordered:
+        return
+    old = os.environ.get("PATH", "")
+    os.environ["PATH"] = sep.join(ordered + ([old] if old else []))
+
+
 # Shown when ``ffmpeg -h filter=subtitles`` fails (e.g. Homebrew core ffmpeg without libass).
 FFMPEG_LIBASS_INSTALL_HINT = """\
 Homebrew’s default formula ``brew install ffmpeg`` (8.x) is built **without libass**, so the
@@ -63,15 +106,28 @@ def _resolve_system_tool(name: str) -> str | None:
 
 
 def _bundled_binary_candidates(name: str) -> list[Path]:
-    """PyInstaller bundle, app dir, or ``tools/ffmpeg/`` checkout drop."""
+    """PyInstaller ``bin/``, MEIPASS, app dir, or ``tools/ffmpeg/`` checkout."""
     out: list[Path] = []
     meipass = getattr(sys, "_MEIPASS", None)
     if meipass:
         root = Path(meipass)
+        out.append(root / "bin" / name)
         out.extend([root / name, root / "ffmpeg" / name])
     if getattr(sys, "frozen", False):
-        exe_dir = Path(sys.executable).resolve().parent
-        out.extend([exe_dir / name, exe_dir / "ffmpeg" / name])
+        try:
+            exe_dir = Path(sys.executable).resolve(strict=False).parent
+        except OSError:
+            exe_dir = Path(sys.executable).parent
+        out.extend(
+            [
+                exe_dir / "bin" / name,
+                exe_dir / name,
+                exe_dir / "ffmpeg" / name,
+            ]
+        )
+        if exe_dir.name == "MacOS":
+            res = exe_dir.parent / "Resources" / "bin" / name
+            out.append(res)
     out.append(Path(__file__).resolve().parent.parent / "tools" / "ffmpeg" / name)
     return out
 

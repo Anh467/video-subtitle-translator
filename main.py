@@ -1,7 +1,16 @@
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_ROOT = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _ROOT)
+
+try:
+    from core.ffmpeg_utils import init_bundled_tools_path
+
+    init_bundled_tools_path()
+except Exception:
+    pass
+
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
 
