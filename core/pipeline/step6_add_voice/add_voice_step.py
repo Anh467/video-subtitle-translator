@@ -46,8 +46,9 @@ class AddVoiceStep(BaseStep):
         self._sync_combo = None
 
     def run(self, session, config, log, cancel):
-        source_mode = config.get("source_mode", "all_cache")
+        source_mode = config.get("source_mode", "latest")
         tts_source = (config.get("tts_path") or "").strip()
+        manifest_pick = (config.get("manifest_pick") or "").strip() or None
         sync_mode = config.get("sync_mode", "trim")
         mix_mode = config.get("mix_mode", "bgm_only")
         tts_vol = config.get("tts_vol", 1.0)
@@ -55,7 +56,12 @@ class AddVoiceStep(BaseStep):
         orig_vol = config.get("orig_vol", 0.1)
 
         tts_path, temp_files = self._resolve_tts_source(
-            session, source_mode, tts_source, sync_mode, log
+            session,
+            source_mode,
+            tts_source,
+            sync_mode,
+            log,
+            manifest_pick=manifest_pick,
         )
         if not tts_path:
             raise RuntimeError(
@@ -90,6 +96,7 @@ class AddVoiceStep(BaseStep):
             source_mode=source_mode,
             tts_source=tts_source,
             tts_path=tts_path,
+            manifest_pick=manifest_pick,
         )
         if has_video:
             ext = Path(input_media).suffix.lower() or ".mp4"
@@ -139,8 +146,11 @@ class AddVoiceStep(BaseStep):
         source_mode: str,
         tts_source: str,
         tts_path: str,
+        manifest_pick: str | None = None,
     ) -> str:
-        manifests = resolve_manifests(session, source_mode, tts_source)
+        manifests = resolve_manifests(
+            session, source_mode, tts_source, manifest_pick=manifest_pick
+        )
         if manifests:
             mf = manifests[-1]
             try:
@@ -157,7 +167,13 @@ class AddVoiceStep(BaseStep):
         return self._safe_slug(Path(tts_path).stem)
 
     def _resolve_tts_source(
-        self, session, source_mode: str, tts_source: str, sync_mode: str, log
+        self,
+        session,
+        source_mode: str,
+        tts_source: str,
+        sync_mode: str,
+        log,
+        manifest_pick: str | None = None,
     ):
         temp_files = []
 
@@ -165,7 +181,9 @@ class AddVoiceStep(BaseStep):
             path = resolve_single_tts_path(session, tts_source)
             return path, temp_files
 
-        manifests = resolve_manifests(session, source_mode, tts_source)
+        manifests = resolve_manifests(
+            session, source_mode, tts_source, manifest_pick=manifest_pick
+        )
         if not manifests:
             path = resolve_single_tts_path(session, tts_source)
             return path, temp_files
@@ -534,11 +552,16 @@ class AddVoiceStep(BaseStep):
         self._source_mode_combo = QComboBox()
         self._source_mode_combo.addItems(
             [
-                "All Step 5 session assets",
                 "Latest Step 5 manifest only",
+                "All Step 5 session assets",
                 "Single audio file (legacy)",
                 "Custom manifest/audio list",
             ]
+        )
+        self._source_mode_combo.setCurrentIndex(0)
+        self._source_mode_combo.setToolTip(
+            "Latest: một lần chạy TTS (dropdown mặc định = mới nhất). "
+            "All: gộp mọi manifest trong step5_tts_assets/ (có thể chồng nhiều run)."
         )
         row.addWidget(self._source_mode_combo)
         row.addStretch()
@@ -678,6 +701,8 @@ class AddVoiceStep(BaseStep):
                 label = m.stem[:50]
             self._manifest_combo.addItem(label, userData=str(m))
         self._manifest_combo.blockSignals(False)
+        if self._manifest_combo.count() > 0 and self._manifest_combo.itemData(0):
+            self._manifest_combo.setCurrentIndex(0)
 
     def apply_config(self, config: dict) -> None:
         if not config:
@@ -690,7 +715,7 @@ class AddVoiceStep(BaseStep):
         }
         if self._source_mode_combo and config.get("source_mode"):
             self._source_mode_combo.setCurrentText(
-                _MODE_LABEL.get(config["source_mode"], "All Step 5 session assets")
+                _MODE_LABEL.get(config["source_mode"], "Latest Step 5 manifest only")
             )
         if self._sync_combo and config.get("sync_mode"):
             # match prefix of combo items
@@ -711,6 +736,13 @@ class AddVoiceStep(BaseStep):
             self._bgm_vol_slider.setValue(int(round(config["bgm_vol"] * 100)))
         if self._orig_vol_slider and config.get("orig_vol") is not None:
             self._orig_vol_slider.setValue(int(round(config["orig_vol"] * 100)))
+        pick = config.get("manifest_pick")
+        if self._manifest_combo and pick:
+            want = str(pick)
+            for i in range(self._manifest_combo.count()):
+                if str(self._manifest_combo.itemData(i) or "") == want:
+                    self._manifest_combo.setCurrentIndex(i)
+                    break
 
     def collect_config(self):
         mode_text = (
@@ -721,7 +753,13 @@ class AddVoiceStep(BaseStep):
             "Latest Step 5 manifest only": "latest",
             "Single audio file (legacy)": "single",
             "Custom manifest/audio list": "custom",
-        }.get(mode_text, "all_cache")
+        }.get(mode_text, "latest")
+
+        pick = None
+        if self._manifest_combo:
+            d = self._manifest_combo.currentData()
+            if d:
+                pick = str(d)
 
         mix_mode = "bgm_only"
         for key, rb in self._mix_radios.items():
@@ -731,6 +769,7 @@ class AddVoiceStep(BaseStep):
 
         return {
             "source_mode": source_mode,
+            "manifest_pick": pick,
             "tts_path": self._tts_path_edit.text().strip() or None,
             "sync_mode": (
                 self._sync_combo.currentText().split("—")[0].strip()
