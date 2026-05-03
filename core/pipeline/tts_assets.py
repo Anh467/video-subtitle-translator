@@ -48,12 +48,22 @@ def collect_manifest_paths(session) -> list[Path]:
     return sorted(manifests, key=lambda p: p.stat().st_mtime)
 
 
-def resolve_manifests(session, source_mode: str, tts_source: str) -> list[Path]:
+def resolve_manifests(
+    session,
+    source_mode: str,
+    tts_source: str,
+    manifest_pick: str | None = None,
+) -> list[Path]:
     manifests = collect_manifest_paths(session)
     if not manifests:
         return []
 
     if source_mode == "latest":
+        # Prefer the manifest chosen in Step 6 UI (dropdown); else newest on disk.
+        if manifest_pick:
+            p = Path(manifest_pick)
+            if p.is_file() and p.suffix.lower() == ".json":
+                return [p]
         return manifests[-1:]
 
     if source_mode == "custom":
