@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSplitter,
     QStatusBar,
     QTextEdit,
@@ -48,7 +49,7 @@ class MultiSessionWindow(QMainWindow):
     def __init__(self, steps: list, base_dir: str = "", parent=None):
         super().__init__(parent)
         self.setWindowTitle("SubSync — Multi-Session Runner")
-        self.setMinimumSize(1200, 780)
+        self.setMinimumSize(960, 620)
         self.setStyleSheet(parent.styleSheet() if parent else "")
 
         self._steps = steps
@@ -115,10 +116,13 @@ class MultiSessionWindow(QMainWindow):
             "font-size:22px;font-weight:700;color:#c084fc;letter-spacing:1px;"
         )
         sub = QLabel("Process multiple sessions sequentially with the same step config")
+        sub.setWordWrap(True)
+        sub.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+        sub.setMinimumWidth(120)
         sub.setStyleSheet("font-size:11px;color:#555;margin-left:12px;margin-top:6px;")
         title_row.addWidget(t)
-        title_row.addWidget(sub)
-        title_row.addSpacing(10)
+        title_row.addWidget(sub, stretch=1)
+        title_row.addStretch()
 
         # self._btn_editor_default = QPushButton("Default")
         # self._btn_editor_default.setCheckable(True)
@@ -134,8 +138,7 @@ class MultiSessionWindow(QMainWindow):
         # self._btn_editor_studio.setFixedHeight(26)
         # self._btn_editor_studio.clicked.connect(lambda: self._set_editor_mode("studio"))
         # title_row.addWidget(self._btn_editor_studio)
-        # title_row.addStretch()
-        # root.addLayout(title_row)
+        root.addLayout(title_row)
 
         # ── Top area: session list (left) + preview (right) ───────────────
         self._top_split = QSplitter(Qt.Orientation.Horizontal)
@@ -190,7 +193,8 @@ class MultiSessionWindow(QMainWindow):
         self._cards_scroll = QScrollArea()
         self._cards_scroll.setWidgetResizable(False)
         self._cards_scroll.setWidget(cards_container)
-        self._cards_scroll.setFixedHeight(220)
+        self._cards_scroll.setMinimumHeight(200)
+        self._cards_scroll.setMaximumHeight(400)
         self._cards_scroll.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAsNeeded
         )
@@ -209,11 +213,15 @@ class MultiSessionWindow(QMainWindow):
         self._run_ctrl.setStyleSheet(
             "QFrame{background:#111828;border:1px solid #2d2d4e;border-radius:8px;}"
         )
-        ctrl_h = QHBoxLayout(self._run_ctrl)
-        ctrl_h.setContentsMargins(12, 8, 12, 8)
+        ctrl_outer = QVBoxLayout(self._run_ctrl)
+        ctrl_outer.setContentsMargins(12, 8, 12, 8)
+        ctrl_outer.setSpacing(8)
+
+        ctrl_h = QHBoxLayout()
         ctrl_h.setSpacing(8)
 
-        self._btn_run_selected = QPushButton("▶  Run Selected Sessions")
+        self._btn_run_selected = QPushButton("▶  Run selected")
+        self._btn_run_selected.setToolTip("Run only sessions that have the checkbox checked")
         self._btn_run_selected.setStyleSheet(
             "QPushButton{background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
             "stop:0 #6c63ff,stop:1 #a855f7);color:white;font-weight:bold;font-size:14px;"
@@ -222,9 +230,13 @@ class MultiSessionWindow(QMainWindow):
             "QPushButton:disabled{background:#2a2a4a;color:#555;}"
         )
         self._btn_run_selected.clicked.connect(self._run_selected)
+        self._btn_run_selected.setSizePolicy(
+            QSizePolicy.Policy.MinimumExpanding,
+            QSizePolicy.Policy.Fixed,
+        )
         ctrl_h.addWidget(self._btn_run_selected)
 
-        self._btn_run_all_sessions = QPushButton("▶▶  Run All Sessions")
+        self._btn_run_all_sessions = QPushButton("▶▶  Run all sessions")
         self._btn_run_all_sessions.setStyleSheet(
             "QPushButton{background:#1a3a2a;color:#5dca8e;border:1px solid #2a6a4a;"
             "font-weight:bold;font-size:13px;border-radius:7px;padding:9px 20px;}"
@@ -255,28 +267,44 @@ class MultiSessionWindow(QMainWindow):
         self._btn_cancel.setVisible(False)
         self._btn_cancel.clicked.connect(self._cancel_job)
         ctrl_h.addWidget(self._btn_cancel)
+        ctrl_h.addStretch()
 
-        ctrl_h.addSpacing(8)
+        ctrl_outer.addLayout(ctrl_h)
+
+        ctrl_meta = QHBoxLayout()
+        ctrl_meta.setSpacing(8)
         self._progress = QProgressBar()
         self._progress.setRange(0, 0)
         self._progress.setVisible(False)
-        self._progress.setFixedWidth(160)
-        ctrl_h.addWidget(self._progress)
+        self._progress.setMinimumWidth(100)
+        self._progress.setMaximumWidth(200)
+        ctrl_meta.addWidget(self._progress)
 
         self._queue_lbl = QLabel("")
+        self._queue_lbl.setWordWrap(True)
         self._queue_lbl.setStyleSheet("color:#ffaa55;font-size:12px;font-weight:600;")
-        ctrl_h.addWidget(self._queue_lbl)
+        self._queue_lbl.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Preferred,
+        )
+        ctrl_meta.addWidget(self._queue_lbl, stretch=1)
 
         self._prog_lbl = QLabel("")
         self._prog_lbl.setStyleSheet("color:#888;font-size:11px;")
-        ctrl_h.addWidget(self._prog_lbl)
+        ctrl_meta.addWidget(self._prog_lbl)
 
         self._cost_summary_lbl = QLabel("No sessions selected")
+        self._cost_summary_lbl.setWordWrap(True)
         self._cost_summary_lbl.setStyleSheet(
             "color:#a0c8ff;font-size:11px;font-weight:600;"
         )
-        ctrl_h.addWidget(self._cost_summary_lbl)
-        ctrl_h.addStretch()
+        self._cost_summary_lbl.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Preferred,
+        )
+        ctrl_meta.addWidget(self._cost_summary_lbl, stretch=1)
+
+        ctrl_outer.addLayout(ctrl_meta)
         root.addWidget(self._run_ctrl)
 
         # ── Log panel ──────────────────────────────────────────────────────
@@ -314,8 +342,12 @@ class MultiSessionWindow(QMainWindow):
         self._cards_scroll.setVisible(not is_studio)
         self._run_ctrl.setVisible(not is_studio)
         self._log_wrap.setVisible(not is_studio)
-        self._btn_editor_default.setChecked(not is_studio)
-        self._btn_editor_studio.setChecked(is_studio)
+        def_btn = getattr(self, "_btn_editor_default", None)
+        studio_btn = getattr(self, "_btn_editor_studio", None)
+        if def_btn:
+            def_btn.setChecked(not is_studio)
+        if studio_btn:
+            studio_btn.setChecked(is_studio)
         if is_studio:
             self._top_split.setSizes([0, 1])
             self._right_split.setSizes([0, 1])

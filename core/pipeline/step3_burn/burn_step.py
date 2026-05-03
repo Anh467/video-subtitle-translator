@@ -55,7 +55,7 @@ from core.pipeline.step3_burn.delogo import (
     probe_video_duration_sec,
 )
 from core.pipeline.step3_burn.ffmpeg_burn import hard_burn_cmd, soft_sub_cmd
-from core.pipeline.step3_burn.srt_writer import write_srt
+from core.pipeline.step3_burn.srt_writer import write_ass_for_hard_burn, write_srt
 from core.pipeline.step3_burn.video_probe import get_video_size
 
 
@@ -344,20 +344,21 @@ class BurnStep(BaseStep):
 
         log(f"{'📎' if mode=='soft' else '🔥'} Burning subtitles ({mode})…")
 
+        suf = ".srt" if mode == "soft" else ".ass"
         tmp = tempfile.NamedTemporaryFile(
-            suffix=".srt", delete=False, mode="w", encoding="utf-8"
+            suffix=suf, delete=False, mode="w", encoding="utf-8"
         )
         tmp.close()
-        write_srt(translated, tmp.name)
 
         try:
             if mode == "soft":
+                write_srt(translated, tmp.name)
                 cmd = soft_sub_cmd(input_video, tmp.name, out)
             else:
-                cmd = hard_burn_cmd(
-                    input_video,
+                write_ass_for_hard_burn(
+                    translated,
                     tmp.name,
-                    out,
+                    field="translated",
                     font_size=font_size,
                     font_family=config.get("font_family", "Arial"),
                     bold=config.get("bold", False),
@@ -371,6 +372,13 @@ class BurnStep(BaseStep):
                     bg_opacity=config.get("bg_opacity", 50),
                     alignment=config["alignment"],
                     margin_v=config.get("margin_v", 6),
+                    video_w=w,
+                    video_h=h,
+                )
+                cmd = hard_burn_cmd(
+                    input_video,
+                    tmp.name,
+                    out,
                     video_w=w,
                     video_h=h,
                     crf=config.get("crf", DEFAULT_CRF),

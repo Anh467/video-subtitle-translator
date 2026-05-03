@@ -5,7 +5,7 @@ from pathlib import Path
 from core.ffmpeg_utils import escape_for_ffmpeg_single_quoted_fragment, ffmpeg_executable
 from core.pipeline.step3_burn.constants import DEFAULT_CRF, DEFAULT_PRESET
 from core.pipeline.step3_burn.delogo import delogo_filter, escape_drawtext_text
-from core.pipeline.step3_burn.srt_writer import color_name_to_ass_bgr
+
 
 def soft_sub_cmd(video, srt, out):
     codec = "srt" if Path(out).suffix.lower() == ".mkv" else "mov_text"
@@ -28,22 +28,8 @@ def soft_sub_cmd(video, srt, out):
 
 def hard_burn_cmd(
     video,
-    srt,
+    subs_path,
     out,
-    font_size,
-    font_family="Arial",
-    bold=False,
-    italic=False,
-    font_color="white",
-    outline_color="black",
-    outline_width=2,
-    shadow=0,
-    bg_style="semi",
-    bg_color="black",
-    bg_opacity=50,
-    alignment=2,
-    margin_v=6,
-    bg_box=True,
     video_w=1920,
     video_h=1080,
     crf=DEFAULT_CRF,
@@ -51,61 +37,22 @@ def hard_burn_cmd(
     delogo=None,
     branding=None,
 ):
-    subs_p = Path(srt).expanduser()
+    """
+    Hard-burn subtitles from an ASS (or SRT) file.
+    Style for hard burn must be encoded inside the ASS — do not use force_style
+    (fragile with FFmpeg 8.x + filter_complex, especially on macOS).
+    """
+    subs_p = Path(subs_path).expanduser()
     try:
         subs_p = subs_p.resolve(strict=False)
     except OSError:
         pass
-    subs_path_q = escape_for_ffmpeg_single_quoted_fragment(subs_p.as_posix())
+    subs_q = escape_for_ffmpeg_single_quoted_fragment(subs_p.as_posix())
+    sub_filter = f"subtitles='{subs_q}'"
 
-    # Resolve bg from new bg_style field
-    use_bg = bg_style != "none"
-    # UI opacity: 0..100 means transparent..opaque.
-    # ASS alpha is inverted: 00=opaque, FF=transparent.
-    bg_opacity = max(0.0, min(100.0, float(bg_opacity)))
-    bg_alpha_hex = f"{int((100.0 - bg_opacity) / 100.0 * 255):02X}"
-
-    outline_val = outline_width if outline_color and outline_color != "none" else 0
-    outline_str = (
-        f"Outline={outline_val},OutlineColour=&H00{color_name_to_ass_bgr(outline_color)},"
-        if outline_val > 0
-        else "Outline=0,"
-    )
-
-    bold_val = 1 if bold else 0
-    italic_val = 1 if italic else 0
-    font_name_str = f"Fontname={font_family}," if font_family else ""
-
-    if use_bg:
-        force_style = (
-            f"{font_name_str}"
-            f"FontSize={font_size},Bold={bold_val},Italic={italic_val},"
-            f"PrimaryColour=&H00{color_name_to_ass_bgr(font_color)},"
-            f"{outline_str}"
-            # BorderStyle=4 keeps subtitle box color from BackColour while preserving text outline.
-            f"Shadow={shadow},BorderStyle=4,"
-            f"BackColour=&H{bg_alpha_hex}{color_name_to_ass_bgr(bg_color)},"
-            f"Alignment={alignment},MarginV={margin_v}"
-        )
-    else:
-        force_style = (
-            f"{font_name_str}"
-            f"FontSize={font_size},Bold={bold_val},Italic={italic_val},"
-            f"PrimaryColour=&H00{color_name_to_ass_bgr(font_color)},"
-            f"{outline_str}"
-            f"Shadow={shadow},Alignment={alignment},MarginV={margin_v}"
-        )
-
-    style_q = escape_for_ffmpeg_single_quoted_fragment(force_style)
-    sub_filter = f"subtitles='{subs_path_q}':force_style='{style_q}'"
-
-    # ── Chain delogo BEFORE subtitles ──────────────────────────────────────
-    # Order matters: remove old sub first, then burn new one on clean frame.
     if delogo and delogo.get("enabled"):
         dx, dy = delogo["x"], delogo["y"]
         dw, dh = delogo["w"], delogo["h"]
-        # Defensive clamp — values may come from user spinboxes without validation
-        # Keep at least 1px margin (delogo fails if region touches frame border)
         dx = max(0, min(dx, video_w - 4))
         dy = max(0, min(dy, video_h - 4))
         dw = max(3, min(dw, (video_w - dx) - 1))
@@ -114,11 +61,10 @@ def hard_burn_cmd(
             en = delogo.get("enable_expr")
             vf_base = f"{delogo_filter(dx, dy, dw, dh, enable_expr=en)},{sub_filter}"
         else:
-            vf_base = sub_filter  # skip delogo if region invalid
+            vf_base = sub_filter
     else:
         vf_base = sub_filter
 
-    # No branding — simple case
     if not branding or not branding.get("enabled"):
         return [
             ffmpeg_executable(),
@@ -138,7 +84,6 @@ def hard_burn_cmd(
             out,
         ]
 
-    # With branding
     name = escape_drawtext_text(branding.get("name", "").strip())
     avatar = branding.get("avatar", "").strip()
     avatar_exists = bool(avatar) and Path(avatar).exists()
@@ -191,7 +136,6 @@ def hard_burn_cmd(
     text_width_approx = max(50, len(name) * name_size * 0.5)
     center_offset = (avatar_w - int(text_width_approx)) / 2
 
-    # vf_base already includes delogo+sub chain
     filters = [f"[0:v]{vf_base}[sub]"]
     map_label = "sub"
 

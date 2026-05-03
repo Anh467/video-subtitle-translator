@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSplitter,
     QStatusBar,
     QTextEdit,
@@ -50,7 +51,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("SubSync  —  AI Video Pipeline")
-        self.setMinimumSize(1100, 820)
+        self.setMinimumSize(860, 580)
         self.setStyleSheet(STYLESHEET)
 
         self._file = None
@@ -98,9 +99,12 @@ class MainWindow(QMainWindow):
         sub = QLabel(
             "AI Video Pipeline  ·  Transcribe → Translate → Burn → Separate → TTS → Add Voice"
         )
+        sub.setWordWrap(True)
+        sub.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+        sub.setMinimumWidth(120)
         sub.setStyleSheet("font-size:11px;color:#444;margin-left:12px;margin-top:8px;")
         title_row.addWidget(t)
-        title_row.addWidget(sub)
+        title_row.addWidget(sub, stretch=1)
         title_row.addSpacing(10)
 
         self._btn_editor_default = QPushButton("Default")
@@ -130,6 +134,31 @@ class MainWindow(QMainWindow):
         title_row.addWidget(self._btn_multi)
 
         root.addLayout(title_row)
+
+        # Log + subtitle editor (built first — upper panel wraps in scroll + splitter below)
+        self._editor_split = QSplitter(Qt.Orientation.Vertical)
+        self._log_edit = QTextEdit()
+        self._log_edit.setReadOnly(True)
+        self._log_edit.setMaximumHeight(130)
+        self._log_edit.setPlaceholderText("Pipeline log…")
+        self._log_wrap = self._wrap("Log", self._log_edit)
+        self._editor_split.addWidget(self._log_wrap)
+
+        self._subtitle_editor = SubtitleEditor()
+        self._subtitle_editor.set_orig_placeholder("Original transcript…")
+        self._subtitle_editor.set_trans_placeholder("Translated subtitles…")
+        self._subtitle_editor.saved.connect(self._on_subtitle_editor_saved)
+        self._subtitle_editor.mode_changed.connect(self._on_editor_mode_changed)
+        for step in self._steps:
+            if getattr(step, "STEP_ID", "") == "step3_burn":
+                self._subtitle_editor.set_step3_bridge(step)
+                break
+        self._editor_split.addWidget(self._subtitle_editor)
+
+        self._top_panel = QWidget()
+        top_l = QVBoxLayout(self._top_panel)
+        top_l.setContentsMargins(0, 0, 0, 0)
+        top_l.setSpacing(10)
 
         # Session bar
         self._session_bar = QFrame()
@@ -188,12 +217,12 @@ class MainWindow(QMainWindow):
         )
         btn_logs.clicked.connect(self._open_logs_folder)
         sh.addWidget(btn_logs)
-        root.addWidget(self._session_bar)
+        top_l.addWidget(self._session_bar)
 
         # Session info editor (title + description)
         self._info_editor = SessionInfoEditor()
         self._info_editor.setMaximumHeight(120)
-        root.addWidget(self._info_editor)
+        top_l.addWidget(self._info_editor)
 
         # File input
         self._file_row = QWidget()
@@ -208,7 +237,7 @@ class MainWindow(QMainWindow):
         btn_browse.clicked.connect(self._browse_file)
         fi.addWidget(self._file_edit, stretch=2)
         fi.addWidget(btn_browse)
-        root.addWidget(self._file_row)
+        top_l.addWidget(self._file_row)
 
         # Step cards
         cards_container = QWidget()
@@ -235,8 +264,8 @@ class MainWindow(QMainWindow):
         self._cards_scroll = QScrollArea()
         self._cards_scroll.setWidgetResizable(False)
         self._cards_scroll.setWidget(cards_container)
-        self._cards_scroll.setMinimumHeight(340)
-        self._cards_scroll.setMaximumHeight(420)
+        self._cards_scroll.setMinimumHeight(220)
+        self._cards_scroll.setMaximumHeight(480)
         self._cards_scroll.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAsNeeded
         )
@@ -248,18 +277,22 @@ class MainWindow(QMainWindow):
             "QScrollBar::handle:horizontal{background:#3d3d6e;border-radius:4px;}"
             "QScrollBar::add-line:horizontal,QScrollBar::sub-line:horizontal{width:0;}"
         )
-        root.addWidget(self._cards_scroll)
+        top_l.addWidget(self._cards_scroll)
 
         # Run All / Stop / Cancel
         self._run_ctrl = QFrame()
         self._run_ctrl.setStyleSheet(
             "QFrame{background:#111828;border:1px solid #2d2d4e;border-radius:8px;}"
         )
-        ctrl_h = QHBoxLayout(self._run_ctrl)
-        ctrl_h.setContentsMargins(12, 8, 12, 8)
+        ctrl_outer = QVBoxLayout(self._run_ctrl)
+        ctrl_outer.setContentsMargins(12, 8, 12, 8)
+        ctrl_outer.setSpacing(8)
+
+        ctrl_h = QHBoxLayout()
         ctrl_h.setSpacing(8)
 
-        self._btn_run_all = QPushButton("▶▶  Run All Enabled Steps")
+        self._btn_run_all = QPushButton("▶▶  Run all (enabled)")
+        self._btn_run_all.setToolTip("Queue and run every step that has its checkbox enabled")
         self._btn_run_all.setObjectName("run_all_btn")
         self._btn_run_all.setStyleSheet(
             "QPushButton#run_all_btn{background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
@@ -268,6 +301,11 @@ class MainWindow(QMainWindow):
             "QPushButton#run_all_btn:hover{background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
             "stop:0 #5a52d5,stop:1 #9333ea);}"
             "QPushButton#run_all_btn:disabled{background:#2a2a4a;color:#555;}"
+        )
+        self._btn_run_all.setMinimumWidth(96)
+        self._btn_run_all.setSizePolicy(
+            QSizePolicy.Policy.MinimumExpanding,
+            QSizePolicy.Policy.Fixed,
         )
         self._btn_run_all.clicked.connect(self._run_all)
         ctrl_h.addWidget(self._btn_run_all)
@@ -288,43 +326,53 @@ class MainWindow(QMainWindow):
         self._btn_cancel.setVisible(False)
         self._btn_cancel.clicked.connect(self._cancel)
         ctrl_h.addWidget(self._btn_cancel)
+        ctrl_h.addStretch()
 
-        ctrl_h.addSpacing(8)
+        ctrl_outer.addLayout(ctrl_h)
+
+        ctrl_meta = QHBoxLayout()
+        ctrl_meta.setSpacing(8)
         self._progress = QProgressBar()
         self._progress.setRange(0, 0)
         self._progress.setVisible(False)
-        self._progress.setFixedWidth(180)
-        ctrl_h.addWidget(self._progress)
+        self._progress.setMinimumWidth(100)
+        self._progress.setMaximumWidth(220)
+        ctrl_meta.addWidget(self._progress)
         self._prog_lbl = QLabel("")
         self._prog_lbl.setStyleSheet("color:#888;font-size:11px;")
         self._queue_lbl = QLabel("")
+        self._queue_lbl.setWordWrap(True)
         self._queue_lbl.setStyleSheet("color:#ffaa55;font-size:12px;font-weight:600;")
-        ctrl_h.addWidget(self._queue_lbl)
-        ctrl_h.addWidget(self._prog_lbl)
-        ctrl_h.addStretch()
-        root.addWidget(self._run_ctrl)
+        self._queue_lbl.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Preferred,
+        )
+        ctrl_meta.addWidget(self._queue_lbl, stretch=1)
+        ctrl_meta.addWidget(self._prog_lbl)
+        ctrl_outer.addLayout(ctrl_meta)
 
-        # Log + preview
-        self._editor_split = QSplitter(Qt.Orientation.Vertical)
-        self._log_edit = QTextEdit()
-        self._log_edit.setReadOnly(True)
-        self._log_edit.setMaximumHeight(130)
-        self._log_edit.setPlaceholderText("Pipeline log…")
-        self._log_wrap = self._wrap("Log", self._log_edit)
-        self._editor_split.addWidget(self._log_wrap)
+        top_l.addWidget(self._run_ctrl)
 
-        # Subtitle editor (Original read-only + Translated editable + Save)
-        self._subtitle_editor = SubtitleEditor()
-        self._subtitle_editor.set_orig_placeholder("Original transcript…")
-        self._subtitle_editor.set_trans_placeholder("Translated subtitles…")
-        self._subtitle_editor.saved.connect(self._on_subtitle_editor_saved)
-        self._subtitle_editor.mode_changed.connect(self._on_editor_mode_changed)
-        for step in self._steps:
-            if getattr(step, "STEP_ID", "") == "step3_burn":
-                self._subtitle_editor.set_step3_bridge(step)
-                break
-        self._editor_split.addWidget(self._subtitle_editor)
-        root.addWidget(self._editor_split, stretch=1)
+        self._top_scroll = QScrollArea()
+        self._top_scroll.setWidgetResizable(True)
+        self._top_scroll.setWidget(self._top_panel)
+        self._top_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._top_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self._top_scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self._top_scroll.setMinimumHeight(200)
+
+        self._body_split = QSplitter(Qt.Orientation.Vertical)
+        self._body_split.addWidget(self._top_scroll)
+        self._body_split.addWidget(self._editor_split)
+        self._body_split.setStretchFactor(0, 1)
+        self._body_split.setStretchFactor(1, 2)
+        self._body_split.setSizes([340, 420])
+
+        root.addWidget(self._body_split, stretch=1)
 
         self._status_bar = QStatusBar()
         self.setStatusBar(self._status_bar)
@@ -335,16 +383,15 @@ class MainWindow(QMainWindow):
             self._subtitle_editor.set_mode(mode)
         is_studio = mode == "studio"
         # Switch the whole editing area focus.
-        self._session_bar.setVisible(not is_studio)
-        self._file_row.setVisible(not is_studio)
-        self._cards_scroll.setVisible(not is_studio)
-        self._run_ctrl.setVisible(not is_studio)
+        self._top_scroll.setVisible(not is_studio)
         self._log_wrap.setVisible(not is_studio)
-        self._info_editor.setVisible(not is_studio)
         self._btn_editor_default.setChecked(not is_studio)
         self._btn_editor_studio.setChecked(is_studio)
         if is_studio:
             self._editor_split.setSizes([0, 1])
+            self._body_split.setSizes([0, max(400, self.height())])
+        else:
+            self._body_split.setSizes([340, 420])
 
     def _on_editor_mode_changed(self, mode: str):
         # Keep top switch in sync even if mode changed inside SubtitleEditor.
