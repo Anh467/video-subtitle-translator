@@ -200,4 +200,45 @@ Cửa sổ **SubSync** sẽ mở. **Giữ Terminal mở** trong lúc dùng app (
 
 ---
 
+## 13. (Nâng cao) Đóng gói SubSync thành file `.app` bằng PyInstaller
+
+Mục này dành khi bạn muốn **một nhấp vào Finder** như app thường. **Việc tạo file `.app` phải chạy trên macOS** (GitHub Actions `macos-latest` hoặc máy Mac thật; không đóng gói Mac app từ Windows).
+
+### 13.1. Vẫn cần `ffmpeg`
+
+SubSync hiện gọi lệnh `ffmpeg` trên PATH hoặc qua biến **`FFMPEG_EXECUTABLE`** trỏ tới đường dẫn đầy đủ (ví dụ sau khi bạn tự nhúng binary ffmpeg vào dạng `--add-binary` của PyInstaller). Nếu **không** nhúng, người dùng máy nhận file `.app` vẫn nên **`brew install ffmpeg`** giống mục 4.
+
+Để chỉnh binary ffmpeg khi dev:
+
+```bash
+export FFMPEG_EXECUTABLE="/đường/dẫn/ffmpeg"
+python main.py
+```
+
+### 13.2. Cài PyInstaller trong venv
+
+```bash
+source venv/bin/activate
+pip install pyinstaller
+```
+
+### 13.3. Lệnh gói tối thiểu (cửa sổ, không có console)
+
+```bash
+cd "/đường/dẫn/video-subtitle-translator"
+pyinstaller --windowed --name SubSync --clean main.py
+```
+
+Kết quả nằm trong thư mục **`dist/SubSync.app`**. Whisper / PyTorch / PyQt có thể cần **`--collect-all`** hoặc `--hidden-import` bổ sung nếu lúc chạy báo `ModuleNotFoundError` — bật **`--onedir`** thay cho onefile thường dễ gỡ lỗi hơn (`pyinstaller --windowed --name SubSync --onedir main.py`).
+
+### 13.4. Sau khi gói: Gatekeeper và thuộc tính tải về
+
+- Lần đầu có thể cần: **chuột phải** `SubSync.app` → **Open**.
+- Hoặc (chỉ dùng khi bạn hiểu rủi ro):  
+  `xattr -cr "/đường/dẫn/dist/SubSync.app"`
+
+Kiểm thử nhớ bật `ffmpeg`: `ffmpeg -version` trong Terminal.
+
+---
+
 *Bản hướng dẫn này nhằm cài chạy từ mã nguồn trên Mac. Không liên quan n8n / Docker.*

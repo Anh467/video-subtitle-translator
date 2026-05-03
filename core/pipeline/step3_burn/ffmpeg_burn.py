@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from core.ffmpeg_utils import escape_for_ffmpeg_single_quoted_fragment, ffmpeg_executable
 from core.pipeline.step3_burn.constants import DEFAULT_CRF, DEFAULT_PRESET
 from core.pipeline.step3_burn.delogo import delogo_filter, escape_drawtext_text
 from core.pipeline.step3_burn.srt_writer import color_name_to_ass_bgr
@@ -9,7 +10,7 @@ from core.pipeline.step3_burn.srt_writer import color_name_to_ass_bgr
 def soft_sub_cmd(video, srt, out):
     codec = "srt" if Path(out).suffix.lower() == ".mkv" else "mov_text"
     return [
-        "ffmpeg",
+        ffmpeg_executable(),
         "-y",
         "-i",
         video,
@@ -50,7 +51,12 @@ def hard_burn_cmd(
     delogo=None,
     branding=None,
 ):
-    escaped = srt.replace("\\", "/").replace(":", "\\:")
+    subs_p = Path(srt).expanduser()
+    try:
+        subs_p = subs_p.resolve(strict=False)
+    except OSError:
+        pass
+    subs_path_q = escape_for_ffmpeg_single_quoted_fragment(subs_p.as_posix())
 
     # Resolve bg from new bg_style field
     use_bg = bg_style != "none"
@@ -90,7 +96,8 @@ def hard_burn_cmd(
             f"Shadow={shadow},Alignment={alignment},MarginV={margin_v}"
         )
 
-    sub_filter = f"subtitles='{escaped}':force_style='{force_style}'"
+    style_q = escape_for_ffmpeg_single_quoted_fragment(force_style)
+    sub_filter = f"subtitles='{subs_path_q}':force_style='{style_q}'"
 
     # ── Chain delogo BEFORE subtitles ──────────────────────────────────────
     # Order matters: remove old sub first, then burn new one on clean frame.
@@ -114,7 +121,7 @@ def hard_burn_cmd(
     # No branding — simple case
     if not branding or not branding.get("enabled"):
         return [
-            "ffmpeg",
+            ffmpeg_executable(),
             "-y",
             "-i",
             video,
@@ -206,7 +213,7 @@ def hard_burn_cmd(
         )
         map_label = "vout"
 
-    cmd = ["ffmpeg", "-y", "-i", video]
+    cmd = [ffmpeg_executable(), "-y", "-i", video]
     if avatar_exists:
         cmd += ["-i", avatar]
     cmd += [
