@@ -1,0 +1,114 @@
+{
+  "name": "Publish sessions - ERROR log helper",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "22222222-2222-4222-8222-222222222201",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "repo_root",
+              "value": "D:\\Nguyen-Anh-Viet\\Tutorial\\Python\\audio-to-text\\video-subtitle-translator"
+            },
+            {
+              "name": "log_file",
+              "value": "D:\\Downloads\\workspace\\horror_story\\n8n_publish_errors.jsonl"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "22222222-2222-4222-8222-222222222202",
+      "name": "Set error paths (edit log_file + repo_root)",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [220, 0]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const j = $('Error Trigger').first().json;\nconst base = $('Set error paths (edit log_file + repo_root)').first().json;\nconst ex = j.execution || {};\nconst err = ex.error || {};\nconst payload = {\n  failed_workflow: j.workflow?.name,\n  workflow_id: j.workflow?.id,\n  execution_id: ex.id,\n  execution_url: ex.url,\n  last_node_executed: ex.lastNodeExecuted,\n  error_message: err.message || err.description,\n  error_stack: err.stack,\n};\nlet b64;\ntry {\n  b64 = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64');\n} catch (e) {\n  b64 = Buffer.from(JSON.stringify({ format_error: String(e) }), 'utf8').toString('base64');\n}\nreturn [{ json: { b64, log_file: base.log_file, repo_root: base.repo_root } }];"
+      },
+      "id": "22222222-2222-4222-8222-222222222203",
+      "name": "Format error payload (b64)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 0]
+    },
+    {
+      "parameters": {
+        "executeOnce": true,
+        "command": "=cmd /c cd /d {{ $json.repo_root }} && python n8n-automatioin\\workflow_log_append.py {{ $json.log_file }} workflow_error --level ERROR --payload-b64 {{ $json.b64 }}"
+      },
+      "id": "22222222-2222-4222-8222-222222222204",
+      "name": "Append error to log file",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [700, 0]
+    },
+    {
+      "parameters": {
+        "content": "## Error workflow setup\n1. Import this workflow and **activate** it (or enable as error handler per docs).\n2. Edit **Set error paths**: same `repo_root` as main flow; `log_file` for failures only.\n3. In **Settings** of workflow **Publish sessions - full**, set **Error workflow** → pick this workflow (or assign in global n8n settings).\n\nThis does **not** replace fixing the failing node—it only writes one JSON line to disk.",
+        "height": 240,
+        "width": 480,
+        "color": 3
+      },
+      "id": "22222222-2222-4222-8222-222222222205",
+      "name": "Note error handler",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [0, -200]
+    }
+  ],
+  "connections": {
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Set error paths (edit log_file + repo_root)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set error paths (edit log_file + repo_root)": {
+      "main": [
+        [
+          {
+            "node": "Format error payload (b64)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format error payload (b64)": {
+      "main": [
+        [
+          {
+            "node": "Append error to log file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}

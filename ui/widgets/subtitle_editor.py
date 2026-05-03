@@ -51,87 +51,11 @@ except Exception:
     QMediaPlayer = None
     QVideoWidget = None
 
-
-def _srt_time(s: float) -> str:
-    h, r = divmod(int(s), 3600)
-    m, sec = divmod(r, 60)
-    ms = int((s - int(s)) * 1000)
-    return f"{h:02}:{m:02}:{sec:02},{ms:03}"
-
-
-def _write_srt(segments: list[dict], path: str):
-    lines = []
-    for i, seg in enumerate(segments, 1):
-        lines.append(
-            f"{i}\n"
-            f"{_srt_time(seg['start'])} --> {_srt_time(seg['end'])}\n"
-            f"{seg['translated'].strip()}\n"
-        )
-    Path(path).write_text("\n".join(lines), encoding="utf-8")
-
-
-def _ffprobe_duration_seconds(path: str) -> float:
-    if not path or not Path(path).exists():
-        return 0.0
-    try:
-        cmd = [
-            "ffprobe",
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
-            str(path),
-        ]
-        out = subprocess.check_output(cmd, text=True).strip()
-        return max(0.0, float(out))
-    except Exception:
-        return 0.0
-
-
-def _parse_translated_block(text: str) -> list[dict]:
-    """
-    Parse Translated panel (SRT-style) về list of dicts.
-
-    Format:
-        1
-        [0.0s-1.28s] original text
-        translated text
-
-        2
-        [1.28s-2.84s] original text
-        translated text here
-    """
-    segments = []
-    blocks = re.split(r"\n\s*\n", text.strip())
-    for block in blocks:
-        lines = [l for l in block.strip().splitlines() if l.strip()]
-        if len(lines) < 2:
-            continue
-        # Find timestamp line
-        ts_idx = None
-        for i, line in enumerate(lines):
-            if re.match(r"^\[[\d.]+s[–\-][\d.]+s\]", line.strip()):
-                ts_idx = i
-                break
-        if ts_idx is None:
-            continue
-        ts_line = lines[ts_idx].strip()
-        m = re.match(r"^\[([\d.]+)s[–\-]([\d.]+)s\]\s*(.*)", ts_line)
-        if not m:
-            continue
-        start = float(m.group(1))
-        end = float(m.group(2))
-        original = m.group(3).strip()
-        translated_lines = lines[ts_idx + 1 :]
-        translated = " ".join(l.strip() for l in translated_lines if l.strip())
-        if not translated:
-            continue
-        segments.append(
-            {"start": start, "end": end, "original": original, "translated": translated}
-        )
-    return segments
+from ui.widgets.subtitle_editor_io import (
+    media_duration_seconds_ffprobe,
+    parse_translated_panel_text,
+    write_srt_from_segment_dicts,
+)
 
 
 class SubtitleEditor(QWidget):
@@ -180,7 +104,7 @@ class SubtitleEditor(QWidget):
                 self._btn_play_pause.setText("▶ Play")
             except Exception:
                 pass
-        self._duration_ms = int(_ffprobe_duration_seconds(self._source_file) * 1000)
+        self._duration_ms = int(media_duration_seconds_ffprobe(self._source_file) * 1000)
         if hasattr(self, "_studio_timeline") and self._studio_timeline:
             self._studio_timeline.setMaximum(max(0, self._duration_ms))
         self._update_timeline_label()
@@ -269,7 +193,7 @@ class SubtitleEditor(QWidget):
         self._trans_edit.setPlainText(trans_text)
         self._btn_save.setEnabled(False)
         self._studio_dirty = False
-        self._segments = _parse_translated_block(trans_text)
+        self._segments = parse_translated_panel_text(trans_text)
         self._reload_studio_segments()
         self._update_title()
 
@@ -1091,7 +1015,7 @@ class SubtitleEditor(QWidget):
             self._trans_edit.blockSignals(True)
             self._trans_edit.setPlainText(text)
             self._trans_edit.blockSignals(False)
-        segments = _parse_translated_block(text)
+        segments = parse_translated_panel_text(text)
 
         if not segments:
             QMessageBox.warning(
@@ -1114,7 +1038,7 @@ class SubtitleEditor(QWidget):
                 json.dumps(segments, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
-            _write_srt(segments, str(srt_path))
+            write_srt_from_segment_dicts(segments, str(srt_path))
             # Keep studio settings and title in session metadata.
             payload = self._studio_payload()
             self._session.save_info(

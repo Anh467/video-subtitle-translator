@@ -1,0 +1,39 @@
+# Self-hosted n8n (Docker) with Execute Command + Read/Write Files enabled (n8n 2.x),
+# and Python inside the image so export/mark scripts can run in the container.
+#
+# Chạy từ repo root (thư mục chứa n8n-automatioin):
+#   docker compose -f n8n-automatioin/docker-compose.n8n.example.yml up -d --build
+#
+# Mở: http://localhost:5678
+#
+# QUAN TRỌNG (container ≠ Windows):
+# - Trong workflow, node "2 Publishing config": REPO_ROOT phải là đường dẫn *trong container*, vd. /repo
+# - Node "1 Workspace" → field workspace cũng là đường dẫn *trong container*, vd. /workspace hoặc /workspace/ten_subfolder
+# - Sửa hai dòng volumes bên dưới cho đúng ổ đĩa Windows của bạn.
+
+services:
+  n8n:
+    build:
+      context: .
+      dockerfile: Dockerfile.n8n
+    image: video-subtitle-translator-n8n:local
+    ports:
+      - "5678:5678"
+    environment:
+      NODES_EXCLUDE: "[]"
+      # Giới hạn đọc/ghi file (Read/Write Files node) — n8n nhiều thư mục = danh sách cách nhau bởi `;`, không phảy.
+      N8N_RESTRICT_FILE_ACCESS_TO: "/repo;/workspace"
+      # Page token (giống credential Facebook Graph trong n8n) — bắt buộc cho facebook_resumable_upload.py.
+      # Tạo file `.env` cạnh compose: FACEBOOK_PAGE_ACCESS_TOKEN=EAA... rồi docker compose up lại.
+      # Hoặc dùng FACEBOOK_PAGE_TOKEN_FILE trỏ file một dòng token (Docker secrets).
+      FACEBOOK_PAGE_ACCESS_TOKEN: ${FACEBOOK_PAGE_ACCESS_TOKEN:-}
+      FACEBOOK_PAGE_TOKEN_FILE: ${FACEBOOK_PAGE_TOKEN_FILE:-}
+    volumes:
+      - n8n_data:/home/node/.n8n
+      # Repo clone (có thư mục n8n-automatioin) — map vào /repo
+      - "D:/Nguyen-Anh-Viet/Tutorial/Python/audio-to-text/video-subtitle-translator:/repo:rw"
+      # Thư mục workspace (cha của các folder session) — map vào /workspace
+      - "D:/Downloads/workspace/horror_story:/workspace:rw"
+
+volumes:
+  n8n_data:

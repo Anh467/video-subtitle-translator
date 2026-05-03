@@ -188,35 +188,51 @@ Trong UI: Step 2 → Verify via → **Ollama — local free ⭐** → chọn mod
 
 ## Cấu trúc project
 
+Mỗi bước pipeline (1→7) là **một package** dưới `core/pipeline/<tên_step>/` (`__init__.py` re-export class chính và hằng số dùng ngoài), cùng kiểu như `step2_translate/` và `step3_burn/`.
+
 ```
 subsync/
 ├── main.py                        ← Entry point
-├── requirements.txt               ← Python packages
-├── requirements.docker.txt        ← Packages cho Docker (không có PyQt6)
-├── Dockerfile                     ← Docker image
-├── docker-compose.yml             ← Docker Compose
-├── api_server.py                  ← FastAPI backend (cho Docker mode)
+├── requirements.txt
+├── requirements.docker.txt
+├── Dockerfile
+├── docker-compose.yml
+├── api_server.py                  ← FastAPI (Docker mode, nếu có)
 │
 ├── core/
-│   ├── session.py                 ← Quản lý session folder
+│   ├── session.py                 ← Session folder + chaining
+│   ├── session_listing.py         ← Liệt kê session (scan + dung lượng)
+│   ├── config_store.py            ← Lưu cấu hình step theo workspace
+│   ├── api_keys.py
+│   ├── log_file.py                ← Shim → core/logging (FileLogger)
+│   ├── logging/                   ← format log + ghi file theo ngày
 │   └── pipeline/
-│       ├── base.py                ← Abstract BaseStep + Worker
-│       ├── step1_transcribe.py    ← Whisper STT
-│       ├── step2_translate.py     ← Dịch + SmartFix + Verify
-│       ├── step3_burn.py          ← Burn subtitle (ffmpeg ASS + QPainter preview)
-│       ├── step4_separate.py      ← Tách giọng (Demucs)
-│       ├── step5_tts.py           ← Text-to-Speech
-│       └── step6_add_voice.py     ← Ghép TTS + nhạc nền vào video
+│       ├── base.py
+│       ├── selection.py
+│       ├── tts_assets.py
+│       ├── step1_transcribe/      ← constants, models, transcribe_step …
+│       ├── step2_translate/
+│       ├── step3_burn/
+│       ├── step4_separate/
+│       ├── step5_tts/             ← budget.py (bảng giá), tts_step …
+│       ├── step6_add_voice/
+│       └── step7_publish/         ← stop_words, publish_step …
 │
 └── ui/
-    ├── main_window.py             ← Cửa sổ chính PyQt6 + throughput logging
-    ├── multi_session_window.py    ← Multi-session queue window
+    ├── main_window.py
+    ├── multi_session_window.py    ← Shim → ui/multi_session/
+    ├── multi_session/             ← cost_worker, session_list_panel, window
+    ├── dialogs/                   ← API keys, session picker
+    ├── theme.py
     └── widgets/
-        ├── step_card.py           ← Card cho mỗi step
-        ├── drop_zone.py           ← Drag & drop zone
-        ├── subtitle_editor.py     ← Editable subtitle panel
-        └── session_info_editor.py ← Title / notes / thumbnail editor
+        ├── step_card.py
+        ├── drop_zone.py
+        ├── subtitle_editor.py
+        ├── subtitle_editor_io.py  ← Parse / SRT / ffprobe duration
+        └── session_info_editor.py
 ```
+
+**Import ví dụ:** `from core.pipeline.step7_publish import PublishInfoStep` · `from core.pipeline.step3_burn import BurnStep, write_srt`
 
 ---
 
@@ -236,7 +252,8 @@ Mỗi lần chạy tạo 1 folder riêng:
   ├── step4_background.mp3      ← nhạc nền (tách riêng)
   ├── step5_tts.mp3             ← audio TTS tiếng Việt
   ├── step5_tts_assets/          ← TTS assets per segment
-  └── step6_output.mp4          ← video cuối (TTS + nhạc nền mixed)
+  ├── step6_output.mp4 (hoặc result/result_output_*.*) ← video cuối
+  └── step7_publish_info.json   ← title / mô tả / hashtag / thumbnail meta
 ```
 
 ---

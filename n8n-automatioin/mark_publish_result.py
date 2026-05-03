@@ -4,7 +4,7 @@ import argparse
 import json
 from datetime import datetime, timezone
 
-from session_publish_jobs import write_publish_marker
+from session_publish_jobs import refresh_export_marker_status, write_publish_marker
 
 
 def parse_args() -> argparse.Namespace:
@@ -51,6 +51,7 @@ def main() -> int:
     if args.extra_json:
         payload.update(json.loads(args.extra_json))
     marker_path = write_publish_marker(args.session_folder, args.platform, payload)
+    refresh_export_marker_status(args.session_folder)
     print(
         json.dumps(
             {"ok": True, "marker_path": marker_path, "payload": payload},

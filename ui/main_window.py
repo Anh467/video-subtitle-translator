@@ -4,17 +4,15 @@ import os
 import time
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QThreadPool
+from PyQt6.QtCore import QEvent, QObject, Qt, QThreadPool
 from PyQt6.QtWidgets import (
+    QApplication,
     QDialog,
-    QDialogButtonBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QListWidget,
-    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QProgressBar,
@@ -33,335 +31,16 @@ from core.pipeline.step3_burn import BurnStep
 from core.pipeline.step4_separate import SeparateStep
 from core.pipeline.step5_tts import TTSStep
 from core.pipeline.step6_add_voice import AddVoiceStep
-from core.pipeline.step7_publish_info import PublishInfoStep
+from core.pipeline.step7_publish import PublishInfoStep
 from core.session import Session
 from ui.multi_session_window import MultiSessionWindow
 from ui.widgets.drop_zone import SUPPORTED, DropZone
 from ui.widgets.session_info_editor import SessionInfoEditor
 from ui.widgets.step_card import StepCard
+from ui.dialogs.api_keys_dialog import ApiKeysDialog
+from ui.dialogs.session_picker_dialog import SessionPickerDialog
+from ui.theme import STYLESHEET
 from ui.widgets.subtitle_editor import SubtitleEditor
-
-STYLESHEET = """
-QMainWindow,QWidget{background:#1a1a2e;color:#e0e0e0;
-font-family:'SF Pro Display','Segoe UI',Arial,sans-serif;font-size:13px;}
-QPushButton{background:#2d2d4e;color:#e0e0e0;border:1px solid #3d3d6e;
-border-radius:6px;padding:5px 12px;}
-QPushButton:hover{background:#3d3d6e;border-color:#6c63ff;}
-QPushButton:disabled{color:#444;background:#1e1e38;border-color:#252540;}
-QPushButton#cancel_btn{background:#3a1a1a;color:#ff7070;border:1px solid #6e2d2d;
-font-weight:bold;padding:7px 14px;}
-QPushButton#cancel_btn:hover{background:#5a2020;}
-QLineEdit{background:#16213e;border:1px solid #2d2d4e;border-radius:5px;
-padding:5px 10px;color:#e0e0e0;}
-QLineEdit:focus{border-color:#6c63ff;}
-QLineEdit:read-only{color:#aaa;background:#111828;}
-QComboBox{background:#16213e;border:1px solid #2d2d4e;border-radius:5px;
-padding:4px 10px;color:#e0e0e0;}
-QComboBox:hover{border-color:#6c63ff;}
-QComboBox QAbstractItemView{background:#16213e;border:1px solid #6c63ff;
-color:#e0e0e0;selection-background-color:#6c63ff;}
-QComboBox::drop-down{border:none;}
-QTextEdit{background:#0f0f23;border:1px solid #2d2d4e;border-radius:6px;
-padding:8px;color:#d0d0d0;font-family:'SF Mono','Consolas',monospace;font-size:12px;}
-QProgressBar{border:1px solid #2d2d4e;border-radius:4px;background:#16213e;
-text-align:center;color:white;height:16px;}
-QProgressBar::chunk{background:#6c63ff;border-radius:3px;}
-QStatusBar{background:#0f0f23;border-top:1px solid #2d2d4e;color:#666;}
-QSplitter::handle{background:#2d2d4e;}
-QScrollArea{border:none;background:transparent;}
-QCheckBox{spacing:6px;}
-QCheckBox::indicator{width:14px;height:14px;border:1px solid #3d3d6e;
-border-radius:3px;background:#16213e;}
-QCheckBox::indicator:checked{background:#6c63ff;border-color:#6c63ff;}
-QRadioButton{spacing:6px;}
-QRadioButton::indicator{width:14px;height:14px;border-radius:7px;
-border:1px solid #3d3d6e;background:#16213e;}
-QRadioButton::indicator:checked{background:#6c63ff;border-color:#6c63ff;}
-QSpinBox{background:#16213e;border:1px solid #2d2d4e;border-radius:5px;
-padding:4px 6px;color:#e0e0e0;min-width:70px;}
-QSpinBox:focus{border-color:#6c63ff;}
-QSpinBox::up-button,QSpinBox::down-button{width:18px;background:#2d2d4e;
-border:none;border-radius:3px;}
-QSpinBox::up-button:hover,QSpinBox::down-button:hover{background:#3d3d6e;}
-QFrame#session_bar{background:#111828;border:1px solid #2d2d4e;border-radius:6px;}
-QSlider::groove:horizontal{height:4px;background:#2d2d4e;border-radius:2px;}
-QSlider::handle:horizontal{width:14px;height:14px;margin:-5px 0;
-background:#6c63ff;border-radius:7px;}
-QListWidget{background:#111828;border:1px solid #2d2d4e;border-radius:6px;
-color:#e0e0e0;outline:none;}
-QListWidget::item{padding:8px 12px;border-bottom:1px solid #1e1e38;}
-QListWidget::item:selected{background:#2d2d4e;border-left:3px solid #6c63ff;}
-QListWidget::item:hover{background:#1e1e38;}
-QDoubleSpinBox{background:#16213e;border:1px solid #2d2d4e;border-radius:5px;
-padding:4px 6px;color:#e0e0e0;min-width:70px;}
-QDoubleSpinBox:focus{border-color:#6c63ff;}
-"""
-
-
-# ── API Keys Dialog ───────────────────────────────────────────────────────────
-
-
-class ApiKeysDialog(QDialog):
-    """Dialog để nhập và quản lý API keys — auto-save vào .subsync_keys"""
-
-    def __init__(self, base_dir: str = "", parent=None):
-        super().__init__(parent)
-        self.base_dir = base_dir
-        self.setWindowTitle("🔑  API Keys Manager")
-        self.setMinimumSize(540, 480)
-        self.setStyleSheet(parent.styleSheet() if parent else "")
-        self._edits: dict = {}
-        self._setup_ui()
-        self._load()
-
-    def _setup_ui(self):
-        from core.api_keys import ENV_FILE, KNOWN_KEYS
-
-        v = QVBoxLayout(self)
-        v.setSpacing(10)
-
-        # Header
-        hdr = QLabel("API Keys — lưu vào file .subsync_keys trong session folder")
-        hdr.setStyleSheet("color:#a0a8ff;font-size:12px;")
-        v.addWidget(hdr)
-
-        if self.base_dir:
-            path_lbl = QLabel(f"📁 {self.base_dir}/{ENV_FILE}")
-            path_lbl.setStyleSheet("color:#555;font-size:10px;font-family:monospace;")
-            v.addWidget(path_lbl)
-
-        # Key fields
-        for env_key, meta in KNOWN_KEYS.items():
-            row = QHBoxLayout()
-            lbl = QLabel(f"{meta['label']}:")
-            lbl.setFixedWidth(160)
-            lbl.setStyleSheet("color:#a0c0ff;font-size:12px;")
-            row.addWidget(lbl)
-            edit = QLineEdit()
-            edit.setPlaceholderText(f"{env_key}=...")
-            edit.setEchoMode(QLineEdit.EchoMode.Password)
-            row.addWidget(edit)
-
-            # Toggle show/hide
-            btn_show = QPushButton("👁")
-            btn_show.setFixedWidth(32)
-            btn_show.setCheckable(True)
-            btn_show.setStyleSheet("QPushButton{padding:2px;}")
-            btn_show.toggled.connect(
-                lambda checked, e=edit: e.setEchoMode(
-                    QLineEdit.EchoMode.Normal
-                    if checked
-                    else QLineEdit.EchoMode.Password
-                )
-            )
-            row.addWidget(btn_show)
-            v.addLayout(row)
-            self._edits[env_key] = edit
-
-        # Info
-        info = QLabel(
-            "💡 Keys được lưu vào file <b>.subsync_keys</b> trong session folder.<br>"
-            "App tự động load khi bạn chọn folder.<br>"
-            "<b>Không share file này!</b> Thêm vào <code>.gitignore</code> nếu dùng git."
-        )
-        info.setStyleSheet("color:#666;font-size:11px;padding:8px;")
-        info.setWordWrap(True)
-        v.addWidget(info)
-
-        v.addStretch()
-
-        # Buttons
-        btns = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Save
-            | QDialogButtonBox.StandardButton.Cancel
-        )
-        btns.accepted.connect(self._save)
-        btns.rejected.connect(self.reject)
-        v.addWidget(btns)
-
-    def _load(self):
-        from core.api_keys import get_manager
-
-        mgr = get_manager()
-        for env_key, edit in self._edits.items():
-            v = mgr.get(env_key, "")
-            if v:
-                edit.setText(v)
-
-    def _save(self):
-        from core.api_keys import get_manager
-
-        mgr = get_manager()
-        for env_key, edit in self._edits.items():
-            v = edit.text().strip()
-            mgr.set(env_key, v)
-        self.accept()
-
-
-# ── Session Picker Dialog ─────────────────────────────────────────────────────
-
-
-class SessionPickerDialog(QDialog):
-    """Dialog hiển thị danh sách sessions, cho phép chọn hoặc clear."""
-
-    def __init__(self, base_dir: str, parent=None):
-        super().__init__(parent)
-        self.base_dir = base_dir
-        self.selected_folder = None
-        self.setWindowTitle("📁  Session Manager")
-        self.setMinimumSize(700, 480)
-        self.setStyleSheet(parent.styleSheet() if parent else "")
-        self._setup_ui()
-        self._load_sessions()
-
-    def _setup_ui(self):
-        v = QVBoxLayout(self)
-        v.setSpacing(10)
-
-        # Header
-        hdr = QLabel("Select a previous session to resume, or start a new one.")
-        hdr.setStyleSheet("color:#a0a8ff;font-size:12px;")
-        v.addWidget(hdr)
-
-        # Session list
-        self._list = QListWidget()
-        self._list.itemDoubleClicked.connect(self._accept)
-        v.addWidget(self._list, stretch=1)
-
-        # Info label
-        self._info_lbl = QLabel("")
-        self._info_lbl.setStyleSheet(
-            "color:#888;font-size:11px;font-family:'Consolas','SF Mono',monospace;"
-        )
-        self._info_lbl.setWordWrap(True)
-        v.addWidget(self._info_lbl)
-        self._list.currentItemChanged.connect(self._on_select)
-
-        # Buttons
-        btn_row = QHBoxLayout()
-
-        self._btn_resume = QPushButton("▶  Resume Selected")
-        self._btn_resume.setStyleSheet(
-            "QPushButton{background:#1a4a2a;color:#5dca8e;border:1px solid #2a6a3a;"
-            "font-weight:bold;border-radius:6px;padding:8px 18px;}"
-            "QPushButton:hover{background:#2a6a3a;}"
-            "QPushButton:disabled{color:#444;background:#1e1e38;}"
-        )
-        self._btn_resume.setEnabled(False)
-        self._btn_resume.clicked.connect(self._accept)
-        btn_row.addWidget(self._btn_resume)
-
-        btn_new = QPushButton("✨  New Session")
-        btn_new.setStyleSheet(
-            "QPushButton{background:qlineargradient(x1:0,y1:0,x2:1,y2:0,"
-            "stop:0 #6c63ff,stop:1 #a855f7);color:white;font-weight:bold;"
-            "border:none;border-radius:6px;padding:8px 18px;}"
-            "QPushButton:hover{background:#5a52d5;}"
-        )
-        btn_new.clicked.connect(self.reject)
-        btn_row.addWidget(btn_new)
-
-        btn_row.addStretch()
-
-        self._btn_clear = QPushButton("🗑️  Clear Session")
-        self._btn_clear.setStyleSheet(
-            "QPushButton{background:#3a1a1a;color:#ff7070;border:1px solid #6e2d2d;"
-            "border-radius:6px;padding:8px 14px;}"
-            "QPushButton:hover{background:#5a2020;}"
-            "QPushButton:disabled{color:#444;background:#1e1e38;}"
-        )
-        self._btn_clear.setEnabled(False)
-        self._btn_clear.clicked.connect(self._clear_selected)
-        btn_row.addWidget(self._btn_clear)
-
-        self._btn_clear_all = QPushButton("🗑️  Clear All")
-        self._btn_clear_all.setStyleSheet(
-            "QPushButton{background:#3a1a1a;color:#ff7070;border:1px solid #6e2d2d;"
-            "border-radius:6px;padding:8px 14px;}"
-            "QPushButton:hover{background:#5a2020;}"
-        )
-        self._btn_clear_all.clicked.connect(self._clear_all)
-        btn_row.addWidget(self._btn_clear_all)
-
-        v.addLayout(btn_row)
-
-    def _load_sessions(self):
-        self._sessions = Session.list_sessions(self.base_dir)
-        self._list.clear()
-        if not self._sessions:
-            item = QListWidgetItem("  (No previous sessions found)")
-            item.setFlags(Qt.ItemFlag.NoItemFlags)
-            self._list.addItem(item)
-            return
-
-        for s in self._sessions:
-            from datetime import datetime
-
-            dt = datetime.fromtimestamp(s["mtime"]).strftime("%Y-%m-%d %H:%M")
-            done = " ".join(s["done_steps"]) if s["done_steps"] else "—"
-            src = Path(s["source_file"]).name if s["source_file"] else "unknown"
-            display_name = s.get("title", "").strip() or s["name"]
-            folder_sub = f"  ({s['name']})" if display_name != s["name"] else ""
-            text = f"  {display_name}{folder_sub}\n  📄 {src}  |  ✅ {done}  |  💾 {s['size_mb']} MB  |  🕐 {dt}"
-            item = QListWidgetItem(text)
-            item.setData(Qt.ItemDataRole.UserRole, s)
-            self._list.addItem(item)
-
-    def _on_select(self, item):
-        if item is None:
-            return
-        s = item.data(Qt.ItemDataRole.UserRole)
-        if s is None:
-            self._info_lbl.setText("")
-            self._btn_resume.setEnabled(False)
-            self._btn_clear.setEnabled(False)
-            return
-        self._btn_resume.setEnabled(True)
-        self._btn_clear.setEnabled(True)
-        done = s["done_steps"]
-        src = s["source_file"]
-        info = f"📁 {s['folder']}\n📄 Source: {src}\n✅ Completed: {' '.join(done) if done else 'None'}"
-        if not Path(src).exists():
-            info += "\n⚠️  Source file no longer exists at original path"
-        self._info_lbl.setText(info)
-
-    def _accept(self):
-        item = self._list.currentItem()
-        if item is None:
-            return
-        s = item.data(Qt.ItemDataRole.UserRole)
-        if s:
-            self.selected_folder = s["folder"]
-            self.accept()
-
-    def _clear_selected(self):
-        item = self._list.currentItem()
-        if item is None:
-            return
-        s = item.data(Qt.ItemDataRole.UserRole)
-        if s is None:
-            return
-        reply = QMessageBox.question(
-            self,
-            "Clear Session",
-            f"Delete all files in:\n{s['name']}?\n\nThis cannot be undone.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-        if reply == QMessageBox.StandardButton.Yes:
-            Session.clear_session(s["folder"])
-            self._load_sessions()
-
-    def _clear_all(self):
-        reply = QMessageBox.question(
-            self,
-            "Clear All Sessions",
-            f"Delete ALL sessions in:\n{self.base_dir}?\n\nThis cannot be undone.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-        if reply == QMessageBox.StandardButton.Yes:
-            for s in self._sessions:
-                Session.clear_session(s["folder"])
-            self._load_sessions()
 
 
 # ── MainWindow ────────────────────────────────────────────────────────────────
@@ -397,6 +76,9 @@ class MainWindow(QMainWindow):
         self._multi_window: MultiSessionWindow | None = None
         self._setup_ui()
         self._restore_last_workspace()
+        app = QApplication.instance()
+        if app:
+            app.installEventFilter(self)
 
     # ── UI ────────────────────────────────────────────────────────────────────
 
@@ -846,11 +528,7 @@ class MainWindow(QMainWindow):
 
     def _pick_base_dir(self):
         # Save current configs before switching workspace
-        old_base = self._sess_dir_edit.text().strip()
-        if old_base:
-            from core.config_store import save_step_configs
-
-            save_step_configs(old_base, self._steps)
+        self._persist_step_configs()
 
         d = QFileDialog.getExistingDirectory(self, "Choose base folder for sessions")
         if d:
@@ -866,12 +544,39 @@ class MainWindow(QMainWindow):
             if self._multi_window is not None:
                 self._multi_window.update_base_dir(d)
 
-    def closeEvent(self, event):
+    def _persist_step_configs(self):
+        """Write step UI to workspace .subsync_step_configs.json (safe to call often)."""
         base = self._sess_dir_edit.text().strip()
-        if base:
+        if not base or not os.path.isdir(base):
+            return
+        try:
             from core.config_store import save_step_configs
 
             save_step_configs(base, self._steps)
+        except Exception:
+            pass
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if (
+            watched is QApplication.instance()
+            and event.type() == QEvent.Type.ApplicationStateChange
+        ):
+            try:
+                st = QApplication.applicationState()
+            except Exception:
+                st = None
+            if (
+                st is not None
+                and st != Qt.ApplicationState.ApplicationActive
+                and hasattr(self, "_sess_dir_edit")
+            ):
+                self._persist_step_configs()
+        return super().eventFilter(watched, event)
+
+    def closeEvent(self, event):
+        self._persist_step_configs()
+        base = self._sess_dir_edit.text().strip()
+        if base:
             from PyQt6.QtCore import QSettings
 
             QSettings("SubSync", "SubSync").setValue("last_workspace", base)
@@ -1206,6 +911,7 @@ class MainWindow(QMainWindow):
         self._update_previews(step, result)
         if self._queue and self._queue[0] is step:
             self._queue.pop(0)
+        self._persist_step_configs()
         self._run_next_in_queue()
 
     def _error_queue(self, step, msg):
@@ -1320,6 +1026,7 @@ class MainWindow(QMainWindow):
             f"✅ {step.LABEL} complete"
             + (f" → {Path(out_path).name}" if out_path else "")
         )
+        self._persist_step_configs()
 
     def _error(self, step, msg):
         card = self._card_for(step)
