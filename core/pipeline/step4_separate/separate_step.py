@@ -2,7 +2,6 @@
 
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
@@ -15,6 +14,7 @@ from PyQt6.QtWidgets import (
 
 from core.ffmpeg_utils import ffmpeg_executable
 from core.pipeline.base import BaseStep
+from core.pipeline.demucs_invoke import run_demucs_in_process
 from core.pipeline.step4_separate.constants import DEMUCS_MODELS, STEM_MODES
 
 class SeparateStep(BaseStep):
@@ -80,10 +80,7 @@ class SeparateStep(BaseStep):
         tmp_out.mkdir(exist_ok=True)
 
         if stems == "2":
-            cmd = [
-                sys.executable,
-                "-m",
-                "demucs",
+            demucs_opts = [
                 "--name",
                 model,
                 "--out",
@@ -94,11 +91,7 @@ class SeparateStep(BaseStep):
                 str(tmp_input),
             ]
         else:
-            # 4-stem: no --two-stems flag
-            cmd = [
-                sys.executable,
-                "-m",
-                "demucs",
+            demucs_opts = [
                 "--name",
                 model,
                 "--out",
@@ -107,44 +100,19 @@ class SeparateStep(BaseStep):
                 str(tmp_input),
             ]
 
-        log(f"   $ {' '.join(cmd)}")
+        if cancel.is_set():
+            from core.pipeline.base import CancelledError
 
-        import os as _os
+            raise CancelledError()
 
-        env = _os.environ.copy()
-        env["PYTHONUTF8"] = "1"
-        env["PYTHONIOENCODING"] = "utf-8"
-
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            env=env,
-        )
-
-        for line in proc.stdout:
-            line = line.strip()
-            if line:
-                log(f"   {line}")
-            if cancel.is_set():
-                proc.terminate()
-                from core.pipeline.base import CancelledError
-
-                raise CancelledError()
-
-        proc.wait()
+        # In-process: PyInstaller ``sys.executable`` is the .app binary — never use ``-m demucs`` subprocess.
+        run_demucs_in_process(demucs_opts, log)
 
         # Cleanup temp input dir
         try:
             _shutil.rmtree(tmp_dir, ignore_errors=True)
         except Exception:
             pass
-
-        if proc.returncode != 0:
-            raise RuntimeError("Demucs failed — check log above.")
 
         # Locate output folder
         tmp_stem = "demucs_input"

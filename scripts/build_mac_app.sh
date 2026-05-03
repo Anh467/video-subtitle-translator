@@ -12,7 +12,7 @@ fi
 
 # --windowed → macOS .app bundle (onedir inside the app; reliable for Qt).
 # Use --onefile only if you want a single Mach-O binary (not always a .app).
-# Step 4/6 run ``sys.executable -m demucs`` — demucs (+ torch) must be inside the bundle.
+# Step 4/6 call demucs.separate.main in-process — demucs (+ torch) must be in the bundle.
 pyinstaller main.py \
   --name SubSync \
   --windowed \

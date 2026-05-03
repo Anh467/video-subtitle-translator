@@ -14,7 +14,7 @@ demucs
 gtts
 pydub
 elevenlabs
-audioop-lts              # Fix pydub on Python 3.13+
+#audioop-lts              # Fix pydub on Python 3.13+
  
 # ── Utils ─────────────────────────────────────────────────────────────────────
 ffmpeg-python

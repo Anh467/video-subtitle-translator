@@ -5,7 +5,6 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -26,6 +25,7 @@ from PyQt6.QtWidgets import (
 
 from core.ffmpeg_utils import ffmpeg_executable, ffprobe_executable
 from core.pipeline.base import BaseStep, CancelledError
+from core.pipeline.demucs_invoke import run_demucs_in_process
 from core.pipeline.step6_add_voice.constants import BACKEND_LABELS, MIX_MODES, VIDEO_EXTS
 from core.pipeline.tts_assets import (
     compose_timeline_audio,
@@ -318,10 +318,7 @@ class AddVoiceStep(BaseStep):
             return None, []
 
         demucs_out = tmp_root / "demucs_out"
-        demucs_cmd = [
-            sys.executable,
-            "-m",
-            "demucs",
+        demucs_opts = [
             "--name",
             "htdemucs",
             "--out",
@@ -332,18 +329,11 @@ class AddVoiceStep(BaseStep):
             str(tmp_input),
         ]
         log("   Running Demucs (htdemucs, two-stems=vocals)…")
-        proc = subprocess.run(
-            demucs_cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-        if proc.returncode != 0:
+        try:
+            run_demucs_in_process(demucs_opts, log)
+        except Exception as e:
             log("⚠️  Demucs auto-isolation failed")
-            tail = (proc.stderr or proc.stdout or "")[-700:]
-            if tail:
-                log(f"   {tail}")
+            log(f"   {e}")
             shutil.rmtree(tmp_root, ignore_errors=True)
             return None, []
 

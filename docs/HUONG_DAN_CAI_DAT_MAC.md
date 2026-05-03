@@ -276,7 +276,7 @@ pyinstaller main.py \
   --collect-all demucs
 ```
 
-*(Bước ④/⑥ gọi ``sys.executable -m demucs`` — cần đóng gói **demucs** (và thư viện kèm, gói sẽ nặng). Nếu thiếu module: bổ sung `--hidden-import …` theo báo lỗi. `--onefile` trên Mac thường **không** tạo `.app`; để có `SubSync.app` nên dùng lệnh trên, **không** thêm `--onefile`.)*
+*(Bước ④/⑥ gọi **Demucs trong process** (`demucs.separate.main`) — không dùng subprocess `python -m demucs` (tránh PyInstaller chạy nhầm `SubSync -m demucs`). Cần `--collect-all demucs` (gói nặng). Nếu thiếu module: thêm `--hidden-import …` theo báo lỗi. `--onefile` trên Mac thường **không** tạo `.app`; để có `SubSync.app` nên dùng lệnh trên, **không** thêm `--onefile`.)*
 
 ### 13.4. Gatekeeper sau khi gói
 
