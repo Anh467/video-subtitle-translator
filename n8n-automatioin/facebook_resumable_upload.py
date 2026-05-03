@@ -18,12 +18,12 @@ import argparse
 import base64
 import json
 import os
-from pathlib import Path
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from pathlib import Path
 from typing import Any
 
 DEFAULT_GRAPH_VIDEO_HOST = "graph-video.facebook.com"
@@ -64,7 +64,10 @@ def _post_urlencoded(
     url = f"{base_url}?{q}"
     body = urllib.parse.urlencode(fields).encode()
     req = urllib.request.Request(
-        url, data=body, method="POST", headers={"Content-Type": "application/x-www-form-urlencoded"}
+        url,
+        data=body,
+        method="POST",
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
     try:
         with urllib.request.urlopen(req, timeout=600) as resp:
@@ -155,10 +158,12 @@ def _die_error(data: dict[str, Any]) -> None:
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description="Facebook Page resumable video upload (chunked).")
+    p = argparse.ArgumentParser(
+        description="Facebook Page resumable video upload (chunked)."
+    )
     p.add_argument("--video", required=True, help="Path to local video file (mp4).")
     p.add_argument("--page-id", required=True, dest="page_id")
-    p.add_argument("--graph-version", default="v21.0", dest="graph_version")
+    p.add_argument("--graph-version", default="v25.0", dest="graph_version")
     p.add_argument("--chunk-mb", type=int, default=DEFAULT_CHUNK_MB, dest="chunk_mb")
     p.add_argument(
         "--meta-b64",
@@ -214,7 +219,7 @@ def main() -> int:
     chunk_size = max(1_048_576, min(args.chunk_mb * 1024 * 1024, 50 * 1024 * 1024))
     ver = args.graph_version.strip().lstrip("/")
     if not ver.startswith("v"):
-        ver = "v21.0"
+        ver = "v25.0"
 
     start_url = _page_videos_base(ver, args.page_id, DEFAULT_GRAPH_VIDEO_HOST)
     start_body = {
@@ -239,7 +244,10 @@ def main() -> int:
         while next_offset < file_size:
             step += 1
             if step > max_steps:
-                print("Quá nhiều vòng transfer — kiểm tra phản hồi Graph.", file=sys.stderr)
+                print(
+                    "Quá nhiều vòng transfer — kiểm tra phản hồi Graph.",
+                    file=sys.stderr,
+                )
                 return 1
             at = next_offset
             to_read = min(chunk_size, file_size - next_offset)

@@ -404,7 +404,7 @@
       "parameters": {
         "operation": "read",
         "fileSelector": "={{ String($json.video_path || '').split(String.fromCharCode(92)).join('/') }}",
-        "options": {"dataPropertyName": "data"}
+        "options": { "dataPropertyName": "data" }
       },
       "id": "fb001000-fb01-4001-8001-fb0100000001",
       "name": "13 FB Re-read video",
@@ -428,15 +428,15 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "=https://graph-video.facebook.com/v21.0/{{ $json.facebook_page_id }}/videos",
+        "url": "=https://graph-video.facebook.com/v25.0/{{ $json.facebook_page_id }}/videos",
         "authentication": "predefinedCredentialType",
         "nodeCredentialType": "facebookGraphApi",
         "sendBody": true,
         "contentType": "form-urlencoded",
         "bodyParameters": {
           "parameters": [
-            {"name": "upload_phase", "value": "start"},
-            {"name": "file_size", "value": "={{ $json.fb_file_size }}"}
+            { "name": "upload_phase", "value": "start" },
+            { "name": "file_size", "value": "={{ $json.fb_file_size }}" }
           ]
         },
         "options": {}
@@ -469,17 +469,33 @@
       "parameters": {
         "executeOnce": false,
         "method": "POST",
-        "url": "=https://graph-video.facebook.com/v21.0/{{ $json.facebook_page_id }}/videos",
+        "url": "=https://graph-video.facebook.com/v25.0/{{ $json.facebook_page_id }}/videos",
         "authentication": "predefinedCredentialType",
         "nodeCredentialType": "facebookGraphApi",
         "sendBody": true,
         "contentType": "multipart-form-data",
         "bodyParameters": {
           "parameters": [
-            {"name": "upload_phase", "value": "transfer", "parameterType": "formData"},
-            {"name": "upload_session_id", "value": "={{ $json.upload_session_id }}", "parameterType": "formData"},
-            {"name": "start_offset", "value": "={{ $json.start_offset }}", "parameterType": "formData"},
-            {"name": "video_file_chunk", "value": "chunkData", "parameterType": "formBinaryData"}
+            {
+              "name": "upload_phase",
+              "value": "transfer",
+              "parameterType": "formData"
+            },
+            {
+              "name": "upload_session_id",
+              "value": "={{ $json.upload_session_id }}",
+              "parameterType": "formData"
+            },
+            {
+              "name": "start_offset",
+              "value": "={{ $json.start_offset }}",
+              "parameterType": "formData"
+            },
+            {
+              "name": "video_file_chunk",
+              "value": "chunkData",
+              "parameterType": "formBinaryData"
+            }
           ]
         },
         "options": {}
@@ -510,20 +526,26 @@
       "parameters": {
         "executeOnce": false,
         "method": "POST",
-        "url": "=https://graph-video.facebook.com/v21.0/{{ $json.facebook_page_id }}/videos",
+        "url": "=https://graph-video.facebook.com/v25.0/{{ $json.facebook_page_id }}/videos",
         "authentication": "predefinedCredentialType",
         "nodeCredentialType": "facebookGraphApi",
         "sendBody": true,
         "contentType": "form-urlencoded",
         "bodyParameters": {
           "parameters": [
-            {"name": "upload_phase", "value": "finish"},
-            {"name": "upload_session_id", "value": "={{ $json.upload_session_id }}"},
-            {"name": "title", "value": "={{ $json.fb_title }}"},
-            {"name": "description", "value": "={{ $json.fb_description }}"},
-            {"name": "published", "value": "false"},
-            {"name": "scheduled_publish_time", "value": "={{ $json.fb_scheduled_unix }}"},
-            {"name": "unpublished_content_type", "value": "SCHEDULED"}
+            { "name": "upload_phase", "value": "finish" },
+            {
+              "name": "upload_session_id",
+              "value": "={{ $json.upload_session_id }}"
+            },
+            { "name": "title", "value": "={{ $json.fb_title }}" },
+            { "name": "description", "value": "={{ $json.fb_description }}" },
+            { "name": "published", "value": "false" },
+            {
+              "name": "scheduled_publish_time",
+              "value": "={{ $json.fb_scheduled_unix }}"
+            },
+            { "name": "unpublished_content_type", "value": "SCHEDULED" }
           ]
         },
         "options": {}
@@ -912,28 +934,32 @@
       ]
     },
     "13 FB Re-read video": {
-      "main": [[{"node": "13b FB Validate & Chuẩn bị", "type": "main", "index": 0}]]
+      "main": [
+        [{ "node": "13b FB Validate & Chuẩn bị", "type": "main", "index": 0 }]
+      ]
     },
     "13b FB Validate & Chuẩn bị": {
-      "main": [[{"node": "14a FB Start Upload", "type": "main", "index": 0}]]
+      "main": [[{ "node": "14a FB Start Upload", "type": "main", "index": 0 }]]
     },
     "14a FB Start Upload": {
-      "main": [[{"node": "14b FB Build Chunks", "type": "main", "index": 0}]]
+      "main": [[{ "node": "14b FB Build Chunks", "type": "main", "index": 0 }]]
     },
     "14b FB Build Chunks": {
-      "main": [[{"node": "14c FB Transfer Chunks", "type": "main", "index": 0}]]
+      "main": [
+        [{ "node": "14c FB Transfer Chunks", "type": "main", "index": 0 }]
+      ]
     },
     "14c FB Transfer Chunks": {
-      "main": [[{"node": "14d FB Merge Chunks", "type": "main", "index": 0}]]
+      "main": [[{ "node": "14d FB Merge Chunks", "type": "main", "index": 0 }]]
     },
     "14d FB Merge Chunks": {
-      "main": [[{"node": "14e FB Finish Upload", "type": "main", "index": 0}]]
+      "main": [[{ "node": "14e FB Finish Upload", "type": "main", "index": 0 }]]
     },
     "14e FB Finish Upload": {
-      "main": [[{"node": "15 Parse FB Result", "type": "main", "index": 0}]]
+      "main": [[{ "node": "15 Parse FB Result", "type": "main", "index": 0 }]]
     },
     "15 Parse FB Result": {
-      "main": [[{"node": "16 Check Facebook OK", "type": "main", "index": 0}]]
+      "main": [[{ "node": "16 Check Facebook OK", "type": "main", "index": 0 }]]
     },
     "16 Check Facebook OK": {
       "main": [
