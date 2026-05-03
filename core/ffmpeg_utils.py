@@ -3,8 +3,35 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from pathlib import Path
+
+
+def _resolve_system_tool(name: str) -> str | None:
+    """
+    Find ffmpeg/ffprobe when ``PATH`` is minimal (e.g. PyInstaller ``.app`` launched from Finder).
+
+    Homebrew installs to ``/opt/homebrew/bin`` (Apple Silicon) or ``/usr/local/bin`` (Intel).
+    """
+    hit = shutil.which(name)
+    if hit:
+        p = Path(hit)
+        try:
+            if p.is_file():
+                return str(p.resolve(strict=False))
+        except OSError:
+            if p.is_file():
+                return str(p)
+    if sys.platform == "darwin":
+        for base in ("/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"):
+            p = Path(base) / name
+            try:
+                if p.is_file():
+                    return str(p)
+            except OSError:
+                continue
+    return None
 
 
 def _bundled_binary_candidates(name: str) -> list[Path]:
@@ -27,7 +54,8 @@ def ffmpeg_executable() -> str:
 
     1. ``FFMPEG_EXECUTABLE`` if set (full path, e.g. ``/opt/homebrew/bin/ffmpeg``).
     2. Bundled next to frozen app / ``tools/ffmpeg/ffmpeg``.
-    3. ``ffmpeg`` from ``PATH`` (Homebrew).
+    3. ``shutil.which("ffmpeg")`` then common Homebrew locations (Finder-launched apps often lack ``PATH``).
+    4. Fallback bare ``"ffmpeg"`` (may still fail if nothing is installed).
     """
     env = os.environ.get("FFMPEG_EXECUTABLE")
     if env:
@@ -38,7 +66,8 @@ def ffmpeg_executable() -> str:
                 return str(p)
         except OSError:
             continue
-    return "ffmpeg"
+    found = _resolve_system_tool("ffmpeg")
+    return found or "ffmpeg"
 
 
 def ffprobe_executable() -> str:
@@ -46,7 +75,8 @@ def ffprobe_executable() -> str:
     Resolve ffprobe:
 
     1. ``FFPROBE_EXECUTABLE`` if set.
-    2. Same bundle dirs as ffmpeg, then sibling of resolved ffmpeg, then ``ffprobe`` on PATH.
+    2. Same bundle dirs as ffmpeg, sibling of ``FFMPEG_EXECUTABLE``, sibling of bundled ``ffmpeg``,
+       then ``which`` / Homebrew paths (same as ``ffmpeg``), then sibling of resolved ``ffmpeg``.
     """
     env = os.environ.get("FFPROBE_EXECUTABLE")
     if env:
@@ -57,8 +87,27 @@ def ffprobe_executable() -> str:
                 return str(p)
         except OSError:
             continue
-    ff = ffmpeg_executable()
-    if ff != "ffmpeg":
+    env_ff = os.environ.get("FFMPEG_EXECUTABLE")
+    if env_ff:
+        sib = Path(env_ff).expanduser().parent / "ffprobe"
+        try:
+            if sib.is_file():
+                return str(sib)
+        except OSError:
+            pass
+    for p in _bundled_binary_candidates("ffmpeg"):
+        try:
+            if p.is_file():
+                sib = p.parent / "ffprobe"
+                if sib.is_file():
+                    return str(sib)
+        except OSError:
+            continue
+    probe = _resolve_system_tool("ffprobe")
+    if probe:
+        return probe
+    ff = _resolve_system_tool("ffmpeg")
+    if ff:
         sib = Path(ff).parent / "ffprobe"
         try:
             if sib.is_file():
