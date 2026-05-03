@@ -21,6 +21,8 @@ PowerShell:
 
 cd D:\Nguyen-Anh-Viet\Tutorial\Python\audio-to-text\video-subtitle-translator
 docker compose -f n8n-automatioin/docker-compose.n8n.example.yml up -d --build
+
+docker compose -f n8n-automatioin/docker-compose.n8n.example.yml up -d
 Mở trình duyệt: http://localhost:5678
 (lần đầu tạo tài khoản nếu được hỏi).
 

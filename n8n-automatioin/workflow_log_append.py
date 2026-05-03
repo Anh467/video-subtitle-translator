@@ -23,7 +23,11 @@ def main() -> int:
         default="",
         help="Base64(utf-8 JSON object) merged into row['data']",
     )
-    args = parser.parse_args()
+    args, unknown = parser.parse_known_args()
+    if unknown:
+        extra = " ".join(unknown).strip()
+        if extra:
+            args.message = (args.message + " " + extra).strip()
 
     row: dict = {
         "ts": datetime.now(timezone.utc).isoformat(),

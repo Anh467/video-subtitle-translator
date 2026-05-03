@@ -43,7 +43,7 @@
     },
     {
       "parameters": {
-        "command": "=python {{ $('2 Publishing config (sửa 1 lần trong Code)').item.json.repo_root }}/n8n-automatioin/workflow_log_append.py {{ $('2 Publishing config (sửa 1 lần trong Code)').item.json.log_file }} workflow_start --level INFO --message export_begin_workspace={{ $('2 Publishing config (sửa 1 lần trong Code)').item.json.base_dir }}"
+        "command": "=python {{ $('2 Publishing config (sửa 1 lần trong Code)').item.json.repo_root }}/n8n-automatioin/workflow_log_append.py {{ $('2 Publishing config (sửa 1 lần trong Code)').item.json.log_file }} workflow_start --level INFO --message \"export_begin_workspace={{ $('2 Publishing config (sửa 1 lần trong Code)').item.json.base_dir }}\""
       },
       "id": "84df3cc3-30cc-4e45-b519-aeb5c7c2304a",
       "name": "3 Log • start",
@@ -69,7 +69,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const item = $input.first().json;\nconst cfg = $('2 Publishing config (sửa 1 lần trong Code)').first().json;\nconst text = item.stdout ?? item.text ?? '';\nif (item.exitCode !== 0 && item.exitCode !== undefined) {\n  throw new Error(item.stderr || `export failed (exit ${item.exitCode})`);\n}\nconst parsed = JSON.parse(text || '{}');\nif (!Array.isArray(parsed.jobs)) {\n  throw new Error('Exporter JSON must contain a jobs array');\n}\nif (parsed.jobs.length === 0) {\n  const bd = parsed.base_dir || cfg.base_dir || '';\n  const c = parsed.count;\n  const cnt = c === undefined ? '?' : String(c);\n  throw new Error(\n    'Exporter trả về 0 job (count=' + cnt + ', base_dir=' + bd + '). '\n      + 'Không phải lỗi If/Switch: node sau chỉ chạy khi có ít nhất một job. Kiểm tra workspace hoặc volume Docker; session có đủ video, title, description, thumbnail không; có marker exported-posted không. '\n      + 'Chạy ngoài n8n: export_publish_jobs.py đúng base_dir và thêm các cờ debug và audit.',\n  );\n}\nreturn parsed.jobs.map((job) => ({\n  json: {\n    ...job,\n    repo_root: cfg.repo_root,\n    base_dir: cfg.base_dir,\n    log_file: cfg.log_file,\n    facebook_page_id: cfg.facebook_page_id,\n  },\n}));"
+        "jsCode": "const item = $input.first().json;\nconst cfg = $('2 Publishing config (sửa 1 lần trong Code)').first().json;\nconst text = item.stdout ?? item.text ?? '';\nif (item.exitCode !== 0 && item.exitCode !== undefined) {\n  throw new Error(item.stderr || `export failed (exit ${item.exitCode})`);\n}\nconst parsed = JSON.parse(text || '{}');\nif (!Array.isArray(parsed.jobs)) {\n  throw new Error('Exporter JSON must contain a jobs array');\n}\nif (parsed.jobs.length === 0) {\n  const bd = parsed.base_dir || cfg.base_dir || '';\n  const c = parsed.count;\n  const cnt = c === undefined ? '?' : String(c);\n  throw new Error(\n    'Exporter trả về 0 job (count=' + cnt + ', base_dir=' + bd + '). '\n      + 'Không phải lỗi If/Switch: node sau chỉ chạy khi có ít nhất một job. Kiểm tra workspace hoặc volume Docker; session có đủ video, title, description, thumbnail không; có marker exported-posted không. '\n      + 'Chạy ngoài n8n: export_publish_jobs.py đúng base_dir và thêm các cờ debug và audit.',\n  );\n}\nconst asBool = (v) => v === true || v === 'true' || v === 1 || v === '1';\nreturn parsed.jobs.map((job) => ({\n  json: {\n    ...job,\n    youtube_posted: asBool(job.youtube_posted),\n    facebook_posted: asBool(job.facebook_posted),\n    repo_root: cfg.repo_root,\n    base_dir: cfg.base_dir,\n    log_file: cfg.log_file,\n    facebook_page_id: cfg.facebook_page_id,\n  },\n}));"
       },
       "id": "50f795f8-973a-4a27-a2dc-98c631f7fe94",
       "name": "5 Split jobs (+ giữ config)",
@@ -83,7 +83,7 @@
     {
       "parameters": {
         "executeOnce": false,
-        "command": "=python {{ $json.repo_root }}/n8n-automatioin/workflow_log_append.py {{ $json.log_file }} job_begin --level INFO --message session={{ $json.session_name }}"
+        "command": "=python {{ $json.repo_root }}/n8n-automatioin/workflow_log_append.py {{ $json.log_file }} job_begin --level INFO --message \"session={{ $json.session_name }}\""
       },
       "id": "f02a185f-0343-4d78-ad25-5ecc290ef4ab",
       "name": "6 Log • job begin",
@@ -97,7 +97,7 @@
     {
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "const cur = $input.item;\nconst job = $('5 Split jobs (+ giữ config)').item.json;\nconst merged = { ...job, ...(cur.json || {}) };\nconst p = String(merged.video_path || '').trim();\nif (!p) {\n  throw new Error('Missing video_path after job begin log (item pairing?). session=' + String(merged.session_name || '?'));\n}\nmerged.video_path = p.split(String.fromCharCode(92)).join('/');\nreturn { json: merged, binary: cur.binary };"
+        "jsCode": "const cur = $input.item;\nconst idx =\n  typeof $input.itemIndex === 'number' && !Number.isNaN($input.itemIndex)\n    ? $input.itemIndex\n    : 0;\nlet rows = [];\ntry {\n  rows = $('5 Split jobs (+ giữ config)').all();\n} catch {\n  rows = [];\n}\nlet from5 = rows[idx]?.json;\nif (!from5 && rows.length === 0) {\n  if (idx !== 0) {\n    throw new Error(\n      '6b: thiếu .all() trên Split jobs khi có nhiều item — nâng n8n hoặc chỉ chạy 1 job mỗi lần.'\n    );\n  }\n  from5 = $('5 Split jobs (+ giữ config)').first()?.json;\n}\nif (!from5 || typeof from5 !== 'object') {\n  throw new Error('6b: không đọc được job từ Split jobs tại index ' + idx);\n}\nconst overlay = cur.json && typeof cur.json === 'object' ? cur.json : {};\nconst merged = { ...from5, ...overlay };\nfor (const k of ['stdout', 'stderr', 'exitCode', 'text']) {\n  if (merged[k] !== undefined && from5[k] === undefined) {\n    delete merged[k];\n  }\n}\nconst p = String(merged.video_path || '').trim();\nif (!p) {\n  throw new Error(\n    'Missing video_path sau 6 Log (pairing index=' + idx + '). session=' + String(merged.session_name || '?')\n    ,\n  );\n}\nmerged.video_path = p.split(String.fromCharCode(92)).join('/');\nreturn { json: merged, binary: cur.binary };"
       },
       "id": "c5d0235b-09e2-492f-a7c6-50a2ede4fb7b",
       "name": "6b Carry job → Read",
@@ -146,7 +146,7 @@
       "parameters": {
         "mode": "runOnceForEachItem",
         "language": "javaScript",
-        "jsCode": "const job = $('6b Carry job → Read').item.json;\nconst rid = String(job.youtube_remote_id || '').trim();\nif (!rid) {\n  throw new Error(\n    'youtube_posted=true nhưng thiếu youtube_remote_id trong job — kiểm tra posted_youtube.json có remote_id và chạy lại export (session_publish_jobs).'\n    ,\n  );\n}\nreturn [{ json: { ...job, id: rid }, binary: {} }];"
+        "jsCode": "const raw = $('6b Carry job → Read').item?.json;\nconst job = raw != null && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};\nconst rid = String(job.youtube_remote_id || '').trim();\nif (!rid) {\n  throw new Error(\n    'youtube_posted=true nhưng thiếu youtube_remote_id trong job — kiểm tra posted_youtube.json có remote_id và chạy lại export (session_publish_jobs).'\n    ,\n  );\n}\nreturn { json: { ...job, id: rid }, binary: {} };"
       },
       "id": "a1b2c3d4-e5f6-4789-a012-345678901202",
       "name": "6c Đã có YouTube → chỉ FB",
@@ -266,7 +266,7 @@
           "conditions": [
             {
               "id": "yt-upload-has-id",
-              "leftValue": "={{ Boolean($json.id) }}",
+              "leftValue": "={{ Boolean($json.id || $json.uploadId) }}",
               "rightValue": true,
               "operator": {
                 "type": "boolean",
@@ -292,7 +292,7 @@
       "parameters": {
         "mode": "runOnceForEachItem",
         "language": "javaScript",
-        "jsCode": "const job = $('6b Carry job → Read').item.json;\nconst it = $input.item;\nconst j = it.json || {};\nconst e = j.error != null ? j.error : it.error;\nconst msg =\n  e != null\n    ? (typeof e === 'string' ? e : JSON.stringify(e).slice(0, 600))\n    : String(j.message || it.message || 'YouTube upload failed');\nreturn [\n  {\n    json: {\n      ...job,\n      youtube_upload_failed: true,\n      youtube_error: msg,\n    },\n    binary: {},\n  },\n];"
+        "jsCode": "const raw = $('6b Carry job → Read').item?.json;\nconst job =\n  raw != null && typeof raw === 'object' && !Array.isArray(raw) ? { ...raw } : {};\nconst it = $input.item;\nconst j = it.json || {};\nconst e = j.error != null ? j.error : it.error;\nconst msg =\n  e != null\n    ? (typeof e === 'string' ? e : JSON.stringify(e).slice(0, 600))\n    : String(j.message || it.message || 'YouTube upload failed');\nreturn {\n  json: {\n    ...job,\n    youtube_upload_failed: true,\n    youtube_error: String(msg || 'YouTube upload failed'),\n  },\n  binary: {},\n};"
       },
       "id": "b9c90003-0000-4000-8000-000000000001",
       "name": "9c YT lỗi → sang kiểm tra FB",
@@ -360,7 +360,7 @@
       "parameters": {
         "mode": "runOnceForEachItem",
         "language": "javaScript",
-        "jsCode": "const item = $input.item;\nconst raw = item.json || {};\nconst j = raw.body && typeof raw.body === 'object' ? raw.body : raw;\nif (j.error) {\n  throw new Error('YouTube thumbnail API: ' + JSON.stringify(j.error).slice(0, 900));\n}\nconst thumbs =\n  j.snippet?.thumbnails\n  || (Array.isArray(j.items) && j.items[0]?.snippet?.thumbnails);\nif (!thumbs || typeof thumbs !== 'object' || Object.keys(thumbs).length === 0) {\n  throw new Error(\n    'YouTube thumbnail: không thấy snippet.thumbnails trong phản hồi (upload có thể thất bại hoặc ảnh không hợp lệ ≤2MB jpeg/png) — '\n      + JSON.stringify(j).slice(0, 700)\n    ,\n  );\n}\nreturn item;"
+        "jsCode": "const item = $input.item;\nconst raw = item.json || {};\nconst sc = Number(raw.statusCode ?? raw.status ?? 0);\nif (!raw.error && (sc === 204 || sc === 205)) {\n  return item;\n}\nif (!raw.error && sc >= 200 && sc < 300) {\n  const b = raw.body;\n  if (b === '' || b === null || b === undefined) {\n    return item;\n  }\n  if (typeof b === 'string' && !String(b).trim()) {\n    return item;\n  }\n}\nfunction tryParse(s) {\n  if (typeof s !== 'string' || !s.trim()) return null;\n  try {\n    return JSON.parse(s);\n  } catch {\n    return null;\n  }\n}\nfunction unwrapApiPayload(r) {\n  if (!r || typeof r !== 'object') return {};\n  const buckets = [\n    r,\n    typeof r.body === 'string' ? tryParse(r.body) : r.body,\n    typeof r.data === 'string' ? tryParse(r.data) : r.data,\n  ].filter((x) => x != null && typeof x === 'object');\n  for (const o of buckets) {\n    if (o.error) return o;\n    if (o.snippet?.thumbnails || o.thumbnails || (Array.isArray(o.items) && o.items[0]?.snippet)) {\n      return o;\n    }\n  }\n  return buckets[0] || r;\n}\nconst THUMB_KEYS = new Set([\n  'default',\n  'medium',\n  'high',\n  'standard',\n  'maxres',\n  'hqdefault',\n  'mqdefault',\n  'sddefault',\n]);\nfunction isYoutubeThumbBlock(o) {\n  if (!o || typeof o !== 'object') return false;\n  const ks = Object.keys(o);\n  if (!ks.some((k) => THUMB_KEYS.has(k))) return false;\n  for (const k of ks) {\n    if (!THUMB_KEYS.has(k)) continue;\n    const v = o[k];\n    if (v && typeof v === 'object' && typeof v.url === 'string') return true;\n  }\n  return false;\n}\nfunction walkThumbnails(o, depth) {\n  if (!o || typeof o !== 'object' || depth > 12) return null;\n  if (isYoutubeThumbBlock(o)) return o;\n  if (Array.isArray(o)) {\n    for (const el of o) {\n      const t = walkThumbnails(el, depth + 1);\n      if (t) return t;\n    }\n    return null;\n  }\n  for (const k of Object.keys(o)) {\n    const t = walkThumbnails(o[k], depth + 1);\n    if (t) return t;\n  }\n  return null;\n}\nconst j = unwrapApiPayload(raw);\nif (j.error) {\n  throw new Error('YouTube thumbnail API: ' + JSON.stringify(j.error).slice(0, 900));\n}\nlet thumbs =\n  j.snippet?.thumbnails\n  || j.thumbnails\n  || (Array.isArray(j.items) && j.items[0]?.snippet?.thumbnails);\nif (!thumbs || typeof thumbs !== 'object' || Object.keys(thumbs).length === 0) {\n  thumbs = walkThumbnails(j, 0);\n}\nif (!thumbs || typeof thumbs !== 'object' || Object.keys(thumbs).length === 0) {\n  if (!j.error && sc >= 200 && sc < 300) {\n    return item;\n  }\n  const preview =\n    typeof j === 'string' ? j.slice(0, 200) : JSON.stringify(j).slice(0, 500);\n  throw new Error(\n    'YouTube thumbnail: không đọc được object thumbnails từ phản hồi HTTP (body có thể là string chưa parse, hoặc cấu trúc khác). Gợi ý: xem raw JSON node 10b. Preview: '\n      + preview\n    ,\n  );\n}\nreturn item;"
       },
       "id": "a1b2c3d4-e5f6-4789-a012-345678901204",
       "name": "10c Kiểm tra thumbnail API OK",
@@ -388,7 +388,7 @@
     {
       "parameters": {
         "executeOnce": false,
-        "command": "=python {{ $('10 Check YouTube OK').item.json.repo_root }}/n8n-automatioin/workflow_log_append.py {{ $('10 Check YouTube OK').item.json.log_file }} youtube_ok --level INFO --message video_id={{ $('10 Check YouTube OK').item.json.id }} session={{ $('10 Check YouTube OK').item.json.session_name }}"
+        "command": "=python {{ $('10 Check YouTube OK').item.json.repo_root }}/n8n-automatioin/workflow_log_append.py {{ $('10 Check YouTube OK').item.json.log_file }} youtube_ok --level INFO --message \"video_id={{ $('10 Check YouTube OK').item.json.id }} session={{ $('10 Check YouTube OK').item.json.session_name }}\""
       },
       "id": "0072d772-44d3-41c6-9154-3eebf3192e84",
       "name": "12 Log • YouTube OK",
@@ -403,7 +403,7 @@
       "parameters": {
         "mode": "runOnceForEachItem",
         "language": "javaScript",
-        "jsCode": "const j = $('10 Check YouTube OK').item.json;\nreturn [{ json: j, binary: {} }];"
+        "jsCode": "const t = $('10 Check YouTube OK').item?.json;\nconst j = t != null && typeof t === 'object' && !Array.isArray(t) ? t : {};\nreturn { json: j, binary: {} };"
       },
       "id": "a1b2c3d4-e5f6-4789-a012-345678901203",
       "name": "12a Chuẩn bị JSON cho FB",
@@ -418,7 +418,7 @@
       "parameters": {
         "mode": "runOnceForEachItem",
         "language": "javaScript",
-        "jsCode": "const cur = $input.item;\nconst job = $('5 Split jobs (+ giữ config)').item.json;\nconst j = { ...(cur.json || {}) };\nconst merged = { ...job, ...j };\nconst vid = String(merged.id || merged.youtube_remote_id || '').trim();\nif (vid) merged.id = vid;\nconst p = String(merged.video_path || '').trim();\nif (!p) {\n  throw new Error('Missing video_path before Facebook read (item pairing?). session=' + String(merged.session_name || '?'));\n}\nmerged.video_path = p.split(String.fromCharCode(92)).join('/');\nreturn { json: merged, binary: cur.binary };"
+        "jsCode": "const cur = $input.item;\nconst idx =\n  typeof $input.itemIndex === 'number' && !Number.isNaN($input.itemIndex)\n    ? $input.itemIndex\n    : 0;\nlet splitRows = [];\nlet sixbRows = [];\ntry {\n  splitRows = $('5 Split jobs (+ giữ config)').all();\n} catch {\n  splitRows = [];\n}\ntry {\n  sixbRows = $('6b Carry job → Read').all();\n} catch {\n  sixbRows = [];\n}\nlet j5 = splitRows[idx]?.json;\nif (!j5 && splitRows.length === 0) {\n  if (idx !== 0) {\n    throw new Error('12b: thiếu .all() cho Split jobs — không ghép đúng job.');\n  }\n  j5 = $('5 Split jobs (+ giữ config)').first()?.json;\n}\nlet j6b = sixbRows[idx]?.json;\nif (!j6b && sixbRows.length === 0) {\n  if (idx !== 0) {\n    throw new Error('12b: thiếu .all() cho 6b — không ghép đúng job.');\n  }\n  j6b = $('6b Carry job → Read').first()?.json;\n}\nconst base = {\n  ...(j5 && typeof j5 === 'object' ? j5 : {}),\n  ...(j6b && typeof j6b === 'object' ? j6b : {}),\n};\nconst j = cur.json && typeof cur.json === 'object' ? cur.json : {};\nconst merged = { ...base, ...j };\nconst vid = String(merged.id || merged.youtube_remote_id || '').trim();\nif (vid) merged.id = vid;\nconst p = String(merged.video_path || '').trim();\nif (!p) {\n  throw new Error(\n    'Missing video_path before Facebook (index=' + idx + '). session=' + String(merged.session_name || '?')\n    ,\n  );\n}\nmerged.video_path = p.split(String.fromCharCode(92)).join('/');\nreturn { json: merged, binary: cur.binary };"
       },
       "id": "e078e9c4-9a1e-4240-bda9-c533e9db187f",
       "name": "12b Carry job → Read FB",
@@ -467,7 +467,7 @@
       "parameters": {
         "mode": "runOnceForEachItem",
         "language": "javaScript",
-        "jsCode": "const j = $input.item.json || {};\nreturn [\n  {\n    json: {\n      skipped_facebook: true,\n      session_name: j.session_name,\n      session_folder: j.session_folder,\n      note: 'Đã có posted_facebook.json — không upload lại.',\n    },\n  },\n];"
+        "jsCode": "const j = $input.item.json || {};\nreturn {\n  json: {\n    skipped_facebook: true,\n    session_name: j.session_name,\n    session_folder: j.session_folder,\n    note: 'Đã có posted_facebook.json — không upload lại.',\n  },\n  binary: {},\n};"
       },
       "id": "a1b2c3d4-e5f6-4789-a012-345678901206",
       "name": "19 FB đã đăng — skip",
@@ -595,7 +595,7 @@
     {
       "parameters": {
         "executeOnce": false,
-        "command": "=python {{ $('14 Check read OK • FB').item.json.repo_root }}/n8n-automatioin/workflow_log_append.py {{ $('14 Check read OK • FB').item.json.log_file }} facebook_ok --level INFO --message fb_video_id={{ $('15 Facebook • upload video').item.json.id }} session={{ $('14 Check read OK • FB').item.json.session_name }}"
+        "command": "=python {{ $('14 Check read OK • FB').item.json.repo_root }}/n8n-automatioin/workflow_log_append.py {{ $('14 Check read OK • FB').item.json.log_file }} facebook_ok --level INFO --message \"fb_video_id={{ $('15 Facebook • upload video').item.json.id }} session={{ $('14 Check read OK • FB').item.json.session_name }}\""
       },
       "id": "aaddbea3-0054-4abf-a1fa-86fe2e435ef0",
       "name": "18 Log • Facebook OK",
