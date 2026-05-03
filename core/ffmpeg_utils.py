@@ -121,8 +121,9 @@ def subtitles_filter_clause(subs_path: str | os.PathLike[str]) -> str:
     """
     Full ``subtitles=…`` filter token (no input/output pads).
 
-    FFmpeg ~8.x on macOS rejects some quoted subtitled paths followed by ``[pad]``;
-    unquoted POSIX paths avoid that when the path contains no filter-meta characters.
+    FFmpeg 8.x parses the shorthand ``subtitles=/abs/path.ass`` incorrectly (the ``/``
+    after ``=`` is treated as starting a new token — error *No option name near '/…'*).
+    Always use the explicit ``filename='…'`` form with a single-quoted, escaped path.
     """
     subs_p = Path(subs_path).expanduser()
     try:
@@ -130,13 +131,8 @@ def subtitles_filter_clause(subs_path: str | os.PathLike[str]) -> str:
     except OSError:
         subs_p = Path(subs_path).expanduser()
     s = subs_p.as_posix().replace("\\", "/")
-
-    bad = tuple(" '\"[],;&=#")
-    needs_quote = any(ch in s for ch in bad) or any(ord(ch) < 32 for ch in s)
-    if needs_quote:
-        inner = escape_for_ffmpeg_single_quoted_fragment(s)
-        return f"subtitles='{inner}'"
-    return f"subtitles={s}"
+    inner = escape_for_ffmpeg_single_quoted_fragment(s)
+    return f"subtitles=filename='{inner}'"
 
 
 def escape_for_ffmpeg_single_quoted_fragment(text: str) -> str:
