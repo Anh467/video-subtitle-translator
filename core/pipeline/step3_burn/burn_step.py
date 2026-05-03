@@ -30,7 +30,6 @@ from core.pipeline.step3_burn.channel_profiles import (
     store_profile_image,
 )
 from core.pipeline.step3_burn.constants import (
-    ASS_PLAYRES_Y,
     BG_BOX_STYLES,
     BG_COLORS,
     BRAND_POSITIONS,
@@ -271,12 +270,12 @@ class BurnStep(BaseStep):
         )
 
         font_pct = config.get("font_pct", 2.0)
-        # subtitles filter (libass) expects style size in ASS script space.
-        # Convert percent to PlayResY-space so on-screen size tracks video percent.
-        font_size = max(6, int(ASS_PLAYRES_Y * font_pct / 100))
-        approx_px = int(h * font_pct / 100)
+        # ASS uses PlayResX/PlayResY = real video (see write_ass_for_hard_burn). Fontsize
+        # must be in that same coordinate space — % of frame height — not a fixed 288 script.
+        font_size = max(6, int(h * font_pct / 100))
         log(
-            f"   Font size: {font_pct}% of video height (~{approx_px}px onscreen), ASS size={font_size}"
+            f"   Font size: {font_pct}% of video height → ASS Fontsize={font_size} "
+            f"(PlayRes {w}x{h})"
         )
 
         # Delogo config
@@ -852,8 +851,9 @@ class BurnStep(BaseStep):
         vy = (lbl_h - video_h) // 2
 
         font_pct = self._font_pct_spin.value() if self._font_pct_spin else 2.0
-        # Scale font size proportionally to preview render size (min 4px for visibility)
-        font_size_px = max(4, int(video_h * font_pct / 100))
+        # Match burn: N% of **preview frame** height (same relative size as N% of real h).
+        # Use pixel size — QFont(family, n) is *points*, which skewed vs on-video pixels.
+        sub_px = max(1, int(video_h * font_pct / 100))
 
         text = (
             self._preview_text_edit.text() if self._preview_text_edit else ""
@@ -929,7 +929,8 @@ class BurnStep(BaseStep):
         painter.setPen(QPen(QColor(110, 130, 155), 1))
         painter.drawRect(vx, vy, video_w, video_h)
 
-        font = QFont(family, font_size_px)
+        font = QFont(family)
+        font.setPixelSize(sub_px)
         font.setBold(bold)
         font.setItalic(italic)
         painter.setFont(font)

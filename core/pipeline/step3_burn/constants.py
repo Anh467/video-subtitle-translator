@@ -47,8 +47,8 @@ PRESET_OPTIONS = ["ultrafast", "veryfast", "fast", "medium", "slow"]
 CRF_RANGE = (18, 28)
 DEFAULT_CRF = 20
 DEFAULT_PRESET = "medium"
-# libass uses script resolution (PlayResY, often 288) to scale style size.
-# Keep this aligned so burn output matches preview percent sizing.
+# Legacy: hard-burn ASS now sets PlayRes to the real video size; Fontsize uses
+# ``int(video_h * font_pct / 100)`` in burn_step. Kept for any old configs/tests.
 ASS_PLAYRES_Y = 288
 COLOR_MAP = {
     "white": "FFFFFF",
