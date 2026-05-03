@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -318,7 +319,7 @@ class AddVoiceStep(BaseStep):
 
         demucs_out = tmp_root / "demucs_out"
         demucs_cmd = [
-            "python",
+            sys.executable,
             "-m",
             "demucs",
             "--name",

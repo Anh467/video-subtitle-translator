@@ -272,10 +272,11 @@ pyinstaller main.py \
   --hidden-import PyQt6 \
   --hidden-import PyQt6.QtCore \
   --hidden-import PyQt6.QtGui \
-  --hidden-import PyQt6.QtWidgets
+  --hidden-import PyQt6.QtWidgets \
+  --collect-all demucs
 ```
 
-*(Nếu thiếu module khi mở app: bổ sung `--hidden-import …` hoặc `--collect-all TênGói` theo báo lỗi. `--onefile` trên Mac thường **không** tạo `.app`; để có `SubSync.app` nên dùng lệnh trên, **không** thêm `--onefile`.)*
+*(Bước ④/⑥ gọi ``sys.executable -m demucs`` — cần đóng gói **demucs** (và thư viện kèm, gói sẽ nặng). Nếu thiếu module: bổ sung `--hidden-import …` theo báo lỗi. `--onefile` trên Mac thường **không** tạo `.app`; để có `SubSync.app` nên dùng lệnh trên, **không** thêm `--onefile`.)*
 
 ### 13.4. Gatekeeper sau khi gói
 

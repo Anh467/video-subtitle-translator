@@ -12,6 +12,7 @@ fi
 
 # --windowed → macOS .app bundle (onedir inside the app; reliable for Qt).
 # Use --onefile only if you want a single Mach-O binary (not always a .app).
+# Step 4/6 run ``sys.executable -m demucs`` — demucs (+ torch) must be inside the bundle.
 pyinstaller main.py \
   --name SubSync \
   --windowed \
@@ -22,6 +23,7 @@ pyinstaller main.py \
   --hidden-import PyQt6.QtCore \
   --hidden-import PyQt6.QtGui \
   --hidden-import PyQt6.QtWidgets \
+  --collect-all demucs \
   "$@"
 
 echo "Built: dist/SubSync.app"

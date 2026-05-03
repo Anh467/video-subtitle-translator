@@ -2,6 +2,7 @@
 
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
@@ -80,7 +81,7 @@ class SeparateStep(BaseStep):
 
         if stems == "2":
             cmd = [
-                "python",
+                sys.executable,
                 "-m",
                 "demucs",
                 "--name",
@@ -95,7 +96,7 @@ class SeparateStep(BaseStep):
         else:
             # 4-stem: no --two-stems flag
             cmd = [
-                "python",
+                sys.executable,
                 "-m",
                 "demucs",
                 "--name",
