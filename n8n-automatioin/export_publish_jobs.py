@@ -152,7 +152,7 @@ def main() -> int:
         slot = schedule_start + interval * index
         if slot.tzinfo is None:
             slot = slot.replace(tzinfo=timezone.utc)
-        job.scheduled_at = slot.isoformat()
+        job.scheduled_at = slot.replace(microsecond=0).isoformat()
         job.scheduled_publish_unix = int(slot.timestamp())
 
     marker_paths: list[str] = []

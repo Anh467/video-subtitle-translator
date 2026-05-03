@@ -6,7 +6,7 @@
 # recreate the RUN step and adjust lib / directory names accordingly.
 
 FROM alpine:3.22 AS py
-RUN apk add --no-cache python3 py3-pip
+RUN apk add --no-cache python3
 
 FROM docker.n8n.io/n8nio/n8n
 USER root
@@ -18,6 +18,9 @@ COPY --from=py /usr/lib/libpython3.12.so.1.0 /usr/lib/libpython3.12.so.1.0
 
 COPY --from=py /usr/lib/python3.12 /usr/lib/python3.12
 
-RUN ln -sf /usr/bin/python3 /usr/bin/python
+# python symlink + versioned .so symlinks (required by C-extension modules)
+RUN ln -sf /usr/bin/python3 /usr/bin/python \
+ && ln -sf /usr/lib/libpython3.12.so.1.0 /usr/lib/libpython3.12.so \
+ && ln -sf /usr/lib/libpython3.12.so.1.0 /usr/lib/libpython3.so
 
 USER node
