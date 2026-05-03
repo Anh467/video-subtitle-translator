@@ -7,10 +7,7 @@
       "name": "Execute workflow",
       "type": "n8n-nodes-base.manualTrigger",
       "typeVersion": 1,
-      "position": [
-        560,
-        48
-      ]
+      "position": [560, 48]
     },
     {
       "parameters": {
@@ -20,10 +17,7 @@
       "name": "2 Publishing config (sửa 1 lần trong Code)",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        656,
-        352
-      ]
+      "position": [656, 352]
     },
     {
       "parameters": {
@@ -36,10 +30,7 @@
       "name": "Hướng dẫn",
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
-      "position": [
-        0,
-        0
-      ]
+      "position": [0, 0]
     },
     {
       "parameters": {
@@ -49,10 +40,7 @@
       "name": "3 Log • start",
       "type": "n8n-nodes-base.executeCommand",
       "typeVersion": 1,
-      "position": [
-        832,
-        288
-      ]
+      "position": [832, 288]
     },
     {
       "parameters": {
@@ -62,10 +50,7 @@
       "name": "4 Export jobs (Python)",
       "type": "n8n-nodes-base.executeCommand",
       "typeVersion": 1,
-      "position": [
-        560,
-        528
-      ]
+      "position": [560, 528]
     },
     {
       "parameters": {
@@ -75,10 +60,7 @@
       "name": "5 Split jobs (+ giữ config)",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        560,
-        688
-      ]
+      "position": [560, 688]
     },
     {
       "parameters": {
@@ -89,10 +71,7 @@
       "name": "6 Log • job begin",
       "type": "n8n-nodes-base.executeCommand",
       "typeVersion": 1,
-      "position": [
-        560,
-        848
-      ]
+      "position": [560, 848]
     },
     {
       "parameters": {
@@ -103,10 +82,7 @@
       "name": "6b Carry job → Read",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        560,
-        928
-      ]
+      "position": [560, 928]
     },
     {
       "parameters": {
@@ -137,10 +113,7 @@
       "name": "6d YouTube cần upload?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
-      "position": [
-        560,
-        1008
-      ]
+      "position": [560, 1008]
     },
     {
       "parameters": {
@@ -152,10 +125,7 @@
       "name": "6c Đã có YouTube → chỉ FB",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        800,
-        1120
-      ]
+      "position": [800, 1120]
     },
     {
       "parameters": {
@@ -169,10 +139,7 @@
       "name": "7 Read video (YouTube)",
       "type": "n8n-nodes-base.readWriteFile",
       "typeVersion": 1,
-      "position": [
-        560,
-        1120
-      ],
+      "position": [560, 1120],
       "alwaysOutputData": true,
       "continueOnFail": true
     },
@@ -185,10 +152,7 @@
       "name": "8 Check read OK",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        560,
-        1168
-      ]
+      "position": [560, 1168]
     },
     {
       "parameters": {
@@ -202,10 +166,7 @@
       "name": "8c Read thumbnail YouTube",
       "type": "n8n-nodes-base.readWriteFile",
       "typeVersion": 1,
-      "position": [
-        560,
-        1248
-      ]
+      "position": [560, 1248]
     },
     {
       "parameters": {
@@ -217,10 +178,7 @@
       "name": "8d Gộp video và thumbnail",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        560,
-        1288
-      ]
+      "position": [560, 1288]
     },
     {
       "parameters": {
@@ -242,10 +200,7 @@
       "name": "9 YouTube upload",
       "type": "n8n-nodes-base.youTube",
       "typeVersion": 1,
-      "position": [
-        560,
-        1328
-      ],
+      "position": [560, 1328],
       "continueOnFail": true,
       "credentials": {
         "youTubeOAuth2Api": {
@@ -283,10 +238,7 @@
       "name": "9b Upload YouTube thành công?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
-      "position": [
-        560,
-        1408
-      ]
+      "position": [560, 1408]
     },
     {
       "parameters": {
@@ -298,10 +250,7 @@
       "name": "9c YT lỗi → sang kiểm tra FB",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        800,
-        1440
-      ]
+      "position": [800, 1440]
     },
     {
       "parameters": {
@@ -312,10 +261,7 @@
       "name": "10 Check YouTube OK",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        560,
-        1488
-      ]
+      "position": [560, 1488]
     },
     {
       "parameters": {
@@ -345,10 +291,7 @@
       "name": "10b YouTube set thumbnail (HTTP)",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [
-        560,
-        1568
-      ],
+      "position": [560, 1568],
       "credentials": {
         "youTubeOAuth2Api": {
           "id": "rdwwFjXb6ufXHOhS",
@@ -366,10 +309,7 @@
       "name": "10c Kiểm tra thumbnail API OK",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        560,
-        1648
-      ]
+      "position": [560, 1648]
     },
     {
       "parameters": {
@@ -380,10 +320,7 @@
       "name": "11 Mark YouTube đã đăng",
       "type": "n8n-nodes-base.executeCommand",
       "typeVersion": 1,
-      "position": [
-        560,
-        1728
-      ]
+      "position": [560, 1728]
     },
     {
       "parameters": {
@@ -394,10 +331,7 @@
       "name": "12 Log • YouTube OK",
       "type": "n8n-nodes-base.executeCommand",
       "typeVersion": 1,
-      "position": [
-        560,
-        1808
-      ]
+      "position": [560, 1808]
     },
     {
       "parameters": {
@@ -409,10 +343,7 @@
       "name": "12a Chuẩn bị JSON cho FB",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        560,
-        1888
-      ]
+      "position": [560, 1888]
     },
     {
       "parameters": {
@@ -424,10 +355,7 @@
       "name": "12b Carry job → Read FB",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        560,
-        1968
-      ]
+      "position": [560, 1968]
     },
     {
       "parameters": {
@@ -458,10 +386,7 @@
       "name": "6e Facebook cần upload?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
-      "position": [
-        560,
-        2048
-      ]
+      "position": [560, 2048]
     },
     {
       "parameters": {
@@ -473,10 +398,7 @@
       "name": "19 FB đã đăng — skip",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        820,
-        2160
-      ]
+      "position": [820, 2160]
     },
     {
       "parameters": {
@@ -490,10 +412,7 @@
       "name": "13 Read video (Facebook)",
       "type": "n8n-nodes-base.readWriteFile",
       "typeVersion": 1,
-      "position": [
-        560,
-        2248
-      ],
+      "position": [560, 2248],
       "alwaysOutputData": true,
       "continueOnFail": true
     },
@@ -506,10 +425,7 @@
       "name": "14 Check read OK • FB",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        560,
-        2368
-      ]
+      "position": [560, 2368]
     },
     {
       "parameters": {
@@ -551,10 +467,7 @@
       "name": "15 Facebook • upload video",
       "type": "n8n-nodes-base.facebookGraphApi",
       "typeVersion": 1,
-      "position": [
-        560,
-        2488
-      ],
+      "position": [560, 2488],
       "alwaysOutputData": true,
       "credentials": {
         "facebookGraphApi": {
@@ -573,10 +486,7 @@
       "name": "16 Check Facebook OK",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        560,
-        2608
-      ]
+      "position": [560, 2608]
     },
     {
       "parameters": {
@@ -587,10 +497,7 @@
       "name": "17 Mark Facebook đã đăng",
       "type": "n8n-nodes-base.executeCommand",
       "typeVersion": 1,
-      "position": [
-        560,
-        2728
-      ]
+      "position": [560, 2728]
     },
     {
       "parameters": {
@@ -601,10 +508,7 @@
       "name": "18 Log • Facebook OK",
       "type": "n8n-nodes-base.executeCommand",
       "typeVersion": 1,
-      "position": [
-        560,
-        2848
-      ]
+      "position": [560, 2848]
     },
     {
       "parameters": {
@@ -646,10 +550,7 @@
       },
       "type": "n8n-nodes-base.set",
       "typeVersion": 3.4,
-      "position": [
-        448,
-        256
-      ],
+      "position": [448, 256],
       "id": "bc8e5861-0c79-435a-9870-982aa0fbba0d",
       "name": "Edit Fields"
     }

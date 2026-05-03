@@ -17,7 +17,9 @@ def main() -> int:
     parser.add_argument("--level", default="INFO", help="DEBUG|INFO|WARN|ERROR")
     parser.add_argument("--session", default="", help="session_folder for context")
     parser.add_argument("--message", default="", help="Free-text detail")
-    parser.add_argument("--payload", default="", help="Merge this JSON string into row['data']")
+    parser.add_argument(
+        "--payload", default="", help="Merge this JSON string into row['data']"
+    )
     parser.add_argument(
         "--payload-b64",
         default="",
