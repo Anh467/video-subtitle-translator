@@ -188,6 +188,7 @@ Cửa sổ **SubSync** sẽ mở. **Giữ Terminal mở** trong lúc dùng app (
 | `command not found: ffmpeg` | `brew install ffmpeg` |
 | `No module named 'PyQt6'` | Đảm bảo đã `source venv/bin/activate` rồi `pip install -r requirements.txt` |
 | Cài `torch` / Whisper rất lâu hoặc lỗi | Kiểm tra mạng; thử lại `pip install -r requirements.txt`; dùng Python đúng 3.11 |
+| `audioop`, `audioop-lts`, hoặc `pydub` báo không có module | Trên **Python 3.13+**, chạy với **venv đang bật** (`source venv/bin/activate`): `pip install audioop-lts` hoặc cài lại `pip install -r requirements.txt` — gói `audioop-lts` đã nằm trong `requirements.txt` |
 | App mở nhưng transcribe lỗi | Kiểm tra đủ RAM/disk; lần đầu Whisper có thể tải model |
 
 ---
@@ -204,40 +205,40 @@ Cửa sổ **SubSync** sẽ mở. **Giữ Terminal mở** trong lúc dùng app (
 
 Mục này dành khi bạn muốn **một nhấp vào Finder** như app thường. **Việc tạo file `.app` phải chạy trên macOS** (GitHub Actions `macos-latest` hoặc máy Mac thật; không đóng gói Mac app từ Windows).
 
-### 13.1. Vẫn cần `ffmpeg`
+Người dùng bản `.app` vẫn cần **đã `brew install ffmpeg`** (như mục 4) trừ khi bạn tự nhúng binary ffmpeg khi đóng gói — gọi FFmpeg qua **`FFMPEG_EXECUTABLE`** chỉ là tùy chọn (xem ô dưới).
 
-SubSync hiện gọi lệnh `ffmpeg` trên PATH hoặc qua biến **`FFMPEG_EXECUTABLE`** trỏ tới đường dẫn đầy đủ (ví dụ sau khi bạn tự nhúng binary ffmpeg vào dạng `--add-binary` của PyInstaller). Nếu **không** nhúng, người dùng máy nhận file `.app` vẫn nên **`brew install ffmpeg`** giống mục 4.
-
-Để chỉnh binary ffmpeg khi dev:
+**Đường dẫn thật của `ffmpeg` trên Mac:** sau `brew install ffmpeg`, trong Terminal chạy `which ffmpeg`; thường là **`/opt/homebrew/bin/ffmpeg`** (chip Apple Silicon) hoặc **`/usr/local/bin/ffmpeg`** (Intel). Chỉ khi muốn **ép app dùng đúng file đó** (thay cho cái trên PATH) thì trong cùng phiên Terminal mới đó:
 
 ```bash
-export FFMPEG_EXECUTABLE="/đường/dẫn/ffmpeg"
+export FFMPEG_EXECUTABLE="$(which ffmpeg)"
 python main.py
 ```
 
-### 13.2. Cài PyInstaller trong venv
+### 13.1. Cài PyInstaller trong venv
 
 ```bash
 source venv/bin/activate
 pip install pyinstaller
 ```
 
-### 13.3. Lệnh gói tối thiểu (cửa sổ, không có console)
+### 13.2. Lệnh gói tối thiểu (cửa sổ, không có console)
+
+Đổi `THU_MUC_DU_AN` bằng đường dẫn thực tới repo (kéo-thả folder vào Terminal cũng được):
 
 ```bash
-cd "/đường/dẫn/video-subtitle-translator"
+cd "THU_MUC_DU_AN"
 pyinstaller --windowed --name SubSync --clean main.py
 ```
 
 Kết quả nằm trong thư mục **`dist/SubSync.app`**. Whisper / PyTorch / PyQt có thể cần **`--collect-all`** hoặc `--hidden-import` bổ sung nếu lúc chạy báo `ModuleNotFoundError` — bật **`--onedir`** thay cho onefile thường dễ gỡ lỗi hơn (`pyinstaller --windowed --name SubSync --onedir main.py`).
 
-### 13.4. Sau khi gói: Gatekeeper và thuộc tính tải về
+### 13.3. Sau khi gói: Gatekeeper và thuộc tính tải về
 
 - Lần đầu có thể cần: **chuột phải** `SubSync.app` → **Open**.
-- Hoặc (chỉ dùng khi bạn hiểu rủi ro):  
-  `xattr -cr "/đường/dẫn/dist/SubSync.app"`
+- Hoặc (chỉ dùng khi bạn hiểu rủi ro): trong Terminal đổi đường dẫn cho đúng file `.app`:  
+  `xattr -cr "/đường/đầy/đủ/tới/dist/SubSync.app"`
 
-Kiểm thử nhớ bật `ffmpeg`: `ffmpeg -version` trong Terminal.
+Kiểm thử trong Terminal vẫn nên được: **`ffmpeg -version`**.
 
 ---
 
