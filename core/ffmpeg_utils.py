@@ -3,11 +3,53 @@
 from __future__ import annotations
 
 import os
+import sys
+from pathlib import Path
+
+
+def _bundled_ffmpeg_candidates() -> list[Path]:
+    """Paths to try when shipping ffmpeg next to a frozen app (PyInstaller, etc.)."""
+    name = "ffmpeg.exe" if sys.platform.startswith("win") else "ffmpeg"
+    out: list[Path] = []
+    # PyInstaller one-file / one-dir: binaries often land in sys._MEIPASS
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        root = Path(meipass)
+        out.append(root / name)
+        out.append(root / "ffmpeg" / name)
+    # Executable directory (one-dir bundle or loose copy)
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).resolve().parent
+        out.append(exe_dir / name)
+        out.append(exe_dir / "ffmpeg" / name)
+    # Dev: repo-relative tools/ffmpeg (optional manual drop)
+    here = Path(__file__).resolve().parent.parent / "tools" / "ffmpeg" / name
+    out.append(here)
+    return out
 
 
 def ffmpeg_executable() -> str:
-    """Prefer FFMPEG_EXECUTABLE, then ffmpeg on PATH."""
-    return os.environ.get("FFMPEG_EXECUTABLE", "ffmpeg")
+    """
+    Resolve ffmpeg binary:
+
+    1. ``FFMPEG_EXECUTABLE`` if set (full path).
+    2. Next to / inside a **frozen** app (see ``_bundled_ffmpeg_candidates``).
+    3. ``ffmpeg`` / ``ffmpeg.exe`` on **PATH**.
+
+    There is no single cross-OS ffmpeg binary: ship **one Windows build** with the
+    Windows installer and **one macOS build** with the ``.app``. Same Python code,
+    different bundled executables.
+    """
+    env = os.environ.get("FFMPEG_EXECUTABLE")
+    if env:
+        return env
+    for p in _bundled_ffmpeg_candidates():
+        try:
+            if p.is_file():
+                return str(p)
+        except OSError:
+            continue
+    return "ffmpeg"
 
 
 def subtitles_filter_clause(subs_path: str | os.PathLike[str]) -> str:
@@ -28,7 +70,11 @@ def subtitles_filter_clause(subs_path: str | os.PathLike[str]) -> str:
         subs_p = Path(subs_path).expanduser()
     s = subs_p.as_posix().replace("\\", "/")
 
-    if os.name == "nt" or (len(s) >= 2 and s[1] == ":"):  # Windows path
+    # Windows: FFmpeg expects quoted paths + \\: before drive letter (never bare C:/ in filters).
+    # macOS FFmpeg 8.x needs unquoted /private/tmp/… for filter_complex; see subtitles_filter_clause doc.
+    windows_like = sys.platform.startswith("win") or os.name == "nt"
+    windows_like = windows_like or (len(s) >= 2 and s[0].isascii() and s[1] == ":")
+    if windows_like:
         inner = escape_for_ffmpeg_single_quoted_fragment(s)
         return f"subtitles='{inner}'"
 
