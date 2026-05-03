@@ -2,10 +2,38 @@
 
 from __future__ import annotations
 
+import functools
 import os
+import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
+
+# Shown when ``ffmpeg -h filter=subtitles`` fails (e.g. Homebrew core ffmpeg without libass).
+FFMPEG_LIBASS_INSTALL_HINT = """\
+Homebrew’s default formula ``brew install ffmpeg`` (8.x) is built **without libass**, so the
+``subtitles`` filter does not exist. SubSync hard-burn needs FFmpeg **with** ``--enable-libass``.
+
+**macOS — recommended fix**
+
+```bash
+brew uninstall ffmpeg
+brew tap homebrew-ffmpeg/ffmpeg
+brew install homebrew-ffmpeg/ffmpeg/ffmpeg
+```
+
+Check:
+
+```bash
+ffmpeg -hide_banner -h filter=subtitles | head -n 3
+```
+
+You should see filter help text, not “Unknown filter”.
+
+Alternatively set **FFMPEG_EXECUTABLE** to a full path of any FFmpeg build that includes libass
+(official static builds, MacPorts, self-compiled with ``--enable-libass``).
+"""
 
 
 def _resolve_system_tool(name: str) -> str | None:
@@ -115,6 +143,42 @@ def ffprobe_executable() -> str:
         except OSError:
             pass
     return "ffprobe"
+
+
+@functools.lru_cache(maxsize=16)
+def ffmpeg_has_subtitles_filter(executable: str) -> bool:
+    """
+    True if this FFmpeg exposes the libavfilter ``subtitles`` filter (requires libass).
+
+    Homebrew ``ffmpeg`` 8.x core bottles often omit libass; ``subtitles`` is then missing
+    entirely (``No such filter: 'subtitles'``).
+    """
+    try:
+        p = subprocess.run(
+            [executable, "-hide_banner", "-h", "filter=subtitles"],
+            capture_output=True,
+            text=True,
+            timeout=25,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if p.returncode != 0:
+        return False
+    combined = (p.stdout or "") + (p.stderr or "")
+    if re.search(r"(?i)unknown\s+filter", combined):
+        return False
+    return bool(combined.strip())
+
+
+def assert_ffmpeg_subtitles_filter(executable: str) -> None:
+    """Raise ``RuntimeError`` with install hints if ``subtitles`` is unavailable."""
+    if not ffmpeg_has_subtitles_filter(executable):
+        raise RuntimeError(
+            f"FFmpeg {executable!r} does not provide the `subtitles` filter (libass).\n\n"
+            + FFMPEG_LIBASS_INSTALL_HINT
+        )
 
 
 def subtitles_filter_clause(subs_path: str | os.PathLike[str]) -> str:

@@ -70,12 +70,26 @@ Nếu thấy số phiên bản (ví dụ `Homebrew 4.x`) là được.
 
 ---
 
-## 4. Cài Python 3.11 và ffmpeg
+## 4. Cài Python 3.11 và ffmpeg (có libass — bắt buộc cho bước Burn)
 
 SubSync khuyến nghị **Python 3.11** (tránh 3.13 vì thư viện AI có thể chưa tương thích đầy đủ).
 
+**Quan trọng:** Gói **`brew install ffmpeg`** mặc định của Homebrew (8.x) **không** build kèm **libass**, nên không có filter **`subtitles`** — bước **③ Burn Subtitles** sẽ báo lỗi kiểu *No such filter: 'subtitles'*. Bạn cần một bản FFmpeg có libass (không phải “đổi số version” 8.0 vs 8.1, mà là **đổi nguồn cài**).
+
+Cài Python và FFmpeg đủ filter (khuyến nghị — tap **homebrew-ffmpeg**, có `libass`):
+
 ```bash
-brew install python@3.11 ffmpeg
+brew install python@3.11
+brew tap homebrew-ffmpeg/ffmpeg
+brew install homebrew-ffmpeg/ffmpeg/ffmpeg
+```
+
+Nếu máy đã cài `ffmpeg` từ Homebrew core và bạn muốn thay hẳn bằng bản có libass:
+
+```bash
+brew uninstall ffmpeg
+brew tap homebrew-ffmpeg/ffmpeg
+brew install homebrew-ffmpeg/ffmpeg/ffmpeg
 ```
 
 Kiểm tra:
@@ -83,9 +97,11 @@ Kiểm tra:
 ```bash
 python3.11 --version
 ffmpeg -version
+ffmpeg -hide_banner -h filter=subtitles | head -n 3
 ```
 
-Cả hai lệnh đều in ra thông tin (không báo `command not found`) là ổn.
+- Hai lệnh đầu in ra thông tin (không `command not found`) là ổn.
+- Lệnh thứ ba phải in **mô tả filter** `subtitles`; nếu báo *Unknown filter* thì vẫn chưa đúng bản FFmpeg.
 
 ---
 

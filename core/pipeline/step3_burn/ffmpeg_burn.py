@@ -2,7 +2,11 @@
 
 from pathlib import Path
 
-from core.ffmpeg_utils import ffmpeg_executable, subtitles_filter_clause
+from core.ffmpeg_utils import (
+    assert_ffmpeg_subtitles_filter,
+    ffmpeg_executable,
+    subtitles_filter_clause,
+)
 from core.pipeline.step3_burn.constants import DEFAULT_CRF, DEFAULT_PRESET
 from core.pipeline.step3_burn.delogo import delogo_filter, escape_drawtext_text
 
@@ -42,6 +46,8 @@ def hard_burn_cmd(
     Style for hard burn must be encoded inside the ASS — do not use force_style
     (fragile with FFmpeg 8.x + filter_complex, especially on macOS).
     """
+    ff = ffmpeg_executable()
+    assert_ffmpeg_subtitles_filter(ff)
     sub_filter = subtitles_filter_clause(subs_path)
 
     if delogo and delogo.get("enabled"):
@@ -61,7 +67,7 @@ def hard_burn_cmd(
 
     if not branding or not branding.get("enabled"):
         return [
-            ffmpeg_executable(),
+            ff,
             "-y",
             "-i",
             video,
@@ -151,7 +157,7 @@ def hard_burn_cmd(
         )
         map_label = "vout"
 
-    cmd = [ffmpeg_executable(), "-y", "-i", video]
+    cmd = [ff, "-y", "-i", video]
     if avatar_exists:
         cmd += ["-i", avatar]
     cmd += [
