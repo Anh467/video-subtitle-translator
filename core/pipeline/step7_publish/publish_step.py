@@ -1,4 +1,6 @@
-"""Step 7 — generate publish info (title, description, hashtags, thumbnail)."""
+"""Publish info pipeline (LLM text + thumbnail).
+
+(Package entry lives in ``core.pipeline.step7_publish``.)"""
 
 from __future__ import annotations
 
@@ -33,68 +35,7 @@ from PyQt6.QtWidgets import (
 
 from core.api_keys import get_key
 from core.pipeline.base import BaseStep, CancelledError
-
-STOP_WORDS = {
-    "la",
-    "va",
-    "voi",
-    "cua",
-    "cho",
-    "mot",
-    "nhung",
-    "trong",
-    "khi",
-    "duoc",
-    "dang",
-    "se",
-    "da",
-    "tu",
-    "den",
-    "tai",
-    "nay",
-    "kia",
-    "day",
-    "ban",
-    "toi",
-    "anh",
-    "chi",
-    "em",
-    "ong",
-    "ba",
-    "co",
-    "khong",
-    "rat",
-    "hon",
-    "bi",
-    "ve",
-    "do",
-    "nhu",
-    "roi",
-    "noi",
-    "chuyen",
-    "video",
-    "minh",
-    "nay",
-    "do",
-    "roi",
-    "thi",
-    "nua",
-    "sau",
-    "truoc",
-    "day",
-    "kia",
-    "qua",
-    "rat",
-    "van",
-    "dang",
-    "duoi",
-    "tren",
-    "hay",
-    "nhieu",
-    "it",
-    "mot",
-    "nhung",
-}
+from core.pipeline.step7_publish.stop_words import STOP_WORDS
 
 
 class PublishInfoStep(BaseStep):

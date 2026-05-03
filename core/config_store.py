@@ -25,7 +25,14 @@ _SKIP_KEYS = {"api_key", "tts_path", "thumb_bg_path"}
 
 def _sanitize(cfg: dict) -> dict:
     """Remove keys we should never persist (API keys, transient paths)."""
-    return {k: v for k, v in cfg.items() if k not in _SKIP_KEYS}
+    out: dict = {}
+    for k, v in cfg.items():
+        if k in _SKIP_KEYS:
+            continue
+        if k == "delogo" and isinstance(v, dict):
+            v = {a: b for a, b in v.items() if a != "enable_expr"}
+        out[k] = v
+    return out
 
 
 def save_step_configs(base_dir: str | Path, steps: list) -> None:

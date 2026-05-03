@@ -1,6 +1,4 @@
-"""
-Step 5 — TTS generation only (single or multi backend).
-"""
+"""Step 5 — Text-to-Speech (UI + backends)."""
 
 import json
 import os
@@ -21,62 +19,15 @@ from PyQt6.QtWidgets import (
 
 from core.pipeline.base import BaseStep, CancelledError
 from core.pipeline.selection import (
-    TTS_BACKEND_LABEL_TO_KEY,
     expand_tts_backends,
     tts_backend_from_label,
 )
-
-TTS_BACKENDS = dict(TTS_BACKEND_LABEL_TO_KEY)
-GTTS_LANGS = {
-    "Vietnamese": "vi",
-    "English": "en",
-    "Japanese": "ja",
-    "Korean": "ko",
-    "Chinese": "zh-CN",
-    "French": "fr",
-    "German": "de",
-    "Spanish": "es",
-}
-
-# Approximate cost per 1M chars (USD) for reference display
-COST_PER_1M = {
-    "fpt": 0.00,  # free tier
-    "zalo": 0.00,  # free tier
-    "gtts": 0.00,  # free
-    "google_cloud_tts": 4.00,  # $4/1M chars (Standard), $16/1M (WaveNet/Neural2)
-    "openai_tts": 15.00,  # $15/1M chars
-    "elevenlabs": 30.00,  # ~$30/1M chars (Creator plan)
-}
-
-
-def _count_chars(session) -> tuple[int, str]:
-    """
-    Count total translated characters in session.
-    Returns (char_count, display_string).
-    """
-    try:
-        if not session.step2_done:
-            return 0, "No translated script yet"
-        segs = session.load_translated()
-        total = sum(len(s.translated.strip()) for s in segs)
-        return total, f"{total:,} characters  ({len(segs)} segments)"
-    except Exception as e:
-        return 0, f"Cannot read script: {e}"
-
-
-def _estimate_cost(char_count: int, backend_key: str) -> str:
-    """Return cost estimate string for given char count and backend."""
-    if char_count == 0:
-        return ""
-    cost_per_1m = COST_PER_1M.get(backend_key, 0)
-    if cost_per_1m == 0:
-        return "Free"
-    usd = char_count / 1_000_000 * cost_per_1m
-    vnd = usd * 25_000
-    if vnd < 1:
-        return f"~${usd:.4f} USD"
-    return f"~${usd:.3f} USD  (~{vnd:,.0f} VNĐ)"
-
+from core.pipeline.step5_tts.budget import (
+    COST_PER_1M,
+    count_translated_chars,
+    format_tts_cost_estimate,
+)
+from core.pipeline.step5_tts.constants import GTTS_LANGS, TTS_BACKENDS
 
 class TTSStep(BaseStep):
     STEP_ID = "step5_tts"
@@ -115,7 +66,7 @@ class TTSStep(BaseStep):
                 self._cost_lbl.setText("")
             return
 
-        count, display = _count_chars(session)
+        count, display = count_translated_chars(session)
 
         if count == 0:
             self._char_count_lbl.setText(display)
@@ -130,7 +81,7 @@ class TTSStep(BaseStep):
         # Update cost estimate
         if self._cost_lbl and self._backend_combo:
             backend_key = tts_backend_from_label(self._backend_combo.currentText())
-            cost = _estimate_cost(count, backend_key)
+            cost = format_tts_cost_estimate(count, backend_key)
             if cost == "Free":
                 self._cost_lbl.setText("💸 Cost: Free")
                 self._cost_lbl.setStyleSheet("color:#5dca8e;font-size:10px;")
@@ -1073,7 +1024,7 @@ class TTSStep(BaseStep):
 
         # Recalculate cost estimate when backend changes
         if self._cost_lbl and self._last_char_count > 0:
-            cost = _estimate_cost(self._last_char_count, backend)
+            cost = format_tts_cost_estimate(self._last_char_count, backend)
             if cost == "Free":
                 self._cost_lbl.setText("💸 Cost: Free")
                 self._cost_lbl.setStyleSheet("color:#5dca8e;font-size:10px;")

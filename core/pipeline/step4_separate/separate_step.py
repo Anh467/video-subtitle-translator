@@ -1,19 +1,4 @@
-"""
-Step 4 — Separate audio stems using Demucs (Meta, free, local).
-
-Modes:
-  2-stem: vocals + background (no_vocals)
-  4-stem: vocals + drums + bass + other
-          → drums chứa: trống, percussion, tiếng gõ, lục đục
-          → other chứa: nhạc nền còn lại
-
-Output files:
-  step4_vocals.mp3      — giọng người
-  step4_background.mp3  — toàn bộ nhạc nền (2-stem) hoặc tổng hợp (4-stem)
-  step4_drums.mp3       — trống + percussion + tiếng động (4-stem only)
-  step4_bass.mp3        — bass (4-stem only)
-  step4_other.mp3       — nhạc nền còn lại (4-stem only)
-"""
+"""Step 4 — stem separation (Demucs)."""
 
 import shutil
 import subprocess
@@ -28,18 +13,7 @@ from PyQt6.QtWidgets import (
 )
 
 from core.pipeline.base import BaseStep
-
-DEMUCS_MODELS = {
-    "htdemucs (recommended)": "htdemucs",
-    "htdemucs_ft (fine-tuned)": "htdemucs_ft",
-    "mdx_extra (MDX Net)": "mdx_extra",
-}
-
-STEM_MODES = {
-    "2-stem: vocals + background": "2",
-    "4-stem: vocals + drums + bass + other": "4",
-}
-
+from core.pipeline.step4_separate.constants import DEMUCS_MODELS, STEM_MODES
 
 class SeparateStep(BaseStep):
     STEP_ID = "step4_separate"

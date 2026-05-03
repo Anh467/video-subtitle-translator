@@ -1,0 +1,1010 @@
+{
+  "name": "Auto publish workspace → YouTube + Facebook (by published_at ↑)",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "930c6b2b-edc7-4851-b29d-49cb032e03e2",
+      "name": "Execute workflow",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [560, 48]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// CHỈ SỬA BLOCK NÀY — input từ node trước:\n// REPO_ROOT, WORKSPACE, FACEBOOK_PAGE_ID,\n// SCHEDULE_INTERVAL_HOURS, SCHEDULE_START\n// ============================================================\n\n// Ưu tiên lấy từ node trước, nếu không có thì fallback default\n// N8N_IN_DOCKER=true: n8n chạy trong container — map lỗi D:\\\\... → /repo, /workspace (python trong Linux không mở được ổ Windows)\n// Đặt false nếu cài n8n trực tiếp trên Windows (không Docker)\nconst N8N_IN_DOCKER = true;\nconst winDrivePath = (p) =>\n  /^[a-zA-Z]:[\\\\/]/.test(String(p || '').trim());\nlet REPO_ROOT = String($json.REPO_ROOT || '/repo').trim();\nlet WORKSPACE = String($json.WORKSPACE || '/workspace').trim();\nif (N8N_IN_DOCKER) {\n  if (winDrivePath(REPO_ROOT)) REPO_ROOT = '/repo';\n  if (winDrivePath(WORKSPACE)) WORKSPACE = '/workspace';\n}\nconst FACEBOOK_PAGE_ID = String($json.FACEBOOK_PAGE_ID || '61560996974889').trim();\n\nlet SCHEDULE_INTERVAL_HOURS = Number($json.SCHEDULE_INTERVAL_HOURS);\nif (!Number.isFinite(SCHEDULE_INTERVAL_HOURS) || SCHEDULE_INTERVAL_HOURS <= 0) {\n  SCHEDULE_INTERVAL_HOURS = 24;\n}\n\nconst SCHEDULE_START = String(\n  $json.SCHEDULE_START || '2026-05-10T22:00:00+07:00'\n).trim();\n\n// ============================================================\n// Logic xử lý\n// ============================================================\n\n// Ưu tiên workspace từ input\nlet base_dir = WORKSPACE.trim();\nbase_dir = base_dir.replace(/[/\\\\]+$/, '');\n\nconst repoWin = winDrivePath(REPO_ROOT);\nconst baseWin = winDrivePath(base_dir);\n\nif (repoWin !== baseWin) {\n  throw new Error(\n    'REPO_ROOT và WORKSPACE phải cùng kiểu Windows hoặc cùng Linux/Docker (/repo + /workspace). Không trộn D: với / trong container.'\n  );\n}\n\nconst norm = base_dir\n  .replace(/\\\\/g, '/')\n  .replace(/\\/+$/, '');\n\nconst log_file = `${norm}/n8n_publish_run.jsonl`;\n\nlet hours = SCHEDULE_INTERVAL_HOURS;\nlet schedule_args = `--schedule-interval-hours ${hours}`;\n\nlet schedule_start = SCHEDULE_START;\n\nif (schedule_start) {\n  schedule_args += schedule_start.includes(' ')\n    ? ` --schedule-start \"${schedule_start.replace(/\"/g, '')}\"`\n    : ` --schedule-start ${schedule_start}`;\n}\n\nreturn [\n  {\n    json: {\n      workspace: base_dir,\n      base_dir,\n      repo_root: REPO_ROOT,\n      log_file,\n      facebook_page_id: FACEBOOK_PAGE_ID,\n      schedule_interval_hours: hours,\n      schedule_start,\n      schedule_args,\n    },\n  },\n];"
+      },
+      "id": "2da76a32-ca89-460f-8f94-d332dd33e7e5",
+      "name": "2 Publishing config (sửa 1 lần trong Code)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [656, 352]
+    },
+    {
+      "parameters": {
+        "content": "## Một cổng vào • **Chỉ sửa 1 Code node**\n\n**Một lần** — mở **`2 Publishing config`**: chỉnh `REPO_ROOT`, `WORKSPACE`, `FACEBOOK_PAGE_ID`, `SCHEDULE_INTERVAL_HOURS`, `SCHEDULE_START` trong code (**không còn node Set**). Manual trigger chỉ nhấn **Execute**.\n\n**Docker:** Trong node 2 đặt **`N8N_IN_DOCKER = true`** — nếu Edit Fields nhập `D:\\\\...` thì tự đổi thành **`/repo`** và **`/workspace`** (tránh lỗi `can't open file ... D:` trong container).\n\n**Webhook/Cron:** gửi kèm `workspace` hoặc `schedule_*` thì được ưu tiên thay các hằng trên.\n\n**Credentials:** YouTube: `YouTube OAuth2 - publish workspace`. Facebook: tạo credential **Facebook Graph API** trong n8n (Page Access Token) → gắn vào 3 node `14a`, `14c`, `14e`. Không cần file `.env`.\n\n**Lỗi** `executeCommand` / **`NODES_EXCLUDE`:** README §3.3.",
+        "height": 580,
+        "width": 560,
+        "color": 5
+      },
+      "id": "444e079e-e215-4d28-9f11-c74db01dcd28",
+      "name": "Hướng dẫn",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "command": "=python {{ $('2 Publishing config (sửa 1 lần trong Code)').item.json.repo_root }}/n8n-automatioin/workflow_log_append.py \"{{ $('2 Publishing config (sửa 1 lần trong Code)').item.json.log_file }}\" workflow_start --level INFO --message \"export_begin_workspace={{ $('2 Publishing config (sửa 1 lần trong Code)').item.json.base_dir }}\""
+      },
+      "id": "84df3cc3-30cc-4e45-b519-aeb5c7c2304a",
+      "name": "3 Log • start",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [832, 288]
+    },
+    {
+      "parameters": {
+        "command": "=python {{ $json.repo_root }}/n8n-automatioin/export_publish_jobs.py \"{{ $json.base_dir }}\" --platform youtube --platform facebook {{ $json.schedule_args }} --pretty --debug --audit"
+      },
+      "id": "8bd40051-7023-4c03-b47c-484d2ac13ee1",
+      "name": "4 Export jobs (Python)",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [560, 528]
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first().json;\nconst cfg = $('2 Publishing config (sửa 1 lần trong Code)').first().json;\nconst text = item.stdout ?? item.text ?? '';\nconst stderr = String(item.stderr ?? '').trim();\nif (item.exitCode !== 0 && item.exitCode !== undefined) {\n  throw new Error(stderr || `export failed (exit ${item.exitCode})`);\n}\nconst parsed = JSON.parse(text || '{}');\nif (!Array.isArray(parsed.jobs)) {\n  throw new Error('Exporter JSON must contain a jobs array');\n}\nif (parsed.jobs.length === 0) {\n  const bd = parsed.base_dir || cfg.base_dir || '';\n  const bdIn = parsed.base_dir_input || '';\n  const c = parsed.count;\n  const cnt = c === undefined ? '?' : String(c);\n  const sum = parsed.scan_summary && typeof parsed.scan_summary === 'object' ? parsed.scan_summary : {};\n  const trail = Array.isArray(parsed.audit_trail) ? parsed.audit_trail.slice(0, 15) : [];\n  let hint =\n    'Exporter trả về 0 job (count=' + cnt + ', base_dir=' + bd;\n  if (bdIn && bdIn !== bd) {\n    hint += ', base_dir_input=' + bdIn;\n  }\n  hint += '). ';\n  hint +=\n    'Không phải lỗi If/Switch: node sau chỉ chạy khi có ít nhất một job. scan_summary=' +\n    JSON.stringify(sum) +\n    '. ';\n  if (trail.length) {\n    hint += 'audit_trail(sample)=' + JSON.stringify(trail) + '. ';\n  }\n  if (parsed.zero_jobs_hint) {\n    hint += '[Giải thích 0 job] ' + String(parsed.zero_jobs_hint) + ' ';\n  }\n  if (stderr) {\n    hint += 'stderr=' + stderr.slice(0, 1200) + (stderr.length > 1200 ? '…' : '') + ' ';\n  }\n  hint +=\n    'Chạy tay: python .../export_publish_jobs.py \"' +\n    bd +\n    '\" --platform youtube --platform facebook --debug --audit (thêm --include-exported nếu bị chặn marker; --include-incomplete chỉ khi chấp nhận thiếu asset).';\n  throw new Error(hint);\n}\nconst asBool = (v) => v === true || v === 'true' || v === 1 || v === '1';\nreturn parsed.jobs.map((job) => ({\n  json: {\n    ...job,\n    youtube_posted: asBool(job.youtube_posted),\n    facebook_posted: asBool(job.facebook_posted),\n    repo_root: cfg.repo_root,\n    base_dir: cfg.base_dir,\n    log_file: cfg.log_file,\n    facebook_page_id: cfg.facebook_page_id,\n  },\n}));"
+      },
+      "id": "50f795f8-973a-4a27-a2dc-98c631f7fe94",
+      "name": "5 Split jobs (+ giữ config)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [560, 688]
+    },
+    {
+      "parameters": {
+        "executeOnce": false,
+        "command": "=python {{ $json.repo_root }}/n8n-automatioin/workflow_log_append.py \"{{ $json.log_file }}\" job_begin --level INFO --message \"session={{ $json.session_name }}\""
+      },
+      "id": "f02a185f-0343-4d78-ad25-5ecc290ef4ab",
+      "name": "6 Log • job begin",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [560, 848]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const cur = $input.item;\nconst idx =\n  typeof $input.itemIndex === 'number' && !Number.isNaN($input.itemIndex)\n    ? $input.itemIndex\n    : 0;\nlet rows = [];\ntry {\n  rows = $('5 Split jobs (+ giữ config)').all();\n} catch {\n  rows = [];\n}\nlet from5 = rows[idx]?.json;\nif (!from5 && rows.length === 0) {\n  if (idx !== 0) {\n    throw new Error(\n      '6b: thiếu .all() trên Split jobs khi có nhiều item — nâng n8n hoặc chỉ chạy 1 job mỗi lần.'\n    );\n  }\n  from5 = $('5 Split jobs (+ giữ config)').first()?.json;\n}\nif (!from5 || typeof from5 !== 'object') {\n  throw new Error('6b: không đọc được job từ Split jobs tại index ' + idx);\n}\nconst overlay = cur.json && typeof cur.json === 'object' ? cur.json : {};\nconst merged = { ...from5, ...overlay };\nfor (const k of ['stdout', 'stderr', 'exitCode', 'text']) {\n  if (merged[k] !== undefined && from5[k] === undefined) {\n    delete merged[k];\n  }\n}\nconst p = String(merged.video_path || '').trim();\nif (!p) {\n  throw new Error(\n    'Missing video_path sau 6 Log (pairing index=' + idx + '). session=' + String(merged.session_name || '?')\n    ,\n  );\n}\nmerged.video_path = p.split(String.fromCharCode(92)).join('/');\nreturn { json: merged, binary: cur.binary };"
+      },
+      "id": "c5d0235b-09e2-492f-a7c6-50a2ede4fb7b",
+      "name": "6b Carry job → Read",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [560, 928]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "yt-needs-upload",
+              "leftValue": "={{ $json.youtube_posted }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-e5f6-4789-a012-345678901201",
+      "name": "6d YouTube cần upload?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [560, 1008]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "const raw = $('6b Carry job → Read').item?.json;\nconst job = raw != null && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};\nconst rid = String(job.youtube_remote_id || '').trim();\nif (!rid) {\n  throw new Error(\n    'youtube_posted=true nhưng thiếu youtube_remote_id trong job — kiểm tra posted_youtube.json có remote_id và chạy lại export (session_publish_jobs).'\n    ,\n  );\n}\nreturn { json: { ...job, id: rid }, binary: {} };"
+      },
+      "id": "a1b2c3d4-e5f6-4789-a012-345678901202",
+      "name": "6c Đã có YouTube → chỉ FB",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [800, 1120]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "fileSelector": "={{ $json.video_path }}",
+        "options": {
+          "dataPropertyName": "data"
+        }
+      },
+      "id": "63a70a90-cd3e-4753-9e1a-a6bb77f7831d",
+      "name": "7 Read video (YouTube)",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [560, 1120],
+      "alwaysOutputData": true,
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "function parseIsoUtcMs(raw) {\n  let sa = String(raw || '').trim();\n  if (!sa) return NaN;\n  if (!sa.includes('T') && sa.includes(' ')) sa = sa.replace(' ', 'T');\n  sa = sa.replace(/(\\d{2}:\\d{2}:\\d{2}\\.\\d{3})\\d+/, '$1');\n  return Date.parse(sa);\n}\nconst item = $input.item;\nif (item.json.error) {\n  throw new Error('Read video (YouTube): ' + String(item.json.error));\n}\nif (!item.binary?.data) {\n  throw new Error('Read video (YouTube): missing binary.data');\n}\nconst meta = $('6b Carry job → Read').item?.json ?? {};\nconst sa = String(meta.scheduled_at || '').trim();\nif (!sa) {\n  throw new Error(\n    'YouTube: scheduled_at trống — Studio coi là \\\"Riêng tư\\\" (không \\\"Đã lên lịch\\\"); kiểm tra exporter + node 6b.'\n    ,\n  );\n}\nconst publishMs = parseIsoUtcMs(sa);\nif (!Number.isFinite(publishMs)) {\n  throw new Error(\n    'YouTube: scheduled_at không parse được (ISO RFC3339, có offset ví dụ +07:00): ' + sa\n    ,\n  );\n}\nconst skewMs = 5000;\nif (publishMs <= Date.now() + skewMs) {\n  throw new Error(\n    'YouTube: scheduled_at đã qua hoặc sát \\\"giờ chạy workflow\\\" (< vài giây tới). PublishAt không còn trong tương lai. Giá trị: '\n      + sa\n      + '. Chạy lại export để \\\"scheduled_at\\\" mới, hoặc chỉnh SCHEDULE_START/SCHEDULE_INTERVAL_HOURS trong node 2.'\n    ,\n  );\n}\nconst tp = String(meta.thumbnail_path || '').trim();\nif (!tp) {\n  throw new Error(\n    'YouTube: thiếu thumbnail_path — cần file ảnh để upload thumbnail (và Studio/COPPA). Kiểm tra session + export.'\n    ,\n  );\n}\nreturn item;"
+      },
+      "id": "996eed4a-7687-4147-bc6b-0ca1039f0df4",
+      "name": "8 Check read OK",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [560, 1168]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "fileSelector": "={{ String($('6b Carry job → Read').item.json.thumbnail_path || '').split(String.fromCharCode(92)).join('/') }}",
+        "options": {
+          "dataPropertyName": "thumbnail"
+        }
+      },
+      "id": "7f4b489c-a513-4c26-8e64-d819470536b7",
+      "name": "8c Read thumbnail YouTube",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [560, 1248]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "// Sau 8c, Read File thường chỉ giữ binary vừa đọc → mất video `data`. Gộp lại trước khi upload.\nconst item = $input.item;\nconst from8 = $('8 Check read OK').item;\nconst data = from8?.binary?.data;\nconst thumb = item.binary?.thumbnail;\nif (!data) {\n  throw new Error(\n    'Thiếu binary.data (video) sau 8c — kiểm tra 7 Read video, video_path, volume Docker/N8N_RESTRICT_FILE_ACCESS_TO.'\n    ,\n  );\n}\nif (!thumb) {\n  throw new Error('Thiếu binary.thumbnail sau 8c — kiểm tra thumbnail_path và file ảnh.');\n}\nitem.binary = { data, thumbnail: thumb };\nitem.json = from8?.json ?? item.json;\nreturn item;"
+      },
+      "id": "b8d80001-0000-4000-8000-000000000001",
+      "name": "8d Gộp video và thumbnail",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [560, 1288]
+    },
+    {
+      "parameters": {
+        "resource": "video",
+        "operation": "upload",
+        "title": "={{ $('6b Carry job → Read').item.json.title }}",
+        "regionCode": "US",
+        "categoryId": "22",
+        "binaryProperty": "data",
+        "options": {
+          "description": "={{ $('6b Carry job → Read').item.json.description }}",
+          "privacyStatus": "private",
+          "publishAt": "={{ $('6b Carry job → Read').item.json.scheduled_at }}",
+          "selfDeclaredMadeForKids": false,
+          "tags": "={{ ($('6b Carry job → Read').item.json.hashtags || []).join(',') }}"
+        }
+      },
+      "id": "0e8c2acd-6048-445f-91e2-d7b5afc8ba81",
+      "name": "9 YouTube upload",
+      "type": "n8n-nodes-base.youTube",
+      "typeVersion": 1,
+      "position": [560, 1328],
+      "continueOnFail": true,
+      "credentials": {
+        "youTubeOAuth2Api": {
+          "id": "rdwwFjXb6ufXHOhS",
+          "name": "YouTube account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "yt-upload-has-id",
+              "leftValue": "={{ Boolean($json.id || $json.uploadId) }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b9b90002-0000-4000-8000-000000000001",
+      "name": "9b Upload YouTube thành công?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [560, 1408]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "const raw = $('6b Carry job → Read').item?.json;\nconst job =\n  raw != null && typeof raw === 'object' && !Array.isArray(raw) ? { ...raw } : {};\nconst it = $input.item;\nconst j = it.json || {};\nconst e = j.error != null ? j.error : it.error;\nconst msg =\n  e != null\n    ? (typeof e === 'string' ? e : JSON.stringify(e).slice(0, 600))\n    : String(j.message || it.message || 'YouTube upload failed');\nreturn {\n  json: {\n    ...job,\n    youtube_upload_failed: true,\n    youtube_error: String(msg || 'YouTube upload failed'),\n  },\n  binary: {},\n};"
+      },
+      "id": "b9c90003-0000-4000-8000-000000000001",
+      "name": "9c YT lỗi → sang kiểm tra FB",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [800, 1440]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $input.item;\nconst j = item.json || {};\nconst meta = $('6b Carry job → Read').item?.json || {};\nif (j.error) {\n  throw new Error('YouTube API: ' + JSON.stringify(j.error).slice(0, 800));\n}\nconst id =\n  j.id || j.uploadId || j.video_id || j.videoId || j.data?.id || j.data?.uploadId;\nif (!id) {\n  throw new Error(\n    'YouTube: no video id (expected id/uploadId/video_id): ' + JSON.stringify(j).slice(0, 800),\n  );\n}\nitem.json = { ...meta, ...j, id: String(id) };\nconst thumb = $('8d Gộp video và thumbnail').item?.binary?.thumbnail;\nif (!thumb) {\n  throw new Error(\n    'YouTube: thiếu binary thumbnail (lấy từ 8d). Node upload có thể đã bỏ binary — kiểm tra 8c/8d.'\n    ,\n  );\n}\nlet sz = 0;\nif (thumb.fileSize != null && thumb.fileSize !== undefined) {\n  sz = Number(thumb.fileSize);\n} else if (thumb.data) {\n  sz = Buffer.from(String(thumb.data), 'base64').length;\n}\nif (sz > 2097152) {\n  throw new Error('YouTube thumbnail: file > 2MB — API sẽ từ chối.');\n}\nitem.binary = { thumbnail: thumb };\nreturn item;"
+      },
+      "id": "6225fa1e-f699-48a3-8d53-6409a9cd6739",
+      "name": "10 Check YouTube OK",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [560, 1488]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://www.googleapis.com/upload/youtube/v3/thumbnails/set",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "youTubeOAuth2Api",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "videoId",
+              "value": "={{ $json.id }}"
+            },
+            {
+              "name": "uploadType",
+              "value": "media"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "binaryData",
+        "inputDataFieldName": "thumbnail",
+        "options": {}
+      },
+      "id": "df07d60c-3f65-414d-99c6-95706ba7e5dc",
+      "name": "10b YouTube set thumbnail (HTTP)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [560, 1568],
+      "credentials": {
+        "youTubeOAuth2Api": {
+          "id": "rdwwFjXb6ufXHOhS",
+          "name": "YouTube account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "const item = $input.item;\nconst raw = item.json || {};\nconst sc = Number(raw.statusCode ?? raw.status ?? 0);\nif (!raw.error && (sc === 204 || sc === 205)) {\n  return item;\n}\nif (!raw.error && sc >= 200 && sc < 300) {\n  const b = raw.body;\n  if (b === '' || b === null || b === undefined) {\n    return item;\n  }\n  if (typeof b === 'string' && !String(b).trim()) {\n    return item;\n  }\n}\nfunction tryParse(s) {\n  if (typeof s !== 'string' || !s.trim()) return null;\n  try {\n    return JSON.parse(s);\n  } catch {\n    return null;\n  }\n}\nfunction unwrapApiPayload(r) {\n  if (!r || typeof r !== 'object') return {};\n  const buckets = [\n    r,\n    typeof r.body === 'string' ? tryParse(r.body) : r.body,\n    typeof r.data === 'string' ? tryParse(r.data) : r.data,\n  ].filter((x) => x != null && typeof x === 'object');\n  for (const o of buckets) {\n    if (o.error) return o;\n    if (o.snippet?.thumbnails || o.thumbnails || (Array.isArray(o.items) && o.items[0]?.snippet)) {\n      return o;\n    }\n  }\n  return buckets[0] || r;\n}\nconst THUMB_KEYS = new Set([\n  'default',\n  'medium',\n  'high',\n  'standard',\n  'maxres',\n  'hqdefault',\n  'mqdefault',\n  'sddefault',\n]);\nfunction isYoutubeThumbBlock(o) {\n  if (!o || typeof o !== 'object') return false;\n  const ks = Object.keys(o);\n  if (!ks.some((k) => THUMB_KEYS.has(k))) return false;\n  for (const k of ks) {\n    if (!THUMB_KEYS.has(k)) continue;\n    const v = o[k];\n    if (v && typeof v === 'object' && typeof v.url === 'string') return true;\n  }\n  return false;\n}\nfunction walkThumbnails(o, depth) {\n  if (!o || typeof o !== 'object' || depth > 12) return null;\n  if (isYoutubeThumbBlock(o)) return o;\n  if (Array.isArray(o)) {\n    for (const el of o) {\n      const t = walkThumbnails(el, depth + 1);\n      if (t) return t;\n    }\n    return null;\n  }\n  for (const k of Object.keys(o)) {\n    const t = walkThumbnails(o[k], depth + 1);\n    if (t) return t;\n  }\n  return null;\n}\nconst j = unwrapApiPayload(raw);\nif (j.error) {\n  throw new Error('YouTube thumbnail API: ' + JSON.stringify(j.error).slice(0, 900));\n}\nlet thumbs =\n  j.snippet?.thumbnails\n  || j.thumbnails\n  || (Array.isArray(j.items) && j.items[0]?.snippet?.thumbnails);\nif (!thumbs || typeof thumbs !== 'object' || Object.keys(thumbs).length === 0) {\n  thumbs = walkThumbnails(j, 0);\n}\nif (!thumbs || typeof thumbs !== 'object' || Object.keys(thumbs).length === 0) {\n  if (!j.error && sc >= 200 && sc < 300) {\n    return item;\n  }\n  const preview =\n    typeof j === 'string' ? j.slice(0, 200) : JSON.stringify(j).slice(0, 500);\n  throw new Error(\n    'YouTube thumbnail: không đọc được object thumbnails từ phản hồi HTTP (body có thể là string chưa parse, hoặc cấu trúc khác). Gợi ý: xem raw JSON node 10b. Preview: '\n      + preview\n    ,\n  );\n}\nreturn item;"
+      },
+      "id": "a1b2c3d4-e5f6-4789-a012-345678901204",
+      "name": "10c Kiểm tra thumbnail API OK",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [560, 1648]
+    },
+    {
+      "parameters": {
+        "executeOnce": false,
+        "command": "=python {{ $('10 Check YouTube OK').item.json.repo_root }}/n8n-automatioin/mark_publish_result.py \"{{ $('10 Check YouTube OK').item.json.session_folder }}\" --platform youtube --remote-id {{ $('10 Check YouTube OK').item.json.id }} --url \"https://www.youtube.com/watch?v={{ $('10 Check YouTube OK').item.json.id }}\" --scheduled-at \"{{ $('10 Check YouTube OK').item.json.scheduled_at }}\""
+      },
+      "id": "9cfbe0dc-1eb6-4fee-b475-e0a08d9c11d4",
+      "name": "11 Mark YouTube đã đăng",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [560, 1728]
+    },
+    {
+      "parameters": {
+        "executeOnce": false,
+        "command": "=python {{ $('10 Check YouTube OK').item.json.repo_root }}/n8n-automatioin/workflow_log_append.py \"{{ $('10 Check YouTube OK').item.json.log_file }}\" youtube_ok --level INFO --message \"video_id={{ $('10 Check YouTube OK').item.json.id }} session={{ $('10 Check YouTube OK').item.json.session_name }}\""
+      },
+      "id": "0072d772-44d3-41c6-9154-3eebf3192e84",
+      "name": "12 Log • YouTube OK",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [560, 1808]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "const t = $('10 Check YouTube OK').item?.json;\nconst j = t != null && typeof t === 'object' && !Array.isArray(t) ? t : {};\nreturn { json: j, binary: {} };"
+      },
+      "id": "a1b2c3d4-e5f6-4789-a012-345678901203",
+      "name": "12a Chuẩn bị JSON cho FB",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [560, 1888]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "const cur = $input.item;\nconst idx =\n  typeof $input.itemIndex === 'number' && !Number.isNaN($input.itemIndex)\n    ? $input.itemIndex\n    : 0;\nlet splitRows = [];\nlet sixbRows = [];\ntry {\n  splitRows = $('5 Split jobs (+ giữ config)').all();\n} catch {\n  splitRows = [];\n}\ntry {\n  sixbRows = $('6b Carry job → Read').all();\n} catch {\n  sixbRows = [];\n}\nlet j5 = splitRows[idx]?.json;\nif (!j5 && splitRows.length === 0) {\n  if (idx !== 0) {\n    throw new Error('12b: thiếu .all() cho Split jobs — không ghép đúng job.');\n  }\n  j5 = $('5 Split jobs (+ giữ config)').first()?.json;\n}\nlet j6b = sixbRows[idx]?.json;\nif (!j6b && sixbRows.length === 0) {\n  if (idx !== 0) {\n    throw new Error('12b: thiếu .all() cho 6b — không ghép đúng job.');\n  }\n  j6b = $('6b Carry job → Read').first()?.json;\n}\nconst base = {\n  ...(j5 && typeof j5 === 'object' ? j5 : {}),\n  ...(j6b && typeof j6b === 'object' ? j6b : {}),\n};\nconst j = cur.json && typeof cur.json === 'object' ? cur.json : {};\nconst merged = { ...base, ...j };\nconst vid = String(merged.id || merged.youtube_remote_id || '').trim();\nif (vid) merged.id = vid;\nconst p = String(merged.video_path || '').trim();\nif (!p) {\n  throw new Error(\n    'Missing video_path before Facebook (index=' + idx + '). session=' + String(merged.session_name || '?')\n    ,\n  );\n}\nmerged.video_path = p.split(String.fromCharCode(92)).join('/');\nreturn { json: merged, binary: cur.binary };"
+      },
+      "id": "e078e9c4-9a1e-4240-bda9-c533e9db187f",
+      "name": "12b Carry job → Read FB",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [560, 1968]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "fb-needs-upload",
+              "leftValue": "={{ $json.facebook_posted }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-e5f6-4789-a012-345678901205",
+      "name": "6e Facebook cần upload?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [560, 2048]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "const j = $input.item.json || {};\nreturn {\n  json: {\n    skipped_facebook: true,\n    session_name: j.session_name,\n    session_folder: j.session_folder,\n    note: 'Đã có posted_facebook.json — không upload lại.',\n  },\n  binary: {},\n};"
+      },
+      "id": "a1b2c3d4-e5f6-4789-a012-345678901206",
+      "name": "19 FB đã đăng — skip",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [820, 2160]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "fileSelector": "={{ String($json.video_path || '').split(String.fromCharCode(92)).join('/') }}",
+        "options": { "dataPropertyName": "data" }
+      },
+      "id": "fb001000-fb01-4001-8001-fb0100000001",
+      "name": "13 FB Re-read video",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [560, 2168],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "const item = $input.item;\nif (item.json?.error) {\n  throw new Error('13 FB Re-read video thất bại: ' + String(item.json.error) + '. Kiểm tra video_path và N8N_RESTRICT_FILE_ACCESS_TO=\"/repo;/workspace\".');\n}\nif (!item.binary?.data) {\n  throw new Error('13b FB: thiếu binary.data. Kiểm tra video_path và N8N_RESTRICT_FILE_ACCESS_TO.');\n}\nconst idx = typeof $input.itemIndex === 'number' && !Number.isNaN($input.itemIndex) ? $input.itemIndex : 0;\nlet rows = [];\ntry { rows = $('12b Carry job → Read FB').all(); } catch {}\nlet jobMeta = rows[idx]?.json;\nif (!jobMeta && rows.length === 0) jobMeta = $('12b Carry job → Read FB').first()?.json;\nif (!jobMeta || typeof jobMeta !== 'object') throw new Error('13b FB: thiếu job meta từ 12b');\nconst bin = item.binary.data;\nlet fileSize = Number(bin.fileSize || 0);\nif (!fileSize && bin.data) {\n  const b64 = String(bin.data);\n  fileSize = Math.floor(b64.replace(/=+$/, '').length * 3 / 4);\n}\nif (!fileSize || fileSize <= 0) throw new Error('13b FB: video file rỗng');\nconst scheduledUnix = Number(jobMeta.scheduled_publish_unix);\nif (!Number.isFinite(scheduledUnix) || scheduledUnix <= 0) throw new Error('13b FB: scheduled_publish_unix không hợp lệ');\nreturn {\n  json: {\n    ...jobMeta,\n    fb_file_size: fileSize,\n    fb_title: String(jobMeta.title || ''),\n    fb_description: String(jobMeta.description || ''),\n    fb_scheduled_unix: scheduledUnix,\n  },\n  binary: item.binary,\n};"
+      },
+      "id": "fb002000-fb02-4002-8002-fb0200000002",
+      "name": "13b FB Validate & Chuẩn bị",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [560, 2248]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph-video.facebook.com/v25.0/{{ $json.facebook_page_id }}/videos",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "facebookGraphApi",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            { "name": "upload_phase", "value": "start" },
+            { "name": "file_size", "value": "={{ $json.fb_file_size }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fb003000-fb03-4003-8003-fb0300000003",
+      "name": "14a FB Start Upload",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [560, 2328],
+      "credentials": {
+        "facebookGraphApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "Facebook Graph API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "const item = $input.item;\nconst startResp = item.json || {};\nif (startResp.error) throw new Error('FB Start phase: ' + JSON.stringify(startResp.error));\nconst sessionId = startResp.upload_session_id;\nif (!sessionId) throw new Error('FB Start: không có upload_session_id. Response: ' + JSON.stringify(startResp).slice(0, 400));\nconst idx = typeof $input.itemIndex === 'number' && !Number.isNaN($input.itemIndex) ? $input.itemIndex : 0;\nlet validateRows = [];\ntry { validateRows = $('13b FB Validate & Chuẩn bị').all(); } catch {}\nconst validated = validateRows[idx]?.json || $('13b FB Validate & Chuẩn bị').first()?.json;\nconst videoBin = validateRows[idx]?.binary?.data || $('13b FB Validate & Chuẩn bị').first()?.binary?.data;\nif (!validated || !videoBin?.data) throw new Error('14b FB: thiếu job data hoặc binary từ 13b');\nconst buffer = Buffer.from(String(videoBin.data), 'base64');\nconst fileSize = buffer.length;\nconst CHUNK_SIZE = 4 * 1024 * 1024;\nconst totalChunks = Math.ceil(fileSize / CHUNK_SIZE);\nreturn Array.from({ length: totalChunks }, (_, i) => {\n  const startByte = i * CHUNK_SIZE;\n  const endByte = Math.min(startByte + CHUNK_SIZE, fileSize);\n  const chunkBuf = buffer.slice(startByte, endByte);\n  return {\n    json: {\n      ...validated,\n      upload_session_id: sessionId,\n      chunk_index: i,\n      total_chunks: totalChunks,\n      start_offset: startByte,\n      chunk_size: endByte - startByte,\n    },\n    binary: {\n      chunkData: {\n        data: chunkBuf.toString('base64'),\n        mimeType: 'application/octet-stream',\n        fileName: 'chunk_' + i + '.bin',\n        fileSize: endByte - startByte,\n        fileExtension: 'bin',\n      },\n    },\n  };\n});"
+      },
+      "id": "fb004000-fb04-4004-8004-fb0400000004",
+      "name": "14b FB Build Chunks",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [560, 2408]
+    },
+    {
+      "parameters": {
+        "executeOnce": false,
+        "method": "POST",
+        "url": "=https://graph-video.facebook.com/v25.0/{{ $json.facebook_page_id }}/videos",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "facebookGraphApi",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "upload_phase",
+              "value": "transfer",
+              "parameterType": "formData"
+            },
+            {
+              "name": "upload_session_id",
+              "value": "={{ $json.upload_session_id }}",
+              "parameterType": "formData"
+            },
+            {
+              "name": "start_offset",
+              "value": "={{ $json.start_offset }}",
+              "parameterType": "formData"
+            },
+            {
+              "name": "video_file_chunk",
+              "value": "chunkData",
+              "parameterType": "formBinaryData"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fb005000-fb05-4005-8005-fb0500000005",
+      "name": "14c FB Transfer Chunks",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [560, 2488],
+      "credentials": {
+        "facebookGraphApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "Facebook Graph API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const allItems = $input.all();\nif (!allItems.length) throw new Error('14d FB: không có kết quả chunk nào');\nconst sessionMap = new Map();\nfor (const item of allItems) {\n  const j = item.json || {};\n  const key = String(j.upload_session_id || j.session_folder || '_default');\n  if (!sessionMap.has(key)) sessionMap.set(key, { job: j, error: null });\n  if (j.error) sessionMap.get(key).error = j.error;\n}\nreturn [...sessionMap.values()].map(({ job, error }) => {\n  if (error) throw new Error('FB Transfer chunk lỗi: ' + JSON.stringify(error).slice(0, 600));\n  const { chunk_index, total_chunks, start_offset, chunk_size, ...rest } = job;\n  return { json: rest, binary: {} };\n});"
+      },
+      "id": "fb006000-fb06-4006-8006-fb0600000006",
+      "name": "14d FB Merge Chunks",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [560, 2568]
+    },
+    {
+      "parameters": {
+        "executeOnce": false,
+        "method": "POST",
+        "url": "=https://graph-video.facebook.com/v25.0/{{ $json.facebook_page_id }}/videos",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "facebookGraphApi",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            { "name": "upload_phase", "value": "finish" },
+            {
+              "name": "upload_session_id",
+              "value": "={{ $json.upload_session_id }}"
+            },
+            { "name": "title", "value": "={{ $json.fb_title }}" },
+            { "name": "description", "value": "={{ $json.fb_description }}" },
+            { "name": "published", "value": "false" },
+            {
+              "name": "scheduled_publish_time",
+              "value": "={{ $json.fb_scheduled_unix }}"
+            },
+            { "name": "unpublished_content_type", "value": "SCHEDULED" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fb007000-fb07-4007-8007-fb0700000007",
+      "name": "14e FB Finish Upload",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [560, 2648],
+      "credentials": {
+        "facebookGraphApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "Facebook Graph API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "const finishResp = $input.item.json || {};\nif (finishResp.error) throw new Error('FB Finish phase: ' + JSON.stringify(finishResp.error).slice(0, 800));\nconst id = finishResp.id || finishResp.video_id;\nif (!id) throw new Error('FB Finish: không có video id. Response: ' + JSON.stringify(finishResp).slice(0, 600));\nconst idx = typeof $input.itemIndex === 'number' && !Number.isNaN($input.itemIndex) ? $input.itemIndex : 0;\nlet mergeRows = [];\ntry { mergeRows = $('14d FB Merge Chunks').all(); } catch {}\nlet jobData = mergeRows[idx]?.json;\nif (!jobData && mergeRows.length === 0) jobData = $('14d FB Merge Chunks').first()?.json;\nif (!jobData || typeof jobData !== 'object') throw new Error('15 FB: thiếu job data từ 14d');\nreturn { json: { ...jobData, id: String(id) }, binary: {} };"
+      },
+      "id": "fb008000-fb08-4008-8008-fb0800000008",
+      "name": "15 Parse FB Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [560, 2728]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "function summarizeFbErr(err) {\n  if (err == null) return '';\n  if (typeof err === 'string') {\n    return err.split(';')[0].trim().slice(0, 500) + (err.length > 500 ? '…' : '');\n  }\n  if (typeof err === 'object') {\n    const e = err.error || err;\n    const lines = [\n      e.message,\n      e.error_user_msg,\n      e.error_user_title,\n      err.message,\n      e.code != null ? 'code=' + e.code : '',\n      e.error_subcode != null ? 'subcode=' + e.error_subcode : '',\n    ].filter(Boolean);\n    if (lines.length) return lines.join(' | ');\n  }\n  try {\n    return JSON.stringify(err).slice(0, 1500);\n  } catch {\n    return String(err);\n  }\n}\nconst j = $input.item.json;\nif (j.error) {\n  const hint =\n    'Kiểm tra: Credential Facebook Graph API trong n8n có đúng Page Access Token không; quyền pages_manage_posts; Page ID trong node 2 đúng; scheduled_publish_unix >= 10 phút từ bây giờ (UTC). Chi tiết lỗi: xem response node 14e FB Finish Upload.';\n  throw new Error('Facebook Graph: ' + summarizeFbErr(j.error) + '. ' + hint);\n}\nif (!j.id) {\n  const sc = j.statusCode ?? j.status ?? j.status_code;\n  if (sc === 413) {\n    throw new Error(\n      'Facebook: HTTP 413 — thử tăng chunk (node 14) hoặc giới hạn proxy; với resumable, thường do proxy/nginx. Chi tiết: ' + summarizeFbErr(j) + ' | ' + JSON.stringify(j).slice(0, 300)\n      ,\n    );\n  }\n  throw new Error(\n    'Facebook: không có id video — ' + summarizeFbErr(j) + '. Raw: ' + JSON.stringify(j).slice(0, 600)\n    ,\n  );\n}\nreturn $input.item;"
+      },
+      "id": "d0d38294-3fe1-4bb6-b76e-547149bdafdd",
+      "name": "16 Check Facebook OK",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [560, 2808]
+    },
+    {
+      "parameters": {
+        "executeOnce": false,
+        "command": "=python {{ $json.repo_root }}/n8n-automatioin/mark_publish_result.py \"{{ $json.session_folder }}\" --platform facebook --remote-id {{ $json.id }} --url \"https://www.facebook.com/watch/?v={{ $json.id }}\" --scheduled-at \"{{ $json.scheduled_at }}\""
+      },
+      "id": "c259f329-8a9e-4d09-84e8-b354c9a77e6c",
+      "name": "17 Mark Facebook đã đăng",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [560, 2928]
+    },
+    {
+      "parameters": {
+        "executeOnce": false,
+        "command": "=python {{ $json.repo_root }}/n8n-automatioin/workflow_log_append.py \"{{ $json.log_file }}\" facebook_ok --level INFO --message \"fb_video_id={{ $json.id }} session={{ $json.session_name }}\""
+      },
+      "id": "aaddbea3-0054-4abf-a1fa-86fe2e435ef0",
+      "name": "18 Log • Facebook OK",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [560, 3048]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "053831aa-872e-4091-8f6e-c95b8bb7271d",
+              "name": "REPO_ROOT",
+              "value": "/repo",
+              "type": "string"
+            },
+            {
+              "id": "f7f9ce8a-7674-42e5-b15e-4fdd17e6701e",
+              "name": "WORKSPACE",
+              "value": "/workspace",
+              "type": "string"
+            },
+            {
+              "id": "4948dbc4-064a-43b3-8fbe-440d359187ae",
+              "name": "FACEBOOK_PAGE_ID",
+              "value": "61588910710855",
+              "type": "string"
+            },
+            {
+              "id": "89156ba7-cd5f-4692-829f-63d954a10e91",
+              "name": "SCHEDULE_INTERVAL_HOURS",
+              "value": 24,
+              "type": "number"
+            },
+            {
+              "id": "fd736656-9b9b-413f-8779-4dca8d899195",
+              "name": "SCHEDULE_START",
+              "value": "2026-05-10T22:00:00+07:00",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [448, 256],
+      "id": "bc8e5861-0c79-435a-9870-982aa0fbba0d",
+      "name": "Edit Fields"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Execute workflow": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2 Publishing config (sửa 1 lần trong Code)": {
+      "main": [
+        [
+          {
+            "node": "3 Log • start",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "4 Export jobs (Python)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "4 Export jobs (Python)": {
+      "main": [
+        [
+          {
+            "node": "5 Split jobs (+ giữ config)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "5 Split jobs (+ giữ config)": {
+      "main": [
+        [
+          {
+            "node": "6 Log • job begin",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "6 Log • job begin": {
+      "main": [
+        [
+          {
+            "node": "6b Carry job → Read",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "6b Carry job → Read": {
+      "main": [
+        [
+          {
+            "node": "6d YouTube cần upload?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "6d YouTube cần upload?": {
+      "main": [
+        [
+          {
+            "node": "7 Read video (YouTube)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "6c Đã có YouTube → chỉ FB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "6c Đã có YouTube → chỉ FB": {
+      "main": [
+        [
+          {
+            "node": "12b Carry job → Read FB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "7 Read video (YouTube)": {
+      "main": [
+        [
+          {
+            "node": "8 Check read OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "8 Check read OK": {
+      "main": [
+        [
+          {
+            "node": "8c Read thumbnail YouTube",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "8c Read thumbnail YouTube": {
+      "main": [
+        [
+          {
+            "node": "8d Gộp video và thumbnail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "8d Gộp video và thumbnail": {
+      "main": [
+        [
+          {
+            "node": "9 YouTube upload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "9 YouTube upload": {
+      "main": [
+        [
+          {
+            "node": "9b Upload YouTube thành công?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "9b Upload YouTube thành công?": {
+      "main": [
+        [
+          {
+            "node": "10 Check YouTube OK",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "9c YT lỗi → sang kiểm tra FB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "9c YT lỗi → sang kiểm tra FB": {
+      "main": [
+        [
+          {
+            "node": "12b Carry job → Read FB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "10 Check YouTube OK": {
+      "main": [
+        [
+          {
+            "node": "10b YouTube set thumbnail (HTTP)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "10b YouTube set thumbnail (HTTP)": {
+      "main": [
+        [
+          {
+            "node": "10c Kiểm tra thumbnail API OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "10c Kiểm tra thumbnail API OK": {
+      "main": [
+        [
+          {
+            "node": "11 Mark YouTube đã đăng",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "11 Mark YouTube đã đăng": {
+      "main": [
+        [
+          {
+            "node": "12 Log • YouTube OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "12 Log • YouTube OK": {
+      "main": [
+        [
+          {
+            "node": "12a Chuẩn bị JSON cho FB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "12a Chuẩn bị JSON cho FB": {
+      "main": [
+        [
+          {
+            "node": "12b Carry job → Read FB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "12b Carry job → Read FB": {
+      "main": [
+        [
+          {
+            "node": "6e Facebook cần upload?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "6e Facebook cần upload?": {
+      "main": [
+        [
+          {
+            "node": "13 FB Re-read video",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "19 FB đã đăng — skip",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "13 FB Re-read video": {
+      "main": [
+        [{ "node": "13b FB Validate & Chuẩn bị", "type": "main", "index": 0 }]
+      ]
+    },
+    "13b FB Validate & Chuẩn bị": {
+      "main": [[{ "node": "14a FB Start Upload", "type": "main", "index": 0 }]]
+    },
+    "14a FB Start Upload": {
+      "main": [[{ "node": "14b FB Build Chunks", "type": "main", "index": 0 }]]
+    },
+    "14b FB Build Chunks": {
+      "main": [
+        [{ "node": "14c FB Transfer Chunks", "type": "main", "index": 0 }]
+      ]
+    },
+    "14c FB Transfer Chunks": {
+      "main": [[{ "node": "14d FB Merge Chunks", "type": "main", "index": 0 }]]
+    },
+    "14d FB Merge Chunks": {
+      "main": [[{ "node": "14e FB Finish Upload", "type": "main", "index": 0 }]]
+    },
+    "14e FB Finish Upload": {
+      "main": [[{ "node": "15 Parse FB Result", "type": "main", "index": 0 }]]
+    },
+    "15 Parse FB Result": {
+      "main": [[{ "node": "16 Check Facebook OK", "type": "main", "index": 0 }]]
+    },
+    "16 Check Facebook OK": {
+      "main": [
+        [
+          {
+            "node": "17 Mark Facebook đã đăng",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "17 Mark Facebook đã đăng": {
+      "main": [
+        [
+          {
+            "node": "18 Log • Facebook OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields": {
+      "main": [
+        [
+          {
+            "node": "2 Publishing config (sửa 1 lần trong Code)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "1dad5b3a-5bb1-456e-9157-e0022c182ea9",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "31bbbf9dc8c3a10fb7b9a1bdc681ce1cf97588dd3a69049556e901ed641fe1a0"
+  },
+  "id": "q4mq4M49ES9seqqL",
+  "tags": []
+}

@@ -1,0 +1,26 @@
+# Official n8n image is Alpine-based but the final stage removes apk-tools ("apk"),
+# so you cannot RUN apk add … on top of it. We install Python in a sibling Alpine
+# stage (same distro line as n8n upstream: alpine3.22) and copy the runtime only.
+#
+# Alpine 3.22 ships python 3.12.x; if Alpine bumps minor and COPY fails,
+# recreate the RUN step and adjust lib / directory names accordingly.
+
+FROM alpine:3.22 AS py
+RUN apk add --no-cache python3
+
+FROM docker.n8n.io/n8nio/n8n
+USER root
+
+COPY --from=py /usr/bin/python3 /usr/bin/python3
+COPY --from=py /usr/bin/python3.12 /usr/bin/python3.12
+
+COPY --from=py /usr/lib/libpython3.12.so.1.0 /usr/lib/libpython3.12.so.1.0
+
+COPY --from=py /usr/lib/python3.12 /usr/lib/python3.12
+
+# python symlink + versioned .so symlinks (required by C-extension modules)
+RUN ln -sf /usr/bin/python3 /usr/bin/python \
+ && ln -sf /usr/lib/libpython3.12.so.1.0 /usr/lib/libpython3.12.so \
+ && ln -sf /usr/lib/libpython3.12.so.1.0 /usr/lib/libpython3.so
+
+USER node

@@ -20,25 +20,31 @@ Main design rule: Step 5 does API calls and stores reusable assets; Step 6 does 
 
 - `main.py`: app entry point.
 - `core/session.py`: session paths, state, chaining, title/description/thumbnail metadata.
+- `core/session_listing.py`: `Session.list_sessions()` implementation (folder scan + sizes).
+- `core/config_store.py`: persist step widget configs per workspace.
 - `core/api_keys.py`: API key manager for `.subsync_keys`. Keys: Gemini, OpenAI, FPT, Zalo, ElevenLabs, Google Cloud TTS.
+- `core/logger.py` / `core/logging/` / `core/log_file.py`: Qt log handler + daily file log (`FileLogger`).
 - `core/pipeline/base.py`: step abstractions and worker.
 - `core/pipeline/selection.py`: shared backend/model/API-key mapping helpers.
 - `core/pipeline/tts_assets.py`: shared Step 5 asset resolve/compose helpers.
-- `core/pipeline/step1_transcribe.py`
-- `core/pipeline/step2_translate.py`
-- `core/pipeline/step3_burn.py`
-- `core/pipeline/step4_separate.py`
-- `core/pipeline/step5_tts.py`
-- `core/pipeline/step6_add_voice.py`
-- `core/pipeline/step7_publish_info.py`
+- `core/pipeline/step1_transcribe/` — package: constants, models (`Segment`, `TranscriptResult`), format utils, `TranscribeStep`.
+- `core/pipeline/step2_translate/` — package: constants, `TranslatedSegment`, `SmartFixer`, `TranslateStep`.
+- `core/pipeline/step3_burn/` — package: constants, SRT writer, ffprobe, channel profiles, delogo, ffmpeg builders, `BurnStep`.
+- `core/pipeline/step4_separate/` — package: Demucs constants, `SeparateStep`.
+- `core/pipeline/step5_tts/` — package: `budget.py` (cost table + char count), constants, `TTSStep`.
+- `core/pipeline/step6_add_voice/` — package: mix-mode constants, `AddVoiceStep`.
+- `core/pipeline/step7_publish/` — package: `stop_words`, `PublishInfoStep` (`STEP_ID` remains `step7_publish_info`).
 - `n8n-automatioin/session_publish_jobs.py`: scan sessions to publish jobs payload.
 - `n8n-automatioin/export_publish_jobs.py`: CLI export JSON jobs for n8n.
 - `n8n-automatioin/mark_publish_result.py`: CLI write posted markers per platform.
 - `ui/main_window.py`: orchestration, queue, session manager, key loading.
-- `ui/multi_session_window.py`: standalone multi-session runner window.
+- `ui/multi_session_window.py`: thin import shim → `ui/multi_session/`.
+- `ui/multi_session/`: `cost_worker.py`, `session_list_panel.py`, `window.py` (`MultiSessionWindow`).
+- `ui/dialogs/`, `ui/theme.py`: shared Qt dialogs and stylesheet.
 - `ui/widgets/step_card.py`: auto-width step card widget.
 - `ui/widgets/drop_zone.py`: drag-and-drop file zone.
 - `ui/widgets/subtitle_editor.py`: editable Original+Translated panel, saves to json+srt.
+- `ui/widgets/subtitle_editor_io.py`: parse/format SRT-like panel text, ffprobe duration helpers.
 - `ui/widgets/session_info_editor.py`: title, description, thumbnail editor per session.
 
 ## Session Model
@@ -98,7 +104,7 @@ Display priority:
 
 - Stored at `<base_dir>/.subsync_channel_profiles/` and `<base_dir>/.subsync_channel_profiles.json` (shared across sessions of same base folder).
 - Each channel gets its own subfolder: `<safe_name>/avatar.<ext>` + `channel_name.txt`.
-- Profile scanning: `_load_channel_profiles(base_dir)` in `step3_burn.py`.
+- Profile scanning: `load_channel_profiles(base_dir)` in `core/pipeline/step3_burn/channel_profiles.py`.
 
 ## API Keys
 
@@ -125,7 +131,7 @@ UI behavior in `ui/main_window.py`:
 
 ## Step 1 (Transcribe) Current Logic
 
-File: `core/pipeline/step1_transcribe.py`
+Package: `core/pipeline/step1_transcribe/` — main class in `transcribe_step.py`; shared types in `models.py`.
 
 ### Backends
 
@@ -141,7 +147,7 @@ Config:
 
 ## Step 2 (Translate) Current Logic
 
-File: `core/pipeline/step2_translate.py`
+Package: `core/pipeline/step2_translate/` — main class in `translate_step.py`.
 
 ### Backends
 
@@ -169,7 +175,7 @@ Optimization vs original:
 
 ## Step 3 (Burn Subtitle) Current Logic
 
-File: `core/pipeline/step3_burn.py`
+Package: `core/pipeline/step3_burn/` — main class in `burn_step.py`; `write_srt` exported from package root.
 
 ### Subtitle Burn
 
@@ -178,7 +184,7 @@ File: `core/pipeline/step3_burn.py`
 - Subtitle position: ASS style with `MarginV=6`.
 - Background box: `BorderStyle=4` uses `BackColour=&H{alpha_hex}{bgr_hex}` for opaque/semi-transparent box.
 - **ASS color format**: `&HAABBGGRR` — alpha is **inverted** (00=opaque, FF=transparent), color in BGR byte order.
-- `COLOR_MAP` stores true RGB hex; `_bgr()` reverses byte pairs to BGR for libass.
+- `COLOR_MAP` stores true RGB hex; `color_name_to_ass_bgr()` (in `srt_writer.py`) swaps to BGR for libass.
 - `bg_alpha_hex = int((100 - opacity) / 100 * 255)` — inverted correctly.
 - `ASS_PLAYRES_Y = 288` constant ensures font sizes are in script-space, not pixel-space.
 - **Preview** (QPainter): uses `fm.ascent()` + `fm.descent()` for correct box sizing so text is centered inside box.
@@ -196,18 +202,19 @@ New feature: FFmpeg `delogo` filter to remove hardcoded subtitles from source vi
 - Filter chain order: `delogo → subtitles → branding` (delogo first so new sub burns onto clean frame).
 - No extra dependencies — FFmpeg only.
 
-```python
-def _delogo_filter(x, y, w, h) -> str:
-    return f"delogo=x={x}:y={y}:w={w}:h={h}:show=0"
-```
+FFmpeg helper: `delogo_filter(x, y, w, h)` in `core/pipeline/step3_burn/delogo.py`.
 
 ### Channel Branding Overlay
 
 (unchanged from original — see original context)
 
+## Step 4 (Separate) Current Logic
+
+Package: `core/pipeline/step4_separate/` — `separate_step.py`, options in `constants.py`.
+
 ## Step 5 (TTS) Current Logic
 
-File: `core/pipeline/step5_tts.py`
+Package: `core/pipeline/step5_tts/` — `tts_step.py`; cost table in `budget.py`.
 
 ### Backends
 
@@ -249,7 +256,7 @@ Setup:
 
 ## Step 6 (Add Voice) Current Logic
 
-File: `core/pipeline/step6_add_voice.py`
+Package: `core/pipeline/step6_add_voice/` — `add_voice_step.py`, mix modes in `constants.py`.
 
 ### Audio composition
 
@@ -265,7 +272,7 @@ File: `core/pipeline/step6_add_voice.py`
 
 ## Step 7 (Publish Info) Current Logic
 
-File: `core/pipeline/step7_publish_info.py`
+Package: `core/pipeline/step7_publish/` — `publish_step.py`; `stop_words.py` for hashtag filtering. Public import: `from core.pipeline.step7_publish import PublishInfoStep`.
 
 ### Generation backends
 
@@ -316,7 +323,7 @@ Hook rules:
 - `_set_step3_source_file(source_file)`: calls `BurnStep.set_source_file()` on browse, load, and session change.
 - **Throughput metrics**: `_single_run_started_at`, `_single_total_steps`, `_single_done_steps` logged at queue end with `actions/min`.
 
-### MultiSessionWindow (`ui/multi_session_window.py`)
+### MultiSessionWindow (`ui/multi_session/window.py`, re-exported from `ui/multi_session_window.py`)
 
 Standalone `QMainWindow`, opened from MainWindow. Receives `steps[]` (shared instances).
 
@@ -374,7 +381,7 @@ next translated
 - `load_session(session)` → loads step1 (read-only) + step2 (editable).
 - `set_session_for_save(session)` → enables save after `load_from_text`.
 - Save (💾 or Ctrl+S) → writes `step2_translated.json` + `step2_translated.srt`.
-- Parser: `_parse_translated_block(text)` splits on blank lines, finds `[Xs–Ys]` line, everything after = translated.
+- Parser: `parse_translated_panel_text(text)` in `subtitle_editor_io.py` splits on blank lines, finds `[Xs–Ys]` line, everything after = translated.
 - Emits `saved(folder_path)` signal after successful save.
 
 ### SessionInfoEditor (`ui/widgets/session_info_editor.py`)
@@ -400,7 +407,7 @@ Layout: thumbnail preview (96×54) + upload/clear buttons on left; Title + Notes
 ## Maintenance Guidelines
 
 - **Step 3**: Input must ALWAYS be `session.source_file`, never `session.latest_video()`, to prevent double-subtitle stacking.
-- **Step 3 ASS colors**: `COLOR_MAP` stores true RGB hex. `_bgr()` swaps pairs to BGR. `BackColour=&H{alpha}{bgr}` where alpha is inverted (00=opaque, FF=transparent). Do not revert.
+- **Step 3 ASS colors**: `COLOR_MAP` stores true RGB hex. `color_name_to_ass_bgr()` swaps pairs to BGR. `BackColour=&H{alpha}{bgr}` where alpha is inverted (00=opaque, FF=transparent). Do not revert.
 - **Step 3 FontSize**: Must use `int(ASS_PLAYRES_Y * font_pct / 100)` (ASS script space). Do NOT use video pixel height.
 - **Step 3 BorderStyle**: Must be `4` for background box fill (BackColour). `BorderStyle=3` is outline-only and ignores BackColour.
 - **Step 3 preview**: Call `set_source_file(path)` whenever active session or source file changes so preview reflects correct video dimensions.
@@ -413,7 +420,7 @@ Layout: thumbnail preview (96×54) + upload/clear buttons on left; Title + Notes
 - Keep backend/model/API-key mapping inside `core/pipeline/selection.py`.
 - When adding new TTS backend, ensure:
   1. Add to `TTS_BACKEND_LABEL_TO_KEY` in `selection.py`
-  2. Add to `COST_PER_1M` in `step5_tts.py`
+  2. Add to `COST_PER_1M` in `core/pipeline/step5_tts/budget.py`
   3. Add dispatch case in `_generate_tts`
   4. Add placeholder in `_on_backend_changed`
   5. Add key to `KNOWN_KEYS` in `api_keys.py` if needs API key
