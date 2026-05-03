@@ -47,6 +47,8 @@ Tải bản `Windows installer (64-bit)`, tích chọn **Add Python to PATH**.
 brew install python@3.11
 ```
 
+→ **Máy Mac mới, chưa cài gì / không quen Terminal:** xem hướng dẫn từng bước (Homebrew, Terminal, venv, chạy app) trong **[`docs/HUONG_DAN_CAI_DAT_MAC.md`](docs/HUONG_DAN_CAI_DAT_MAC.md)**.
+
 **Ubuntu:**
 
 ```bash
