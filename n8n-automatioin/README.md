@@ -5,6 +5,74 @@ workspace folder to YouTube and Facebook. The export script now also assigns a
 scheduled publish time every 4 hours based on the original `published_at` value
 stored in each session's `session.json`.
 
+---
+
+## Quick context (humans & AI agents)
+
+**Purpose.** Batch-publish **prepared session folders** (from the video-subtitle-translator app) to **YouTube** and **Facebook**, with scheduling, markers on disk, and optional logging. This is **not** a generic n8n tutorial—the workflow assumes **self-hosted n8n** with **Execute Command**, **Read/Write Files**, and Python scripts from this repo.
+
+**Canonical paths (don’t mix these up).**
+
+| Where n8n runs | Repo (scripts) | Workspace (sessions) |
+|----------------|----------------|----------------------|
+| **Docker (recommended)** | **`/repo`** ← host: path to this git clone | **`/workspace`** ← host: folder that **contains** session subfolders |
+| **Windows, n8n native** | e.g. `D:\...\video-subtitle-translator` | e.g. `D:\Downloads\workspace\horror_story` |
+
+Inside the container, **Windows paths like `D:\...` do not exist.** Node **`2 Publishing config`** sets **`N8N_IN_DOCKER = true`** so values that look like **`D:\...`** are rewritten to **`/repo`** and **`/workspace`** before any `python ...` runs. Set **`N8N_IN_DOCKER = false`** only if n8n runs **directly on Windows** (not Docker) and you need real drive letters.
+
+**Key files (read these first when debugging).**
+
+| Path | Role |
+|------|------|
+| `workflows/publish_sessions.template.json` | Main workflow—import into n8n; single source of node names and expressions |
+| `export_publish_jobs.py` | CLI + called by node **4**—outputs JSON with `jobs`, `scan_summary`, `audit_trail` |
+| `session_publish_jobs.py` | Scan rules, video/thumbnail resolution, markers |
+| `mark_publish_result.py` | Writes `posted_youtube.json` / `posted_facebook.json` after success |
+| `workflow_log_append.py` | Appends JSON lines to `n8n_publish_run.jsonl` |
+| `facebook_resumable_upload.py` | Chunked Facebook upload; needs **Page** token via env `FACEBOOK_PAGE_ACCESS_TOKEN`, or `FACEBOOK_PAGE_TOKEN_FILE`, or `--token-file` (see `docker-compose.n8n.example.yml` + `.env`) |
+| `docker-compose.n8n.example.yml` | Example mounts `/repo` + `/workspace`, `NODES_EXCLUDE`, `N8N_RESTRICT_FILE_ACCESS_TO` |
+| `RUNCHEATSHEET.MD` | Short operator checklist (Docker up, import, env) |
+
+**Environment (Docker / n8n).**
+
+- **`NODES_EXCLUDE=[]`** — required on n8n 2.x so **Execute Command** and **Read/Write Files** are not blocked ([docs](https://docs.n8n.io/hosting/securing/blocking-nodes/)).
+- **`N8N_RESTRICT_FILE_ACCESS_TO`** — semicolon-separated list, e.g. **`/repo;/workspace`** (comma breaks the setting).
+- **`FACEBOOK_PAGE_ACCESS_TOKEN`** (or **`FACEBOOK_PAGE_TOKEN_FILE`**) — required for **resumable** Facebook upload in `Execute Command` (n8n does not inject Graph credentials into shell). Set in **`.env`** next to `docker-compose.n8n.example.yml` and pass through `environment:` (see compose file). Same long-lived **Page** token as the Facebook Graph credential in n8n.
+
+**Typical failure signals.**
+
+| Symptom | Likely cause |
+|---------|----------------|
+| `can't open file ... D:` or path under `/home/node/D...` | **`repo_root`** was a Windows path inside Linux container—use **`N8N_IN_DOCKER`** + **`/repo`** or fix compose mounts |
+| Exporter `count: 0`, `skipped_incomplete` high | Missing **video** / **title** / **description** / **thumbnail** per `session_publish_jobs.py`; run exporter with **`--debug --audit`**; stdout JSON includes **`scan_summary`** |
+| `HTTP 413` on Facebook | Video too large for single POST—workflow uses **resumable** Python upload + **`FACEBOOK_PAGE_ACCESS_TOKEN`** |
+| `Unrecognized node type: executeCommand` | **`NODES_EXCLUDE`** still blocking nodes or **n8n Cloud** (Execute Command unavailable) |
+
+**Minimal graph (mental model).**
+
+```mermaid
+flowchart LR
+  subgraph host["Host machine"]
+    RepoClone["Git clone\n(video-subtitle-translator)"]
+    WorkspaceDir["Folder of session subfolders"]
+  end
+  subgraph docker["n8n container"]
+    R["/repo"]
+    W["/workspace"]
+    PY["python export_publish_jobs.py"]
+    YT["YouTube nodes"]
+    FB["Facebook resumable / checks"]
+  end
+  RepoClone -->|volume| R
+  WorkspaceDir -->|volume| W
+  R --> PY
+  W --> PY
+  PY --> YT
+  PY --> FB
+```
+
+---
+
 ## 1. What this automation does
 
 - Scans a workspace folder containing many session subfolders
@@ -52,7 +120,7 @@ After each run, the exporter now writes:
 - Per-session marker file: `exported_publish_job.json` inside each exported session folder (includes **`status`**; see below)
 - Run summary file: `export_publish_jobs_info.json` in `base_dir` (or custom `--info-file`)
 
-**`exported_publish_job.json` → `status`:** **`pending_n8n`** after the Python exporter writes the marker. **`partial`** once some **`posted_<platform>.json`** markers exist; **`completed`** when every platform listed in **`platforms`** on that file exists. **`mark_publish_result.py`** refreshes **`status`** + **`posted_*`** after each successful mark. **`failed`** does **not** block re-scan (nor does **`pending_n8n`**): if **Node 4** / exporter succeeded but **n8n crashed**, the folder can appear again in **`jobs`** on the next cron so you don’t silently “lose” the session (**`completed`** and legacy files **without `status`** still block by default unless **`--include-exported`**). Duplicate uploads while **`partial`** are mitigated because **`posted_*`** markers exclude already-posted platforms from the scanner.
+**`exported_publish_job.json` → `status`:** **`pending_n8n`** after the Python exporter writes the marker. **`partial`** once some **`posted_<platform>.json`** markers exist; **`completed`** when every platform listed in **`platforms`** on that file exists. **`mark_publish_result.py`** refreshes **`status`** + **`posted_*`** after each successful mark. **`failed`**, **`pending_n8n`**, and **`partial`** do **not** block the next export scan: a **partial** session (e.g. YouTube done, Facebook not) must still appear in **`jobs`** so the workflow can run the **Facebook-only** branch. Only **`completed`** and legacy markers **without `status`** block by default (unless **`--include-exported`**). Duplicate YouTube/Facebook work is mitigated because **`youtube_posted`** / **`facebook_posted`** in each job row skip the finished platform’s nodes.
 
 Former **`--pending-export-stale-hours`** flag **was removed**; **`pending_n8n`** no longer skips the exporter scan (**`completed`** and legacy markers without **`status`** still do).
 
@@ -206,8 +274,9 @@ There are two workflow files under `n8n-automatioin/workflows/`:
 1. n8n → **Workflows** → **Import from File** (or drag onto the canvas).
 2. Open **`n8n-automatioin/workflows/publish_sessions.template.json`**.
 3. **Configure once after import** — open the **Code** node **`2 Publishing config (sửa 1 lần trong Code)`** only; all paths and schedule defaults live there (**no separate Set node** in the shipped template):
+   - **`N8N_IN_DOCKER`**: keep **`true`** when n8n runs **inside Docker**. If **`Edit Fields`** or webhook sends Windows paths (`D:\...`), the Code node maps them to **`/repo`** and **`/workspace`** so **`Execute Command`** does not break. Use **`false`** only for **n8n installed natively on Windows** (real drive letters).
    - **`WORKSPACE`** (default parent folder for sessions — same meaning as CLI `base_dir`; Docker compose usually maps host folder → **`/workspace`**).
-   - **`REPO_ROOT`**: repo root containing `n8n-automatioin/` (**`/repo`** in Docker compose, Windows path if n8n is native Windows).
+   - **`REPO_ROOT`**: repo root containing `n8n-automatioin/` (**`/repo`** in Docker compose; on native Windows use the real clone path).
    - **`FACEBOOK_PAGE_ID`**, **`SCHEDULE_INTERVAL_HOURS`**, **`SCHEDULE_START`** (empty **ISO** ⇒ Python falls back to the first **`published_at`** — see **`--schedule-start`** in **`export_publish_jobs.py`**).
 
    **`Webhook`/Cron overrides:** inputs may include **`workspace`**, **`schedule_interval_hours`**, or **`schedule_start`**; when present they override the constants for that execution.
@@ -382,6 +451,17 @@ Then process the generated jobs in n8n.
 - Use `--include-exported` to include sessions already exported in prior runs.
 - Use `--debug` to print why each session folder is skipped.
 - Use one or more `--thumbnail-pattern` values when your thumbnail file does not follow `thumbnail.*`.
+
+## Glossary
+
+| Term | Meaning |
+|------|---------|
+| **Workspace / `base_dir`** | Parent directory whose **child folders** are sessions (each has `session.json`). Same value as CLI argument to `export_publish_jobs.py`. |
+| **Session folder** | One directory per pipeline run; contains `session.json`, optional `step7_publish_info.json`, video outputs (`result/`, `step3_output.*`, …), thumbnails. |
+| **`exported_publish_job.json`** | Written by exporter when a session is queued; **`status`**: `pending_n8n`, `partial`, `completed`, `failed` — only **`completed`** (and legacy missing `status`) blocks re-export; **`partial`** still exports so the other platform can run. |
+| **`posted_youtube.json` / `posted_facebook.json`** | Written by **`mark_publish_result.py`** after a successful platform publish; exporter uses them for **`youtube_posted`** / **`facebook_posted`** skip logic. |
+| **`scan_summary`** | Object in exporter stdout JSON: counts such as **`session_folders_found`**, **`skipped_incomplete`**, **`skipped_export_marker`** — use when **`count`** is 0. |
+| **`audit_trail`** | Optional list of `{ session_folder, note }` when exporter runs with **`--audit`** (enabled in template node **4**). |
 
 ## 8. Troubleshooting
 

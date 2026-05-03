@@ -111,7 +111,12 @@ def _parse_datetime(value: str) -> datetime | None:
 def main() -> int:
     args = parse_args()
     platforms = tuple(args.platforms or ["youtube", "facebook"])
+    base_dir_input = args.base_dir
+    root = Path(base_dir_input).expanduser().resolve(strict=False)
+    args.base_dir = str(root)
+
     audit_rows: list[tuple[str, str]] | None = [] if args.audit else None
+    scan_summary: dict[str, int] = {}
     jobs = scan_publish_jobs(
         base_dir=args.base_dir,
         platforms=platforms,
@@ -122,6 +127,7 @@ def main() -> int:
         debug=args.debug,
         thumbnail_patterns=tuple(args.thumbnail_patterns or []),
         audit=audit_rows,
+        summary_out=scan_summary,
     )
     if audit_rows is not None:
         for folder, outcome in audit_rows:
@@ -163,8 +169,19 @@ def main() -> int:
             }
             marker_paths.append(write_export_marker(job.session_folder, marker_payload))
 
+    audit_trail = (
+        [{"session_folder": folder, "note": note} for folder, note in audit_rows]
+        if audit_rows is not None
+        else []
+    )
+
     payload = {
         "base_dir": str(Path(args.base_dir)),
+        "base_dir_input": str(Path(base_dir_input)),
+        "scan_summary": scan_summary,
+        "audit_trail": audit_trail,
+        "debug": args.debug,
+        "audit": args.audit,
         "platforms": list(platforms),
         "count": len(jobs),
         "schedule_interval_hours": args.schedule_interval_hours,
@@ -173,9 +190,35 @@ def main() -> int:
         "jobs": [job.to_dict() for job in jobs],
     }
 
+    if len(jobs) == 0:
+        sb = int(scan_summary.get("skipped_export_marker") or 0)
+        si = int(scan_summary.get("skipped_incomplete") or 0)
+        sp = int(scan_summary.get("skipped_posted_for_selected_platforms") or 0)
+        parts: list[str] = []
+        if sb > 0:
+            parts.append(
+                f"{sb} session đủ video+metadata nhưng bị CHẶN bởi exported_publish_job.json "
+                f"(đếm skipped_export_marker). Thêm --include-exported vào lệnh export, "
+                f"hoặc xóa/sửa file marker trong từng session (status pending_n8n hoặc failed cho phép export lại)."
+            )
+        if si > 0:
+            parts.append(
+                f"{si} session thiếu file trong /workspace (video/title/description/thumbnail) "
+                f"(skipped_incomplete). Kiểm tra volume Docker và file render trong từng thư mục."
+            )
+        if sp > 0:
+            parts.append(
+                f"{sp} session đã posted đủ platform (skipped_posted); dùng --include-posted nếu cần export lại."
+            )
+        if parts:
+            payload["zero_jobs_hint"] = " ".join(parts)
+
     info_payload = {
         "run_at": datetime.now(timezone.utc).isoformat(),
         "base_dir": str(Path(args.base_dir)),
+        "base_dir_input": str(Path(base_dir_input)),
+        "scan_summary": scan_summary,
+        "audit_trail": audit_trail,
         "platforms": list(platforms),
         "count": len(jobs),
         "mark_exported": not args.no_mark_exported,

@@ -23,6 +23,11 @@ services:
       NODES_EXCLUDE: "[]"
       # Giới hạn đọc/ghi file (Read/Write Files node) — n8n nhiều thư mục = danh sách cách nhau bởi `;`, không phảy.
       N8N_RESTRICT_FILE_ACCESS_TO: "/repo;/workspace"
+      # Page token (giống credential Facebook Graph trong n8n) — bắt buộc cho facebook_resumable_upload.py.
+      # Tạo file `.env` cạnh compose: FACEBOOK_PAGE_ACCESS_TOKEN=EAA... rồi docker compose up lại.
+      # Hoặc dùng FACEBOOK_PAGE_TOKEN_FILE trỏ file một dòng token (Docker secrets).
+      FACEBOOK_PAGE_ACCESS_TOKEN: ${FACEBOOK_PAGE_ACCESS_TOKEN:-}
+      FACEBOOK_PAGE_TOKEN_FILE: ${FACEBOOK_PAGE_TOKEN_FILE:-}
     volumes:
       - n8n_data:/home/node/.n8n
       # Repo clone (có thư mục n8n-automatioin) — map vào /repo

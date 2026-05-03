@@ -29,24 +29,35 @@ Mở trình duyệt: http://localhost:5678
 4) Chỉnh một node Code trong workflow
 Import n8n-automatioin/workflows/publish_sessions.template.json.
 
-Mở node 2 Publishing config (sửa 1 lần trong Code), sửa đầu file cho đúng Docker:
+Mở node **2 Publishing config**, chỉnh trong Code:
 
-const REPO_ROOT = String.raw`/repo`;
-const WORKSPACE = String.raw`/workspace`;
-const FACEBOOK_PAGE_ID = 'ID_FANPAGE_CUA_BAN';
-const SCHEDULE_INTERVAL_HOURS = 24;   // hoặc 24, tùy bạn
-const SCHEDULE_START = '2026-05-02T22:00:00+07:00';          // hoặc chuỗi ISO nếu cần
-Save workflow.
+- Giữ **`N8N_IN_DOCKER = true`** khi chạy n8n trong Docker (Linux). Template sẽ **tự đổi** `REPO_ROOT`/`WORKSPACE` kiểu `D:\...` thành **`/repo`** và **`/workspace`** — tránh lỗi `can't open file ... D:` trong container.
+- Đặt **`N8N_IN_DOCKER = false`** chỉ khi bạn cài **n8n trực tiếp trên Windows** (không Docker) và cần đường dẫn ổ đĩa thật.
+
+Fallback mặc định trong template vẫn là `/repo`, `/workspace`; chỉnh `FACEBOOK_PAGE_ID`, `SCHEDULE_*` nếu cần. Save workflow.
+
+**Facebook upload chunk (Python):** tạo file `.env` cạnh compose với `FACEBOOK_PAGE_ACCESS_TOKEN=` (token Fanpage giống credential Graph), rồi `docker compose ... up -d` lại — biến được inject vào container (xem `docker-compose.n8n.example.yml`).
 
 5) Gắn credential
 YouTube OAuth2 - publish workspace
 Facebook Graph API - page token (token Fanpage)
 Đúng tên như trong template (hoặc đổi tên credential cho khớp).
 
-6) (Khuyến nghị) Thử export trong container trước khi bấm n8n
+6) (Khuyến nghị) Thử export trước khi bấm n8n
+
+**Trong container Docker** — đường dẫn `/repo` và `/workspace` chỉ tồn tại **bên trong** container (compose đã mount):
+
 docker compose -f n8n-automatioin/docker-compose.n8n.example.yml exec n8n sh -lc "python /repo/n8n-automatioin/export_publish_jobs.py /workspace --platform youtube --platform facebook --debug --audit --pretty 2>&1 | tail -40"
+
+**Trên Windows (PowerShell, Python trên máy)** — **không** dùng `/repo/...` (Windows có thể hiểu thành `D:\repo` và báo *can't open file*). Gọi đúng file trong repo clone của bạn và trỏ **workspace thật trên ổ**, ví dụ:
+
+cd D:\Nguyen-Anh-Viet\Tutorial\Python\audio-to-text\video-subtitle-translator
+python n8n-automatioin\export_publish_jobs.py "D:\Downloads\workspace\horror_story" --platform youtube --platform facebook --debug --audit --pretty
+
+(Dữ liệu giống nhau; chỉ khác chỗ chạy script và chỗ đặt session.)
+
 count > 0 → được phép vào nhánh job trong n8n.
-count: 0 → xem dòng [skip] (thiếu video/title/description/thumbnail đã exported…).
+count: 0 → xem [skip] / `scan_summary` / `audit_trail` trong JSON (thiếu asset, marker exported, v.v.).
 7) Chạy automation trong UI
 Workflow → Execute workflow (Manual trigger đầu graph).
 

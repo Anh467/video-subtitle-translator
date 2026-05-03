@@ -1,0 +1,22 @@
+{
+  "run_at": "2026-05-03T06:23:08.387105+00:00",
+  "base_dir": "D:\\Nguyen-Anh-Viet\\Tutorial\\Python\\audio-to-text\\video-subtitle-translator",
+  "base_dir_input": "d:\\Nguyen-Anh-Viet\\Tutorial\\Python\\audio-to-text\\video-subtitle-translator",
+  "scan_summary": {
+    "session_folders_found": 0,
+    "skipped_no_session_json": 0,
+    "skipped_incomplete": 0,
+    "skipped_posted_for_selected_platforms": 0,
+    "skipped_export_marker": 0,
+    "included": 0
+  },
+  "audit_trail": [],
+  "platforms": [
+    "youtube",
+    "facebook"
+  ],
+  "count": 0,
+  "mark_exported": true,
+  "marker_paths": [],
+  "jobs": []
+}

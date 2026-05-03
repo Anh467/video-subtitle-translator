@@ -11,7 +11,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// ============================================================\n// CHỈ SỬA BLOCK NÀY — input từ node trước:\n// REPO_ROOT, WORKSPACE, FACEBOOK_PAGE_ID,\n// SCHEDULE_INTERVAL_HOURS, SCHEDULE_START\n// ============================================================\n\n// Ưu tiên lấy từ node trước, nếu không có thì fallback default\nconst REPO_ROOT = String($json.REPO_ROOT || '/repo').trim();\nconst WORKSPACE = String($json.WORKSPACE || '/workspace').trim();\nconst FACEBOOK_PAGE_ID = String($json.FACEBOOK_PAGE_ID || '61560996974889').trim();\n\nlet SCHEDULE_INTERVAL_HOURS = Number($json.SCHEDULE_INTERVAL_HOURS);\nif (!Number.isFinite(SCHEDULE_INTERVAL_HOURS) || SCHEDULE_INTERVAL_HOURS <= 0) {\n  SCHEDULE_INTERVAL_HOURS = 24;\n}\n\nconst SCHEDULE_START = String(\n  $json.SCHEDULE_START || '2026-05-02T22:00:00+07:00'\n).trim();\n\n// ============================================================\n// Logic xử lý\n// ============================================================\n\nconst winDrivePath = (p) =>\n  /^[a-zA-Z]:[\\\\/]/.test(String(p || '').trim());\n\n// Ưu tiên workspace từ input\nlet base_dir = WORKSPACE.trim();\nbase_dir = base_dir.replace(/[/\\\\]+$/, '');\n\nconst repoWin = winDrivePath(REPO_ROOT);\nconst baseWin = winDrivePath(base_dir);\n\nif (repoWin !== baseWin) {\n  throw new Error(\n    'REPO_ROOT và WORKSPACE phải cùng kiểu Windows hoặc cùng Linux/Docker (/repo + /workspace). Không trộn D: với / trong container.'\n  );\n}\n\nconst norm = base_dir\n  .replace(/\\\\/g, '/')\n  .replace(/\\/+$/, '');\n\nconst log_file = `${norm}/n8n_publish_run.jsonl`;\n\nlet hours = SCHEDULE_INTERVAL_HOURS;\nlet schedule_args = `--schedule-interval-hours ${hours}`;\n\nlet schedule_start = SCHEDULE_START;\n\nif (schedule_start) {\n  schedule_args += schedule_start.includes(' ')\n    ? ` --schedule-start \"${schedule_start.replace(/\"/g, '')}\"`\n    : ` --schedule-start ${schedule_start}`;\n}\n\nreturn [\n  {\n    json: {\n      workspace: base_dir,\n      base_dir,\n      repo_root: REPO_ROOT,\n      log_file,\n      facebook_page_id: FACEBOOK_PAGE_ID,\n      schedule_interval_hours: hours,\n      schedule_start,\n      schedule_args,\n    },\n  },\n];"
+        "jsCode": "// ============================================================\n// CHỈ SỬA BLOCK NÀY — input từ node trước:\n// REPO_ROOT, WORKSPACE, FACEBOOK_PAGE_ID,\n// SCHEDULE_INTERVAL_HOURS, SCHEDULE_START\n// ============================================================\n\n// Ưu tiên lấy từ node trước, nếu không có thì fallback default\n// N8N_IN_DOCKER=true: n8n chạy trong container — map lỗi D:\\\\... → /repo, /workspace (python trong Linux không mở được ổ Windows)\n// Đặt false nếu cài n8n trực tiếp trên Windows (không Docker)\nconst N8N_IN_DOCKER = true;\nconst winDrivePath = (p) =>\n  /^[a-zA-Z]:[\\\\/]/.test(String(p || '').trim());\nlet REPO_ROOT = String($json.REPO_ROOT || '/repo').trim();\nlet WORKSPACE = String($json.WORKSPACE || '/workspace').trim();\nif (N8N_IN_DOCKER) {\n  if (winDrivePath(REPO_ROOT)) REPO_ROOT = '/repo';\n  if (winDrivePath(WORKSPACE)) WORKSPACE = '/workspace';\n}\nconst FACEBOOK_PAGE_ID = String($json.FACEBOOK_PAGE_ID || '61560996974889').trim();\n\nlet SCHEDULE_INTERVAL_HOURS = Number($json.SCHEDULE_INTERVAL_HOURS);\nif (!Number.isFinite(SCHEDULE_INTERVAL_HOURS) || SCHEDULE_INTERVAL_HOURS <= 0) {\n  SCHEDULE_INTERVAL_HOURS = 24;\n}\n\nconst SCHEDULE_START = String(\n  $json.SCHEDULE_START || '2026-05-02T22:00:00+07:00'\n).trim();\n\n// ============================================================\n// Logic xử lý\n// ============================================================\n\n// Ưu tiên workspace từ input\nlet base_dir = WORKSPACE.trim();\nbase_dir = base_dir.replace(/[/\\\\]+$/, '');\n\nconst repoWin = winDrivePath(REPO_ROOT);\nconst baseWin = winDrivePath(base_dir);\n\nif (repoWin !== baseWin) {\n  throw new Error(\n    'REPO_ROOT và WORKSPACE phải cùng kiểu Windows hoặc cùng Linux/Docker (/repo + /workspace). Không trộn D: với / trong container.'\n  );\n}\n\nconst norm = base_dir\n  .replace(/\\\\/g, '/')\n  .replace(/\\/+$/, '');\n\nconst log_file = `${norm}/n8n_publish_run.jsonl`;\n\nlet hours = SCHEDULE_INTERVAL_HOURS;\nlet schedule_args = `--schedule-interval-hours ${hours}`;\n\nlet schedule_start = SCHEDULE_START;\n\nif (schedule_start) {\n  schedule_args += schedule_start.includes(' ')\n    ? ` --schedule-start \"${schedule_start.replace(/\"/g, '')}\"`\n    : ` --schedule-start ${schedule_start}`;\n}\n\nreturn [\n  {\n    json: {\n      workspace: base_dir,\n      base_dir,\n      repo_root: REPO_ROOT,\n      log_file,\n      facebook_page_id: FACEBOOK_PAGE_ID,\n      schedule_interval_hours: hours,\n      schedule_start,\n      schedule_args,\n    },\n  },\n];"
       },
       "id": "2da76a32-ca89-460f-8f94-d332dd33e7e5",
       "name": "2 Publishing config (sửa 1 lần trong Code)",
@@ -21,7 +21,7 @@
     },
     {
       "parameters": {
-        "content": "## Một cổng vào • **Chỉ sửa 1 Code node**\n\n**Một lần** — mở **`2 Publishing config`**: chỉnh `REPO_ROOT`, `WORKSPACE`, `FACEBOOK_PAGE_ID`, `SCHEDULE_INTERVAL_HOURS`, `SCHEDULE_START` trong code (**không còn node Set**). Manual trigger chỉ nhấn **Execute**.\n\n**Docker:** `REPO_ROOT`=`/repo`, `WORKSPACE`=`/workspace` (khớp **docker-compose**). **Không có ổ `D:`** trong container.\n\n**Webhook/Cron:** gửi kèm `workspace` hoặc `schedule_*` thì được ưu tiên thay các hằng trên.\n\n**Credentials:** `YouTube OAuth2 - publish workspace`, `Facebook Graph API - page token` (token **Fanpage**).\n\n**Lỗi** `executeCommand` / **`NODES_EXCLUDE`:** README §3.3.",
+        "content": "## Một cổng vào • **Chỉ sửa 1 Code node**\n\n**Một lần** — mở **`2 Publishing config`**: chỉnh `REPO_ROOT`, `WORKSPACE`, `FACEBOOK_PAGE_ID`, `SCHEDULE_INTERVAL_HOURS`, `SCHEDULE_START` trong code (**không còn node Set**). Manual trigger chỉ nhấn **Execute**.\n\n**Docker:** Trong node 2 đặt **`N8N_IN_DOCKER = true`** — nếu Edit Fields nhập `D:\\\\...` thì tự đổi thành **`/repo`** và **`/workspace`** (tránh lỗi `can't open file ... D:` trong container).\n\n**Webhook/Cron:** gửi kèm `workspace` hoặc `schedule_*` thì được ưu tiên thay các hằng trên.\n\n**Credentials:** `YouTube OAuth2 - publish workspace`. Facebook: Graph trong n8n **và** biến env **`FACEBOOK_PAGE_ACCESS_TOKEN`** (cùng Page token) cho upload **resumable**.\n\n**Lỗi** `executeCommand` / **`NODES_EXCLUDE`:** README §3.3.",
         "height": 580,
         "width": 560,
         "color": 5
@@ -44,7 +44,7 @@
     },
     {
       "parameters": {
-        "command": "=python {{ $json.repo_root }}/n8n-automatioin/export_publish_jobs.py {{ $json.base_dir }} --platform youtube --platform facebook {{ $json.schedule_args }} --pretty"
+        "command": "=python {{ $json.repo_root }}/n8n-automatioin/export_publish_jobs.py \"{{ $json.base_dir }}\" --platform youtube --platform facebook {{ $json.schedule_args }} --pretty --debug --audit"
       },
       "id": "8bd40051-7023-4c03-b47c-484d2ac13ee1",
       "name": "4 Export jobs (Python)",
@@ -54,7 +54,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const item = $input.first().json;\nconst cfg = $('2 Publishing config (sửa 1 lần trong Code)').first().json;\nconst text = item.stdout ?? item.text ?? '';\nif (item.exitCode !== 0 && item.exitCode !== undefined) {\n  throw new Error(item.stderr || `export failed (exit ${item.exitCode})`);\n}\nconst parsed = JSON.parse(text || '{}');\nif (!Array.isArray(parsed.jobs)) {\n  throw new Error('Exporter JSON must contain a jobs array');\n}\nif (parsed.jobs.length === 0) {\n  const bd = parsed.base_dir || cfg.base_dir || '';\n  const c = parsed.count;\n  const cnt = c === undefined ? '?' : String(c);\n  throw new Error(\n    'Exporter trả về 0 job (count=' + cnt + ', base_dir=' + bd + '). '\n      + 'Không phải lỗi If/Switch: node sau chỉ chạy khi có ít nhất một job. Kiểm tra workspace hoặc volume Docker; session có đủ video, title, description, thumbnail không; có marker exported-posted không. '\n      + 'Chạy ngoài n8n: export_publish_jobs.py đúng base_dir và thêm các cờ debug và audit.',\n  );\n}\nconst asBool = (v) => v === true || v === 'true' || v === 1 || v === '1';\nreturn parsed.jobs.map((job) => ({\n  json: {\n    ...job,\n    youtube_posted: asBool(job.youtube_posted),\n    facebook_posted: asBool(job.facebook_posted),\n    repo_root: cfg.repo_root,\n    base_dir: cfg.base_dir,\n    log_file: cfg.log_file,\n    facebook_page_id: cfg.facebook_page_id,\n  },\n}));"
+        "jsCode": "const item = $input.first().json;\nconst cfg = $('2 Publishing config (sửa 1 lần trong Code)').first().json;\nconst text = item.stdout ?? item.text ?? '';\nconst stderr = String(item.stderr ?? '').trim();\nif (item.exitCode !== 0 && item.exitCode !== undefined) {\n  throw new Error(stderr || `export failed (exit ${item.exitCode})`);\n}\nconst parsed = JSON.parse(text || '{}');\nif (!Array.isArray(parsed.jobs)) {\n  throw new Error('Exporter JSON must contain a jobs array');\n}\nif (parsed.jobs.length === 0) {\n  const bd = parsed.base_dir || cfg.base_dir || '';\n  const bdIn = parsed.base_dir_input || '';\n  const c = parsed.count;\n  const cnt = c === undefined ? '?' : String(c);\n  const sum = parsed.scan_summary && typeof parsed.scan_summary === 'object' ? parsed.scan_summary : {};\n  const trail = Array.isArray(parsed.audit_trail) ? parsed.audit_trail.slice(0, 15) : [];\n  let hint =\n    'Exporter trả về 0 job (count=' + cnt + ', base_dir=' + bd;\n  if (bdIn && bdIn !== bd) {\n    hint += ', base_dir_input=' + bdIn;\n  }\n  hint += '). ';\n  hint +=\n    'Không phải lỗi If/Switch: node sau chỉ chạy khi có ít nhất một job. scan_summary=' +\n    JSON.stringify(sum) +\n    '. ';\n  if (trail.length) {\n    hint += 'audit_trail(sample)=' + JSON.stringify(trail) + '. ';\n  }\n  if (parsed.zero_jobs_hint) {\n    hint += '[Giải thích 0 job] ' + String(parsed.zero_jobs_hint) + ' ';\n  }\n  if (stderr) {\n    hint += 'stderr=' + stderr.slice(0, 1200) + (stderr.length > 1200 ? '…' : '') + ' ';\n  }\n  hint +=\n    'Chạy tay: python .../export_publish_jobs.py \"' +\n    bd +\n    '\" --platform youtube --platform facebook --debug --audit (thêm --include-exported nếu bị chặn marker; --include-incomplete chỉ khi chấp nhận thiếu asset).';\n  throw new Error(hint);\n}\nconst asBool = (v) => v === true || v === 'true' || v === 1 || v === '1';\nreturn parsed.jobs.map((job) => ({\n  json: {\n    ...job,\n    youtube_posted: asBool(job.youtube_posted),\n    facebook_posted: asBool(job.facebook_posted),\n    repo_root: cfg.repo_root,\n    base_dir: cfg.base_dir,\n    log_file: cfg.log_file,\n    facebook_page_id: cfg.facebook_page_id,\n  },\n}));"
       },
       "id": "50f795f8-973a-4a27-a2dc-98c631f7fe94",
       "name": "5 Split jobs (+ giữ config)",
@@ -402,85 +402,41 @@
     },
     {
       "parameters": {
-        "operation": "read",
-        "fileSelector": "={{ $json.video_path }}",
-        "options": {
-          "dataPropertyName": "data"
-        }
+        "mode": "runOnceForEachItem",
+        "jsCode": "const j = $input.item.json;\nif (!j || typeof j !== 'object') {\n  throw new Error('13 FB prep: missing json');\n}\nconst meta = {\n  title: j.title ?? '',\n  description: j.description ?? '',\n  scheduled_publish_unix: Number(j.scheduled_publish_unix),\n};\nif (!Number.isFinite(meta.scheduled_publish_unix)) {\n  throw new Error('13 FB prep: scheduled_publish_unix không hợp lệ');\n}\nconst fb_meta_b64 = Buffer.from(JSON.stringify(meta), 'utf8').toString('base64');\nreturn { json: { ...j, fb_meta_b64 } };"
       },
       "id": "61dbca5f-2d1e-41bd-a999-e084e6b859ba",
-      "name": "13 Read video (Facebook)",
-      "type": "n8n-nodes-base.readWriteFile",
-      "typeVersion": 1,
-      "position": [560, 2248],
-      "alwaysOutputData": true,
-      "continueOnFail": true
+      "name": "13 Chuẩn bị meta FB (resumable)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [560, 2248]
     },
     {
       "parameters": {
-        "mode": "runOnceForEachItem",
-        "jsCode": "const item = $input.item;\nif (item.json.error) {\n  throw new Error('Read video (Facebook): ' + String(item.json.error));\n}\nif (!item.binary?.data) {\n  throw new Error('Read video (Facebook): missing binary.data');\n}\nreturn item;"
+        "executeOnce": false,
+        "command": "=python {{ $json.repo_root }}/n8n-automatioin/facebook_resumable_upload.py --video \"{{ $json.video_path }}\" --page-id \"{{ $json.facebook_page_id }}\" --graph-version v21.0 --chunk-mb 4 --meta-b64 \"{{ $json.fb_meta_b64 }}\""
       },
       "id": "16158a37-8fe1-453c-9a4b-bc36121be4d7",
-      "name": "14 Check read OK • FB",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
+      "name": "14 Facebook • resumable upload",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
       "position": [560, 2368]
     },
     {
       "parameters": {
-        "hostUrl": "graph-video.facebook.com",
-        "httpRequestMethod": "POST",
-        "graphApiVersion": "v21.0",
-        "node": "={{ $('12b Carry job → Read FB').item.json.facebook_page_id }}",
-        "edge": "videos",
-        "sendBinaryData": true,
-        "binaryPropertyName": "source:data",
-        "options": {
-          "queryParameters": {
-            "parameter": [
-              {
-                "name": "description",
-                "value": "={{ $('12b Carry job → Read FB').item.json.description }}"
-              },
-              {
-                "name": "title",
-                "value": "={{ $('12b Carry job → Read FB').item.json.title }}"
-              },
-              {
-                "name": "published",
-                "value": "={{ false }}"
-              },
-              {
-                "name": "scheduled_publish_time",
-                "value": "={{ Number($('12b Carry job → Read FB').item.json.scheduled_publish_unix) }}"
-              },
-              {
-                "name": "unpublished_content_type",
-                "value": "={{ 'SCHEDULED' }}"
-              }
-            ]
-          }
-        }
+        "mode": "runOnceForEachItem",
+        "jsCode": "const idx =\n  typeof $input.itemIndex === 'number' && !Number.isNaN($input.itemIndex)\n    ? $input.itemIndex\n    : 0;\nlet prepRows = [];\ntry {\n  prepRows = $('13 Chuẩn bị meta FB (resumable)').all();\n} catch {\n  prepRows = [];\n}\nlet base = prepRows[idx]?.json;\nif (!base && prepRows.length === 0) {\n  base = $('13 Chuẩn bị meta FB (resumable)').first()?.json;\n}\nif (!base) {\n  throw new Error('15 Parse FB: không ghép được job từ node 13');\n}\nconst out = $input.item.json || {};\nif (out.exitCode !== 0 && out.exitCode !== undefined) {\n  throw new Error(\n    'Facebook resumable (exit ' + out.exitCode + '): ' + (out.stderr || out.stdout || '')\n      ,\n  );\n}\nlet parsed;\ntry {\n  parsed = JSON.parse(String(out.stdout || '').trim());\n} catch (e) {\n  throw new Error('Facebook resumable: stdout không phải JSON — ' + String(out.stdout).slice(0, 500));\n}\nif (parsed.error) {\n  throw new Error('Facebook: ' + JSON.stringify(parsed.error));\n}\nconst id = parsed.id || parsed.video_id;\nif (!id) {\n  throw new Error('Facebook resumable: thiếu id — ' + JSON.stringify(parsed).slice(0, 600));\n}\nconst { fb_meta_b64: _b64, ...rest } = base;\nreturn { json: { ...rest, ...parsed, id: String(id) } };"
       },
       "id": "fbfae92e-81a0-4578-91e4-4294d960f41a",
-      "name": "15 Facebook • upload video",
-      "type": "n8n-nodes-base.facebookGraphApi",
-      "typeVersion": 1,
-      "position": [560, 2488],
-      "alwaysOutputData": true,
-      "credentials": {
-        "facebookGraphApi": {
-          "id": "pBJ6dduCJFDKW1zU",
-          "name": "Facebook Graph account"
-        }
-      },
-      "continueOnFail": true
+      "name": "15 Parse FB resumable JSON",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [560, 2488]
     },
     {
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "const j = $input.item.json;\nif (j.error) {\n  throw new Error('Facebook Graph: ' + JSON.stringify(j.error).slice(0, 800));\n}\nif (!j.id) {\n  throw new Error('Facebook: no id in response: ' + JSON.stringify(j).slice(0, 800));\n}\nreturn $input.item;"
+        "jsCode": "function summarizeFbErr(err) {\n  if (err == null) return '';\n  if (typeof err === 'string') {\n    return err.split(';')[0].trim().slice(0, 500) + (err.length > 500 ? '…' : '');\n  }\n  if (typeof err === 'object') {\n    const e = err.error || err;\n    const lines = [\n      e.message,\n      e.error_user_msg,\n      e.error_user_title,\n      err.message,\n      e.code != null ? 'code=' + e.code : '',\n      e.error_subcode != null ? 'subcode=' + e.error_subcode : '',\n    ].filter(Boolean);\n    if (lines.length) return lines.join(' | ');\n  }\n  try {\n    return JSON.stringify(err).slice(0, 1500);\n  } catch {\n    return String(err);\n  }\n}\nconst j = $input.item.json;\nif (j.error) {\n  const hint =\n    'Kiểm tra: FACEBOOK_PAGE_ACCESS_TOKEN (env) trùng Page token; pages_manage_posts; Page ID; scheduled_publish_unix ~≥10 phút (UTC). Upload đã dùng resumable chunk — nếu vẫn lỗi xem stderr node 14.';\n  throw new Error('Facebook Graph: ' + summarizeFbErr(j.error) + '. ' + hint);\n}\nif (!j.id) {\n  const sc = j.statusCode ?? j.status ?? j.status_code;\n  if (sc === 413) {\n    throw new Error(\n      'Facebook: HTTP 413 — thử tăng chunk (node 14) hoặc giới hạn proxy; với resumable, thường do proxy/nginx. Chi tiết: ' + summarizeFbErr(j) + ' | ' + JSON.stringify(j).slice(0, 300)\n      ,\n    );\n  }\n  throw new Error(\n    'Facebook: không có id video — ' + summarizeFbErr(j) + '. Raw: ' + JSON.stringify(j).slice(0, 600)\n    ,\n  );\n}\nreturn $input.item;"
       },
       "id": "d0d38294-3fe1-4bb6-b76e-547149bdafdd",
       "name": "16 Check Facebook OK",
@@ -491,7 +447,7 @@
     {
       "parameters": {
         "executeOnce": false,
-        "command": "=python {{ $('14 Check read OK • FB').item.json.repo_root }}/n8n-automatioin/mark_publish_result.py \"{{ $('14 Check read OK • FB').item.json.session_folder }}\" --platform facebook --remote-id {{ $json.id }} --url https://www.facebook.com/watch/?v={{ $json.id }} --scheduled-at \"{{ $('14 Check read OK • FB').item.json.scheduled_at }}\""
+        "command": "=python {{ $json.repo_root }}/n8n-automatioin/mark_publish_result.py \"{{ $json.session_folder }}\" --platform facebook --remote-id {{ $json.id }} --url https://www.facebook.com/watch/?v={{ $json.id }} --scheduled-at \"{{ $json.scheduled_at }}\""
       },
       "id": "c259f329-8a9e-4d09-84e8-b354c9a77e6c",
       "name": "17 Mark Facebook đã đăng",
@@ -502,7 +458,7 @@
     {
       "parameters": {
         "executeOnce": false,
-        "command": "=python {{ $('14 Check read OK • FB').item.json.repo_root }}/n8n-automatioin/workflow_log_append.py {{ $('14 Check read OK • FB').item.json.log_file }} facebook_ok --level INFO --message \"fb_video_id={{ $('15 Facebook • upload video').item.json.id }} session={{ $('14 Check read OK • FB').item.json.session_name }}\""
+        "command": "=python {{ $json.repo_root }}/n8n-automatioin/workflow_log_append.py {{ $json.log_file }} facebook_ok --level INFO --message \"fb_video_id={{ $json.id }} session={{ $json.session_name }}\""
       },
       "id": "aaddbea3-0054-4abf-a1fa-86fe2e435ef0",
       "name": "18 Log • Facebook OK",
@@ -822,7 +778,7 @@
       "main": [
         [
           {
-            "node": "13 Read video (Facebook)",
+            "node": "13 Chuẩn bị meta FB (resumable)",
             "type": "main",
             "index": 0
           }
@@ -836,29 +792,29 @@
         ]
       ]
     },
-    "13 Read video (Facebook)": {
+    "13 Chuẩn bị meta FB (resumable)": {
       "main": [
         [
           {
-            "node": "14 Check read OK • FB",
+            "node": "14 Facebook • resumable upload",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "14 Check read OK • FB": {
+    "14 Facebook • resumable upload": {
       "main": [
         [
           {
-            "node": "15 Facebook • upload video",
+            "node": "15 Parse FB resumable JSON",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "15 Facebook • upload video": {
+    "15 Parse FB resumable JSON": {
       "main": [
         [
           {

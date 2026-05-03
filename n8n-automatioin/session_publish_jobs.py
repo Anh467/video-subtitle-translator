@@ -45,6 +45,9 @@ def export_marker_should_block_export(session_path: Path | str) -> tuple[bool, s
     skipped: exporter/Python may succeed while n8n fails—those sessions stay in the
     next batch.
 
+    **partial** (e.g. posted YouTube only) does **not** block—workflow still needs a job
+    row so Facebook-only branch can run with ``youtube_posted=True``.
+
     Legacy markers (**no ``status`` key**) still block to avoid surprise duplicate
     bursts from old installs.
     """
@@ -72,7 +75,7 @@ def export_marker_should_block_export(session_path: Path | str) -> tuple[bool, s
         return True, "export_marker_completed"
 
     if status_s == EXPORT_STATUS_PARTIAL:
-        return True, "export_marker_partial_use_include_exported"
+        return False, ""
 
     if status_s != EXPORT_STATUS_PENDING:
         return True, f"export_marker_unknown_status_{status_s}"
@@ -138,8 +141,22 @@ DEFAULT_THUMBNAIL_PATTERNS = (
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 
+# Keep in sync with core.session.Session VIDEO_EXTS where possible (publish/export).
 RESULT_VIDEO_SUFFIXES = frozenset(
-    {".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v", ".ts", ".m2ts"}
+    {
+        ".mp4",
+        ".mkv",
+        ".mov",
+        ".webm",
+        ".avi",
+        ".m4v",
+        ".ts",
+        ".m2ts",
+        ".flv",
+        ".wmv",
+        ".mpeg",
+        ".mpg",
+    }
 )
 
 
@@ -199,14 +216,145 @@ def _read_post_marker_remote_id(session_path: Path, platform_key: str) -> str:
         return ""
 
 
-def _find_video(session_dir: Path) -> str:
+def _suffix_default(meta: dict) -> str:
+    sf = str(meta.get("source_file") or "").strip()
+    ext = Path(sf.replace("\\", "/")).suffix
+    return ext if ext else ".mp4"
+
+
+def _is_windows_style_path(s: str) -> bool:
+    """True for `D:\\...` or UNC `\\\\server\\...` — on Linux these are NOT posix-absolute and must not be joined to session_dir."""
+    t = (s or "").strip()
+    if len(t) >= 2 and t[0].isalpha() and t[1] == ":":
+        return True
+    return t.startswith("\\\\")
+
+
+def _safe_is_file(path: Path) -> bool:
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
+def _video_candidate_from_raw(session_dir: Path, raw: object) -> Path | None:
+    """Resolve a path string from JSON; Windows host paths only match by basename inside session_dir."""
+    raw_s = str(raw).strip() if raw is not None else ""
+    if not raw_s:
+        return None
+    if _is_windows_style_path(raw_s):
+        name = Path(raw_s.replace("\\", "/")).name
+        if not name:
+            return None
+        cand = session_dir / name
+        if (
+            _safe_is_file(cand)
+            and cand.suffix.lower() in RESULT_VIDEO_SUFFIXES
+        ):
+            return cand
+        return None
+    p = Path(raw_s)
+    if not p.is_absolute():
+        cand = (session_dir / p).resolve(strict=False)
+    else:
+        cand = p.resolve(strict=False)
+    if _safe_is_file(cand) and cand.suffix.lower() in RESULT_VIDEO_SUFFIXES:
+        return cand
+    return None
+
+
+def _resolve_pipeline_video(session_dir: Path, meta: dict, info: dict) -> str:
+    """Prefer explicit paths, then mirror Session.latest_video / step6_video (pipeline outputs)."""
+    session_dir = Path(session_dir)
+
+    for block in (info, meta):
+        if not isinstance(block, dict):
+            continue
+        for key in (
+            "publish_video",
+            "final_video",
+            "video_path",
+            "output_video",
+            "video_file",
+        ):
+            raw = block.get(key)
+            if raw is None or raw == "":
+                continue
+            hit = _video_candidate_from_raw(session_dir, raw)
+            if hit is not None:
+                return str(hit)
+
+    suf = _suffix_default(meta)
+
+    s3: Path | None = None
+    step3_candidates = sorted(
+        session_dir.glob("step3_output.*"),
+        key=lambda x: x.stat().st_mtime,
+        reverse=True,
+    )
+    for f in step3_candidates:
+        if _safe_is_file(f):
+            s3 = f
+            break
+    if s3 is None:
+        fallback_s3 = session_dir / f"step3_output{suf}"
+        if _safe_is_file(fallback_s3):
+            s3 = fallback_s3
+
+    result_dir = session_dir / "result"
+    s6: Path | None = None
+    if result_dir.is_dir():
+        pool: list[Path] = []
+        for pattern in ("result_output_*.*", "step6_output_*.*"):
+            pool.extend(result_dir.glob(pattern))
+        files = [
+            x
+            for x in pool
+            if _safe_is_file(x) and x.suffix.lower() in RESULT_VIDEO_SUFFIXES
+        ]
+        if files:
+            s6 = max(files, key=lambda x: x.stat().st_mtime)
+    if s6 is None:
+        for pattern in ("step6_output.*", "result_output.*", "step5_output.*"):
+            cand = sorted(
+                [x for x in session_dir.glob(pattern) if _safe_is_file(x)],
+                key=lambda x: x.stat().st_mtime,
+                reverse=True,
+            )
+            if cand:
+                s6 = cand[0]
+                break
+
+    def mt(p: Path | None) -> float:
+        try:
+            return p.stat().st_mtime if p and _safe_is_file(p) else -1.0
+        except OSError:
+            return -1.0
+
+    if s3 is not None and s6 is not None:
+        return str(s3 if mt(s3) >= mt(s6) else s6)
+    if s6 is not None:
+        return str(s6)
+    if s3 is not None:
+        return str(s3)
+
+    sf = meta.get("source_file")
+    hit = _video_candidate_from_raw(session_dir, sf)
+    if hit is not None:
+        return str(hit)
+
+    return ""
+
+
+def _scan_any_video_under_session(session_dir: Path) -> str:
+    """Broad fallback: newest known video extension under session tree."""
     result_dir = session_dir / "result"
     if result_dir.exists():
         pool: list[Path] = []
         for pattern in ("result_output_*.*", "step6_output_*.*"):
             pool.extend(result_dir.rglob(pattern))
         for path in result_dir.rglob("*"):
-            if path.is_file() and path.suffix.lower() in RESULT_VIDEO_SUFFIXES:
+            if _safe_is_file(path) and path.suffix.lower() in RESULT_VIDEO_SUFFIXES:
                 pool.append(path)
         uniq = list({p.resolve(): p for p in pool}.values())
         if uniq:
@@ -220,18 +368,17 @@ def _find_video(session_dir: Path) -> str:
         "step3_output.*",
     ):
         candidates = sorted(
-            session_dir.glob(pattern),
+            [x for x in session_dir.glob(pattern) if _safe_is_file(x)],
             key=lambda item: item.stat().st_mtime,
             reverse=True,
         )
         if candidates:
             return str(candidates[0])
 
-    # Newest matching video anywhere under session (layouts that omit result/ prefixes).
     pool_all: list[Path] = []
     skip_dirs = frozenset({".git", "__pycache__", "node_modules"})
     for path in session_dir.rglob("*"):
-        if not path.is_file():
+        if not _safe_is_file(path):
             continue
         try:
             rel = path.relative_to(session_dir)
@@ -404,11 +551,30 @@ def build_publish_job(
     meta = _load_json(meta_path)
     info = _load_json(info_path) if info_path.exists() else {}
 
-    video_path = _find_video(session_path)
-    thumbnail_path = _find_thumbnail(
-        session_path,
-        thumbnail_patterns=thumbnail_patterns,
-    )
+    video_path = _resolve_pipeline_video(session_path, meta, info)
+    if not video_path:
+        video_path = _scan_any_video_under_session(session_path)
+
+    thumbnail_path = ""
+    for raw in (
+        str(info.get("thumbnail") or "").strip(),
+        str(info.get("generated_thumbnail") or "").strip(),
+    ):
+        if not raw:
+            continue
+        tp = Path(raw)
+        if not tp.is_absolute():
+            tp = (session_path / tp).resolve(strict=False)
+        else:
+            tp = tp.resolve(strict=False)
+        if tp.is_file() and tp.suffix.lower() in IMAGE_EXTENSIONS:
+            thumbnail_path = str(tp)
+            break
+    if not thumbnail_path:
+        thumbnail_path = _find_thumbnail(
+            session_path,
+            thumbnail_patterns=thumbnail_patterns,
+        )
     title = _effective_publish_field(info, meta, "title")
     description = _effective_publish_field(info, meta, "description")
     hashtags = _normalize_hashtags(info.get("hashtags", meta.get("hashtags", "")))
@@ -485,10 +651,13 @@ def scan_publish_jobs(
     debug: bool = False,
     thumbnail_patterns: tuple[str, ...] | None = None,
     audit: list[tuple[str, str]] | None = None,
+    summary_out: dict[str, int] | None = None,
 ) -> list[PublishJob]:
     root = Path(base_dir)
     if not root.exists():
         raise FileNotFoundError(f"Base dir not found: {root}")
+    if not root.is_dir():
+        raise NotADirectoryError(f"Base dir is not a directory: {root}")
 
     def _debug(message: str) -> None:
         if debug:
@@ -511,6 +680,18 @@ def scan_publish_jobs(
         if audit is not None:
             audit.append(row)
 
+    if summary_out is not None:
+        summary_out.clear()
+        summary_out["session_folders_found"] = len(session_dirs)
+        for key in (
+            "skipped_no_session_json",
+            "skipped_incomplete",
+            "skipped_posted_for_selected_platforms",
+            "skipped_export_marker",
+            "included",
+        ):
+            summary_out[key] = 0
+
     jobs: list[PublishJob] = []
     for item in session_dirs:
         folder = str(item)
@@ -519,11 +700,19 @@ def scan_publish_jobs(
             msg = "[skip] missing session.json"
             _debug(f"[skip] {item}: missing session.json")
             _audit((folder, msg))
+            if summary_out is not None:
+                summary_out["skipped_no_session_json"] = (
+                    summary_out.get("skipped_no_session_json", 0) + 1
+                )
             continue
         if not include_incomplete and not job.ready:
             detail = f"incomplete: {', '.join(job.missing)}"
             _debug(f"[skip] {item}: incomplete metadata/assets ({', '.join(job.missing)})")
             _audit((folder, f"[skip] {detail}"))
+            if summary_out is not None:
+                summary_out["skipped_incomplete"] = (
+                    summary_out.get("skipped_incomplete", 0) + 1
+                )
             continue
         if not include_posted and platforms:
             already_posted = True
@@ -548,6 +737,10 @@ def scan_publish_jobs(
                         f"[skip] already posted ({', '.join(posted_platforms)})",
                     )
                 )
+                if summary_out is not None:
+                    summary_out["skipped_posted_for_selected_platforms"] = (
+                        summary_out.get("skipped_posted_for_selected_platforms", 0) + 1
+                    )
                 continue
         if not include_exported:
             block, block_detail = export_marker_should_block_export(item)
@@ -558,9 +751,15 @@ def scan_publish_jobs(
                 msg += ")"
                 _debug(f"[skip] {item}: {msg}")
                 _audit((folder, msg))
+                if summary_out is not None:
+                    summary_out["skipped_export_marker"] = (
+                        summary_out.get("skipped_export_marker", 0) + 1
+                    )
                 continue
         _debug(f"[keep] {item}: queued for export")
         _audit((folder, "[included]"))
+        if summary_out is not None:
+            summary_out["included"] = summary_out.get("included", 0) + 1
         jobs.append(job)
 
     def _job_sort_key(job: PublishJob):
