@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from core.ffmpeg_utils import escape_for_ffmpeg_single_quoted_fragment, ffmpeg_executable
+from core.ffmpeg_utils import ffmpeg_executable, subtitles_filter_clause
 from core.pipeline.step3_burn.constants import DEFAULT_CRF, DEFAULT_PRESET
 from core.pipeline.step3_burn.delogo import delogo_filter, escape_drawtext_text
 
@@ -42,13 +42,7 @@ def hard_burn_cmd(
     Style for hard burn must be encoded inside the ASS — do not use force_style
     (fragile with FFmpeg 8.x + filter_complex, especially on macOS).
     """
-    subs_p = Path(subs_path).expanduser()
-    try:
-        subs_p = subs_p.resolve(strict=False)
-    except OSError:
-        pass
-    subs_q = escape_for_ffmpeg_single_quoted_fragment(subs_p.as_posix())
-    sub_filter = f"subtitles='{subs_q}'"
+    sub_filter = subtitles_filter_clause(subs_path)
 
     if delogo and delogo.get("enabled"):
         dx, dy = delogo["x"], delogo["y"]
@@ -136,15 +130,15 @@ def hard_burn_cmd(
     text_width_approx = max(50, len(name) * name_size * 0.5)
     center_offset = (avatar_w - int(text_width_approx)) / 2
 
-    filters = [f"[0:v]{vf_base}[sub]"]
-    map_label = "sub"
+    filters = [f"[0:v]{vf_base}[sburn]"]
+    map_label = "sburn"
 
     if avatar_exists:
         filters.append(
             f"[1:v]scale={avatar_w}:-1,format=rgba,colorchannelmixer=aa={opacity:.3f}[logo]"
         )
         filters.append(
-            f"[sub][logo]overlay=x={x_avatar_overlay}:y={y_avatar_overlay}[vlogo]"
+            f"[sburn][logo]overlay=x={x_avatar_overlay}:y={y_avatar_overlay}[vlogo]"
         )
         map_label = "vlogo"
 
