@@ -25,7 +25,7 @@ Main design rule: Step 5 does API calls and stores reusable assets; Step 6 does 
 - `core/api_keys.py`: API key manager for `.subsync_keys`. Keys: Gemini, OpenAI, FPT, Zalo, ElevenLabs, Google Cloud TTS.
 - `core/publish_profiles.py`: nhiều **publish profile** (Facebook Page / YouTube OAuth / TikTok fields) → file workspace `.subsync_publish_profiles.json`.
 - `core/publish_jobs.py`: build `publish_plan` jobs, enrich snapshot, `platforms_still_need_upload`, sort.
-- `core/publish/`: `facebook_upload.py`, `youtube_upload.py`, `runner.py` — upload thật (FB/YT), TikTok stub.
+- `core/publish/`: `facebook_upload.py`, `youtube_upload.py`, `runner.py`, `youtube_oauth_local.py` (OAuth localhost `127.0.0.1:8742` → refresh token); `scripts/youtube_oauth_refresh_token.py` CLI.
 - `core/logger.py` / `core/logging/` / `core/log_file.py`: Qt log handler + daily file log (`FileLogger`).
 - `core/pipeline/base.py`: step abstractions and worker.
 - `core/pipeline/selection.py`: shared backend/model/API-key mapping helpers.

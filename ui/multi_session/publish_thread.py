@@ -12,6 +12,10 @@ from core.session import Session
 
 class MultiPublishThread(QThread):
     log_line = pyqtSignal(str)
+    """Ngắn gọn cho thanh trạng thái (job i/tổng + bước hiện tại)."""
+
+    publish_step = pyqtSignal(str)
+    publish_job_progress = pyqtSignal(int, int)  # current 1-based, total jobs
     finished_summary = pyqtSignal(int, int)
 
     def __init__(
@@ -27,10 +31,27 @@ class MultiPublishThread(QThread):
         super().__init__(parent)
         self._tasks = tasks
 
+    def request_cancel(self) -> None:
+        """Hủy sau bước hiện tại (Facebook giữa chunk / YouTube giữa đọc file hoặc upload)."""
+        self.requestInterruption()
+
     def run(self):
         ok = 0
         fail = 0
-        for t in self._tasks:
+        total = len(self._tasks)
+
+        def on_step(msg: str) -> None:
+            self.log_line.emit(f"[PUBLISH][STEP] {msg}")
+            self.publish_step.emit(msg)
+
+        for ti, t in enumerate(self._tasks):
+            if self.isInterruptionRequested():
+                rest = total - ti
+                self.log_line.emit(
+                    f"[PUBLISH] Đã hủy — bỏ qua {rest} job chưa chạy (vẫn pending trong session.json)."
+                )
+                break
+
             folder = t["session_folder"]
             label = t["session_label"]
             job = t["job"]
@@ -55,6 +76,8 @@ class MultiPublishThread(QThread):
 
             publish_immediately = timing == "immediate"
 
+            self.publish_job_progress.emit(ti, total)
+            self.publish_step.emit(f"{pl}: chuẩn bị upload — {label[:40]}")
             self.log_line.emit(
                 f"[PUBLISH] Bắt đầu session={label!r} folder={folder} "
                 f"platform={pl} job_id={jid} timing={timing} video={vid}"
@@ -86,6 +109,12 @@ class MultiPublishThread(QThread):
                     )
                 continue
 
+            if self.isInterruptionRequested():
+                self.log_line.emit(
+                    "[PUBLISH] Đã hủy trước khi upload job này — các job sau chưa chạy."
+                )
+                break
+
             res = run_publish(
                 platform=pl,
                 credentials=creds,
@@ -97,6 +126,8 @@ class MultiPublishThread(QThread):
                 publish_immediately=publish_immediately,
                 scheduled_publish_unix=su,
                 scheduled_at_iso=sched_iso,
+                on_progress=on_step,
+                is_cancelled=self.isInterruptionRequested,
             )
 
             now = datetime.now().isoformat(timespec="seconds")
@@ -104,6 +135,35 @@ class MultiPublishThread(QThread):
             remote_id = ""
             if isinstance(detail, dict):
                 remote_id = str(detail.get("id") or detail.get("video_id") or "").strip()
+                if not remote_id:
+                    resp = detail.get("response")
+                    if isinstance(resp, dict):
+                        remote_id = str(
+                            resp.get("id")
+                            or resp.get("video_id")
+                            or resp.get("post_id")
+                            or ""
+                        ).strip()
+                if not remote_id and pl == "facebook":
+                    sid = detail.get("upload_session_id")
+                    if sid:
+                        remote_id = f"fb_upload:{sid}"
+
+            if res.get("cancelled"):
+                if jid:
+                    sess.patch_publish_job(
+                        jid,
+                        status="cancelled",
+                        last_error="cancelled by user",
+                        executed_at=now,
+                        remote_asset_id=remote_id,
+                        result_message="Người dùng hủy trong lúc upload",
+                    )
+                self.log_line.emit(
+                    f"[PUBLISH][CANCEL] session={label!r} platform={pl} — đã dừng; "
+                    f"các job còn lại không chạy."
+                )
+                break
 
             if res.get("ok"):
                 ok += 1
@@ -137,6 +197,7 @@ class MultiPublishThread(QThread):
                     )
 
         self.log_line.emit(
-            f"[PUBLISH] Hoàn tất — thành công={ok} thất bại={fail} (tổng {ok + fail} job)"
+            f"[PUBLISH] Hoàn tất — thành công={ok} thất bại={fail} (tổng {ok + fail} job đã xử lý)"
         )
+        self.publish_step.emit("")
         self.finished_summary.emit(ok, fail)

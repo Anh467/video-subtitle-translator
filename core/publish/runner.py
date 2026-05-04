@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
+from core.publish.cancelled import PublishCancelled
 from core.publish.facebook_upload import upload_page_video
 from core.publish.youtube_upload import refresh_access_token, upload_video_simple
 
@@ -35,6 +37,8 @@ def run_publish(
     publish_immediately: bool,
     scheduled_publish_unix: int | None,
     scheduled_at_iso: str = "",
+    on_progress: Callable[[str], None] | None = None,
+    is_cancelled: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """
     Returns dict with keys: ok (bool), platform, message (str), detail (optional dict).
@@ -52,19 +56,32 @@ def run_publish(
                 description=description,
                 publish_immediately=publish_immediately,
                 scheduled_publish_unix=scheduled_publish_unix,
+                on_progress=on_progress,
+                is_cancelled=is_cancelled,
             )
+            rid = str(r.get("id") or "").strip()
+            if rid:
+                fb_msg = f"Facebook upload OK — video id {rid}"
+            else:
+                fb_msg = (
+                    "Facebook upload OK — Meta trả success (không có id trong finish); "
+                    "thường gặp khi lên lịch — kiểm tra video/Page trên Facebook."
+                )
             return {
                 "ok": True,
                 "platform": pl,
-                "message": f"Facebook upload OK — video id {r.get('id')}",
+                "message": fb_msg,
                 "detail": r,
             }
         if pl == "youtube":
             c = credentials or {}
+            if on_progress:
+                on_progress("YouTube: làm mới access token (OAuth)…")
             at = refresh_access_token(
                 str(c.get("client_id") or ""),
                 str(c.get("client_secret") or ""),
                 str(c.get("refresh_token") or ""),
+                is_cancelled=is_cancelled,
             )
             pub_at = None
             if not publish_immediately and scheduled_at_iso:
@@ -77,6 +94,8 @@ def run_publish(
                 made_for_kids=youtube_made_for_kids,
                 privacy_status="public",
                 publish_at_rfc3339=pub_at,
+                on_progress=on_progress,
+                is_cancelled=is_cancelled,
             )
             vid = r.get("id", "")
             msg = f"YouTube upload OK — id {vid}"
@@ -97,6 +116,14 @@ def run_publish(
             "ok": False,
             "platform": pl,
             "message": f"Unknown platform: {pl}",
+            "detail": {},
+        }
+    except PublishCancelled:
+        return {
+            "ok": False,
+            "cancelled": True,
+            "platform": pl,
+            "message": "Đã hủy bởi người dùng",
             "detail": {},
         }
     except Exception as e:

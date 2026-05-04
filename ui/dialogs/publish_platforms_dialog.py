@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
 from PyQt6.QtCore import QDateTime
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -118,7 +120,9 @@ class PublishPlatformsDialog(QDialog):
 
         hint = QLabel(
             "Kế hoạch được ghi vào <code>session.json</code> → <code>publish_plan</code>. "
-            "«Chỉ phần chưa thành công» bỏ qua platform đã upload OK (status <code>done</code>)."
+            "«Chỉ phần chưa thành công» bỏ qua platform đã upload OK (status <code>done</code>). "
+            "<b>Facebook lên lịch:</b> giờ đăng phải cách lúc <i>hoàn tất upload</i> ít nhất ~10 phút "
+            "(và trong ~30 ngày) — nên chọn «Bắt đầu» đủ xa nếu video lớn."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color:#888;font-size:11px;")
@@ -201,6 +205,22 @@ class PublishPlatformsDialog(QDialog):
             if self._rad_scope_missing.isChecked()
             else "all"
         )
+
+        if schedule_mode == "scheduled" and "facebook" in platforms:
+            # Meta Page video: scheduled_publish_time phải cách «lúc gọi API» ít nhất ~10 phút
+            # (và trong ~30 ngày) — nếu «Bắt đầu» quá gần / quá khử sẽ lỗi #100 invalid.
+            now = datetime.now()
+            min_fb = now + timedelta(minutes=11)
+            if start_local < min_fb:
+                QMessageBox.warning(
+                    self,
+                    "Lịch Facebook",
+                    "Khi có **Facebook** và chế độ **Lên lịch**, thời điểm «Bắt đầu» phải **ít nhất "
+                    "sau 11 phút** so với giờ máy (Facebook yêu cầu khoảng cách tối thiểu ~10 phút "
+                    "trước giờ đăng dự kiến).\n\n"
+                    "Chỉnh «Bắt đầu» trễ hơn, hoặc chọn «Đăng ngay».",
+                )
+                return
 
         self.payload = {
             "profile": pr,

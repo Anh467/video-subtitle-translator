@@ -36,6 +36,8 @@ def _empty_profile(name: str) -> dict:
                 "client_id": "",
                 "client_secret": "",
                 "refresh_token": "",
+                "redirect_uri": "http://127.0.0.1:8742/",
+                "oauth_login_hint": "",
             },
             "tiktok": {"access_token": "", "open_id": ""},
         },

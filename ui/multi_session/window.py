@@ -141,6 +141,32 @@ class MultiSessionWindow(QMainWindow):
         self._btn_publish.clicked.connect(self._open_publish_platforms)
         title_row.addWidget(self._btn_publish)
 
+        self._btn_publish_cancel = QPushButton("⏹ Hủy đăng")
+        self._btn_publish_cancel.setVisible(False)
+        self._btn_publish_cancel.setToolTip(
+            "Dừng sau bước hiện tại (giữa chunk Facebook, đọc file hoặc upload YouTube…)"
+        )
+        self._btn_publish_cancel.setStyleSheet(
+            "QPushButton{background:#3a1a1a;color:#ff9090;border:1px solid #8a3030;"
+            "font-weight:bold;border-radius:6px;padding:5px 10px;font-size:11px;}"
+            "QPushButton:hover{background:#5a2525;}"
+            "QPushButton:disabled{color:#664444;background:#221818;border-color:#333;}"
+        )
+        self._btn_publish_cancel.clicked.connect(self._request_cancel_publish)
+        title_row.addWidget(self._btn_publish_cancel)
+
+        self._lbl_publish_run = QLabel("")
+        self._lbl_publish_run.setVisible(False)
+        self._lbl_publish_run.setMinimumWidth(200)
+        self._lbl_publish_run.setWordWrap(True)
+        self._lbl_publish_run.setStyleSheet(
+            "color:#c4b5fd;font-size:11px;font-weight:600;padding-left:6px;"
+        )
+        title_row.addWidget(self._lbl_publish_run, stretch=1)
+
+        self._publish_prefix = ""
+        self._publish_last_step = ""
+
         title_row.addStretch()
 
         # self._btn_editor_default = QPushButton("Default")
@@ -1017,7 +1043,11 @@ class MultiSessionWindow(QMainWindow):
             )
             return
         if self._publish_thread is not None and self._publish_thread.isRunning():
-            QMessageBox.warning(self, "Đang đăng", "Luồng publish đang chạy.")
+            QMessageBox.information(
+                self,
+                "Đang đăng",
+                "Luồng publish đang chạy. Bấm «Hủy đăng» cạnh nút đăng để dừng.",
+            )
             return
 
         sel = self._session_panel.get_selected_sessions()
@@ -1179,8 +1209,18 @@ class MultiSessionWindow(QMainWindow):
             f"đã sắp theo thời gian + platform)…"
         )
         self._btn_publish.setEnabled(False)
+        self._btn_publish_cancel.setVisible(True)
+        self._btn_publish_cancel.setEnabled(True)
+        self._btn_publish_cancel.setText("⏹ Hủy đăng")
+        self._lbl_publish_run.setVisible(True)
+        self._publish_prefix = ""
+        self._publish_last_step = "Đang chuẩn bị…"
+        self._lbl_publish_run.setText(self._publish_last_step)
+
         self._publish_thread = MultiPublishThread(tasks, self)
         self._publish_thread.log_line.connect(self._log)
+        self._publish_thread.publish_step.connect(self._on_publish_step)
+        self._publish_thread.publish_job_progress.connect(self._on_publish_job_progress)
         self._publish_thread.finished_summary.connect(self._on_publish_summary)
         self._publish_thread.finished.connect(self._on_publish_thread_finished)
         self._publish_thread.start()
@@ -1202,8 +1242,43 @@ class MultiSessionWindow(QMainWindow):
     def _on_publish_summary(self, ok: int, fail: int):
         self._status_bar.showMessage(f"Publish xong: OK={ok} FAIL={fail}")
 
+    def _request_cancel_publish(self):
+        th = self._publish_thread
+        if th is None or not th.isRunning():
+            return
+        th.request_cancel()
+        self._btn_publish_cancel.setEnabled(False)
+        self._btn_publish_cancel.setText("Đang hủy…")
+
+    def _on_publish_job_progress(self, job_index_0: int, total: int):
+        """job_index_0: chỉ số job đang chạy (0..n-1)."""
+        self._publish_prefix = f"{job_index_0 + 1}/{total}"
+        self._refresh_publish_run_label()
+
+    def _on_publish_step(self, msg: str):
+        if msg:
+            self._publish_last_step = msg
+        self._refresh_publish_run_label()
+
+    def _refresh_publish_run_label(self):
+        pfx = getattr(self, "_publish_prefix", "")
+        step = getattr(self, "_publish_last_step", "")
+        if pfx and step:
+            self._lbl_publish_run.setText(f"{pfx} — {step}")
+        elif pfx:
+            self._lbl_publish_run.setText(pfx)
+        else:
+            self._lbl_publish_run.setText(step or "")
+
     def _on_publish_thread_finished(self):
         self._publish_thread = None
+        self._btn_publish_cancel.setVisible(False)
+        self._btn_publish_cancel.setEnabled(True)
+        self._btn_publish_cancel.setText("⏹ Hủy đăng")
+        self._lbl_publish_run.setVisible(False)
+        self._lbl_publish_run.clear()
+        self._publish_prefix = ""
+        self._publish_last_step = ""
         pipeline = getattr(self, "_worker", None)
         busy = pipeline is not None
         if hasattr(self, "_btn_publish"):

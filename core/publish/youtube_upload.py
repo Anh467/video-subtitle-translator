@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from typing import Any
 import urllib.error
 import urllib.parse
 import urllib.request
+
+from core.publish.cancelled import PublishCancelled
 
 
 def _post_form(url: str, fields: dict[str, str]) -> dict[str, Any]:
@@ -23,8 +26,14 @@ def _post_form(url: str, fields: dict[str, str]) -> dict[str, Any]:
 
 
 def refresh_access_token(
-    client_id: str, client_secret: str, refresh_token: str
+    client_id: str,
+    client_secret: str,
+    refresh_token: str,
+    *,
+    is_cancelled: Callable[[], bool] | None = None,
 ) -> str:
+    if is_cancelled and is_cancelled():
+        raise PublishCancelled()
     data = _post_form(
         "https://oauth2.googleapis.com/token",
         {
@@ -52,6 +61,8 @@ def upload_video_simple(
     made_for_kids: bool,
     privacy_status: str = "public",
     publish_at_rfc3339: str | None = None,
+    on_progress: Callable[[str], None] | None = None,
+    is_cancelled: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """
     multipart/related upload (metadata JSON + video bytes). OK for moderate sizes.
@@ -59,6 +70,14 @@ def upload_video_simple(
     import mimetypes
     import uuid
     from pathlib import Path
+
+    def _p(msg: str) -> None:
+        if on_progress:
+            on_progress(msg)
+
+    def _abort() -> None:
+        if is_cancelled and is_cancelled():
+            raise PublishCancelled()
 
     boundary = f"subsync_yt_{uuid.uuid4().hex}"
     crlf = b"\r\n"
@@ -84,7 +103,11 @@ def upload_video_simple(
     }
     meta_json = json.dumps(snippet).encode("utf-8")
 
+    _abort()
+    _p("YouTube: đang đọc file video vào bộ nhớ…")
     video_bytes = p.read_bytes()
+    _abort()
+    _p(f"YouTube: đang upload multipart (~{len(video_bytes) // 1_048_576} MB) — có thể vài phút…")
     parts: list[bytes] = []
     parts.append(f"--{boundary}".encode() + crlf)
     parts.append(b"Content-Type: application/json; charset=UTF-8" + crlf + crlf)
@@ -110,6 +133,7 @@ def upload_video_simple(
     try:
         with urllib.request.urlopen(req, timeout=3600) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
+            _p("YouTube: upload xong, đang xử lý phản hồi…")
             return json.loads(raw)
     except urllib.error.HTTPError as e:
         err = e.read().decode("utf-8", errors="replace")
