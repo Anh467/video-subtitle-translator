@@ -127,9 +127,184 @@ class TranslateStep(BaseStep):
                 out, target, backend, api_key, verify_backend, verify_model, log
             )
 
+        self._translate_and_save_session_metadata(
+            session, config, log, cancel, src_lang=src_lang
+        )
+
         log(f"✅ Done — {total} segments")
         session.save_translated(out)
         return out
+
+    def _translate_and_save_session_metadata(
+        self, session, config, log, cancel, *, src_lang: str
+    ):
+        """Translate session.json title + description when non-empty; same backend as subtitles."""
+        raw_title = (session.title or "").strip()
+        raw_desc = (session.description or "").strip()
+        if not raw_title and not raw_desc:
+            return
+
+        if cancel.is_set():
+            from core.pipeline.base import CancelledError
+
+            raise CancelledError()
+
+        backend = config["backend"]
+        target = config["target_lang"]
+        lang_name = LANG_NAMES.get(target, target)
+        log(f"📝 Session metadata → {lang_name} ({backend})…")
+
+        new_t = raw_title
+        new_d = raw_desc
+        if raw_title:
+            new_t = self._translate_plain_string(
+                raw_title,
+                backend,
+                target,
+                config,
+                log,
+                cancel,
+                src_lang,
+            )
+        if cancel.is_set():
+            from core.pipeline.base import CancelledError
+
+            raise CancelledError()
+        if raw_desc:
+            new_d = self._translate_plain_string(
+                raw_desc,
+                backend,
+                target,
+                config,
+                log,
+                cancel,
+                src_lang,
+            )
+
+        out_title = new_t if raw_title else (session.title or "").strip()
+        out_desc = new_d if raw_desc else (session.description or "").strip()
+        if out_title != (session.title or "").strip() or out_desc != (
+            session.description or ""
+        ).strip():
+            session.save_info(out_title, out_desc)
+            log("✅ Saved translated title/description to session.json")
+
+    def _google_metadata_source(self, src_lang: str) -> str:
+        LANG_MAP = {
+            "zh": "zh-TW",
+            "zh-cn": "zh-CN",
+            "zh-tw": "zh-TW",
+            "ja": "ja",
+            "ko": "ko",
+            "en": "en",
+            "vi": "vi",
+            "fr": "fr",
+            "de": "de",
+        }
+        return LANG_MAP.get((src_lang or "auto").lower(), "auto")
+
+    def _translate_plain_string(
+        self,
+        text: str,
+        backend: str,
+        target: str,
+        config: dict,
+        log,
+        cancel,
+        src_lang: str,
+    ) -> str:
+        if not (text or "").strip():
+            return text
+        if cancel.is_set():
+            from core.pipeline.base import CancelledError
+
+            raise CancelledError()
+        lang_name = LANG_NAMES.get(target, target)
+        try:
+            if backend == "google":
+                from deep_translator import GoogleTranslator
+
+                google_src = self._google_metadata_source(src_lang)
+                t = GoogleTranslator(source=google_src, target=target).translate(
+                    text.strip()
+                )
+                out = (t or "").strip()
+                if (
+                    out == text.strip()
+                    and google_src != "auto"
+                    and text.strip()
+                ):
+                    t2 = GoogleTranslator(source="auto", target=target).translate(
+                        text.strip()
+                    )
+                    out = (t2 or "").strip()
+                return out or text
+
+            if backend == "gemini":
+                key = config.get("api_key") or ""
+                if not key:
+                    try:
+                        from core.api_keys import get_key
+
+                        key = get_key("gemini") or os.environ.get("GEMINI_API_KEY", "")
+                    except Exception:
+                        key = os.environ.get("GEMINI_API_KEY", "")
+                if not key:
+                    log("⚠️  Skip metadata: no Gemini API key")
+                    return text
+                client, types = self._gemini_client(key)
+                prompt = (
+                    f"Translate the following video title or description text into {lang_name}.\n"
+                    f"Preserve #hashtags as hashtags (translate the hashtag text if it is natural in {lang_name}).\n"
+                    f"Output ONLY the translated text, no quotes or explanation.\n\n"
+                    f"{text.strip()}"
+                )
+                raw = self._gemini_generate(client, types, prompt, log=log)
+                return (raw or "").strip() or text
+
+            if backend == "openai":
+                try:
+                    from openai import OpenAI
+                except ImportError:
+                    log("⚠️  Skip metadata: openai not installed")
+                    return text
+                key = config.get("api_key") or ""
+                if not key:
+                    try:
+                        from core.api_keys import get_key
+
+                        key = get_key("openai") or os.environ.get("OPENAI_API_KEY", "")
+                    except Exception:
+                        key = os.environ.get("OPENAI_API_KEY", "")
+                if not key:
+                    log("⚠️  Skip metadata: no OpenAI API key")
+                    return text
+                model = config.get("openai_model", "gpt-4o-mini")
+                client = OpenAI(api_key=key)
+                r = client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                f"Translate user text to {lang_name}. "
+                                f"Preserve #hashtag style; translate hashtag wording when natural. "
+                                f"Reply with the translation only, no quotes."
+                            ),
+                        },
+                        {"role": "user", "content": text.strip()},
+                    ],
+                    temperature=0.2,
+                    max_tokens=500,
+                )
+                out = (r.choices[0].message.content or "").strip()
+                return out or text
+
+            log(f"⚠️  Skip metadata: unknown backend {backend!r}")
+            return text
+        except Exception as e:
+            log(f"⚠️  Metadata translate failed, keeping original: {e}")
+            return text
 
     # ── Google: Chunk mode (already parallel, unchanged) ──────────────────────
 
