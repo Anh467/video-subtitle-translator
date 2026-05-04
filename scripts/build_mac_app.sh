@@ -24,6 +24,7 @@ pyinstaller main.py \
   --hidden-import PyQt6.QtGui \
   --hidden-import PyQt6.QtWidgets \
   --collect-all demucs \
+  --collect-all numpy \
   "$@"
 
 echo "Built: dist/SubSync.app"

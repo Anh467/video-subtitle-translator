@@ -206,6 +206,7 @@ Cửa sổ **SubSync** sẽ mở. **Giữ Terminal mở** trong lúc dùng app (
 | Cài `torch` / Whisper rất lâu hoặc lỗi | Kiểm tra mạng; thử lại `pip install -r requirements.txt`; dùng Python đúng 3.11 |
 | `audioop`, `audioop-lts`, hoặc `pydub` báo không có module | Trên **Python 3.13+**, chạy với **venv đang bật** (`source venv/bin/activate`): `pip install audioop-lts` hoặc cài lại `pip install -r requirements.txt` — gói `audioop-lts` đã nằm trong `requirements.txt` |
 | App mở nhưng transcribe lỗi | Kiểm tra đủ RAM/disk; lần đầu Whisper có thể tải model |
+| `No module named 'numpy.core.multiarray'` (bước ④ Demucs) | **NumPy 2.x** không còn module đó; trong venv đã `activate`: `pip install "numpy>=1.26,<2"` rồi `pip install -r requirements.txt` lại (file `requirements.txt` đã ghim NumPy 1.x). |
 
 ---
 
@@ -273,7 +274,8 @@ pyinstaller main.py \
   --hidden-import PyQt6.QtCore \
   --hidden-import PyQt6.QtGui \
   --hidden-import PyQt6.QtWidgets \
-  --collect-all demucs
+  --collect-all demucs \
+  --collect-all numpy
 ```
 
 *(Bước ④/⑥ gọi **Demucs trong process** (`demucs.separate.main`) — không dùng subprocess `python -m demucs` (tránh PyInstaller chạy nhầm `SubSync -m demucs`). Cần `--collect-all demucs` (gói nặng). Nếu thiếu module: thêm `--hidden-import …` theo báo lỗi. `--onefile` trên Mac thường **không** tạo `.app`; để có `SubSync.app` nên dùng lệnh trên, **không** thêm `--onefile`.)*

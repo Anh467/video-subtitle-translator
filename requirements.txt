@@ -8,6 +8,8 @@ deep-translator          # Google Translate (free, no key)
 google-genai             # Gemini Flash (free, needs key from aistudio.google.com)
  
 # ── Step 4 — Voice separation ─────────────────────────────────────────────────
+# NumPy 2.x removes ``numpy.core.*`` paths that torch/demucs still expect → Demucs crash.
+numpy>=1.26,<2.0
 demucs
  
 # ── Step 5 — TTS ──────────────────────────────────────────────────────────────
