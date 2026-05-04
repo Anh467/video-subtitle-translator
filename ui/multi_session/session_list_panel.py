@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
 )
 
 from core.session import Session
+from core.session_listing import published_at_epoch_seconds
 
 # session_listing stores progress as circled digits, not step IDs
 STEP_LABEL_TO_ID = {
@@ -89,10 +90,10 @@ class SessionListPanel(QWidget):
         hdr.addSpacing(6)
 
         self._sort_by_combo = QComboBox()
-        self._sort_by_combo.addItems(["Time", "Video"])
+        self._sort_by_combo.addItems(["Time", "Video", "Published"])
         self._sort_by_combo.setCurrentText("Time")
         self._sort_by_combo.setToolTip(
-            "Sort by session modified time or source video name"
+            "Sort by modified time, source video name, or session published_at (metadata)"
         )
         self._sort_by_combo.setFixedHeight(24)
         self._sort_by_combo.currentTextChanged.connect(self._on_sort_changed)
@@ -623,9 +624,13 @@ class SessionListPanel(QWidget):
         self.selection_changed.emit()
 
     def _on_sort_changed(self, _text: str):
-        self._sort_by = (
-            "video" if self._sort_by_combo.currentText().lower() == "video" else "time"
-        )
+        raw = self._sort_by_combo.currentText().lower()
+        if raw == "video":
+            self._sort_by = "video"
+        elif raw == "published":
+            self._sort_by = "published"
+        else:
+            self._sort_by = "time"
         self._sort_order = (
             "asc" if self._sort_order_combo.currentText().lower() == "asc" else "desc"
         )
@@ -639,6 +644,31 @@ class SessionListPanel(QWidget):
                 key=lambda s: Path(s.get("source_file") or "").name.lower(),
                 reverse=reverse,
             )
+        elif self._sort_by == "published":
+            if reverse:
+                self._sessions.sort(
+                    key=lambda s: (
+                        (
+                            1,
+                            "",
+                            (s.get("name") or "").lower(),
+                        )
+                        if published_at_epoch_seconds(s.get("published_at"))
+                        == float("inf")
+                        else (
+                            0,
+                            -published_at_epoch_seconds(s.get("published_at")),
+                            (s.get("name") or "").lower(),
+                        )
+                    )
+                )
+            else:
+                self._sessions.sort(
+                    key=lambda s: (
+                        published_at_epoch_seconds(s.get("published_at")),
+                        (s.get("name") or "").lower(),
+                    )
+                )
         else:
             self._sessions.sort(key=lambda s: s.get("mtime", 0), reverse=reverse)
 

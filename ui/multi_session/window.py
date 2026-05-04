@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import time
+from datetime import timedelta
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QThreadPool, QTimer
@@ -33,6 +34,7 @@ from core.pipeline.step1_transcribe import WHISPER_API_COST_PER_MINUTE
 from core.pipeline.step2_translate import TRANSLATION_COST_PER_1M_CHARS
 from core.pipeline.step5_tts import COST_PER_1M as TTS_COST_PER_1M
 from core.session import Session
+from core.session_listing import published_at_epoch_seconds
 from ui.multi_session.cost_worker import SelectedCostWorker
 from ui.dialogs.publish_platforms_dialog import PublishPlatformsDialog
 from ui.multi_session.publish_thread import MultiPublishThread
@@ -756,6 +758,14 @@ class MultiSessionWindow(QMainWindow):
             QMessageBox.information(self, "Nothing to run", "Enable at least one step.")
             return
 
+        sessions = sorted(
+            sessions,
+            key=lambda s: (
+                published_at_epoch_seconds(s.get("published_at")),
+                (s.get("name") or "").lower(),
+            ),
+        )
+
         # Build flat sequential job list
         self._job_queue = [
             (sess_data, step) for sess_data in sessions for step in enabled_steps
@@ -786,6 +796,9 @@ class MultiSessionWindow(QMainWindow):
         self._log(
             f"🚀 Multi-session queue: {len(sessions)} sessions × "
             f"{len(enabled_steps)} steps = {total} jobs"
+        )
+        self._log(
+            "   Order: published_at ↑ (missing published_at last), then folder name"
         )
         self._log("   Sessions: " + ",  ".join(s["name"] for s in sessions))
         self._log("   Steps:    " + "  →  ".join(s.LABEL for s in enabled_steps))
@@ -1087,7 +1100,17 @@ class MultiSessionWindow(QMainWindow):
         po = {x: i for i, x in enumerate(PLATFORM_ORDER)}
         tasks: list[dict] = []
 
-        for sess in p["sessions"]:
+        sessions_chrono = sorted(
+            p["sessions"],
+            key=lambda s: (
+                published_at_epoch_seconds(s.get("published_at")),
+                (Path(s["folder"]).name.lower() if s.get("folder") else ""),
+            ),
+        )
+        schedule_cursor = start_local
+        iv_hours = max(int(interval_h or 0), 1)
+
+        for sess in sessions_chrono:
             folder = sess["folder"]
             label = Path(folder).name
             try:
@@ -1110,18 +1133,19 @@ class MultiSessionWindow(QMainWindow):
             else:
                 platforms_eff = list(platforms)
 
+            job_start = (
+                schedule_cursor if schedule_mode == "scheduled" else start_local
+            )
             jobs = build_publish_jobs(
                 platforms_checked=platforms_eff,
                 profile=profile,
                 schedule_mode=schedule_mode,
-                start_local=start_local,
+                start_local=job_start,
                 interval_hours=interval_h,
                 youtube_made_for_kids=y_mfk,
             )
             video, thumb, title, desc = self._resolve_publish_media(folder, sess)
-            start_for_summary = (
-                start_local if schedule_mode == "scheduled" else None
-            )
+            start_for_summary = job_start if schedule_mode == "scheduled" else None
             jobs = enrich_publish_plan_snapshot(
                 jobs,
                 video_path=video or "",
@@ -1154,6 +1178,11 @@ class MultiSessionWindow(QMainWindow):
                 )
                 continue
 
+            if schedule_mode == "scheduled" and jobs:
+                schedule_cursor = schedule_cursor + timedelta(
+                    hours=len(jobs) * iv_hours
+                )
+
             if not video:
                 continue
 
@@ -1167,6 +1196,7 @@ class MultiSessionWindow(QMainWindow):
                 f"session={label!r} video={video}"
             )
 
+            pa_sort = published_at_epoch_seconds(sess.get("published_at"))
             for job in sorted(
                 jobs,
                 key=lambda j: (
@@ -1184,11 +1214,13 @@ class MultiSessionWindow(QMainWindow):
                         "title": title,
                         "description": desc,
                         "profile": profile,
+                        "_published_at_sort": pa_sort,
                     }
                 )
 
         tasks.sort(
             key=lambda t: (
+                t.get("_published_at_sort", float("inf")),
                 int(t["job"].get("scheduled_unix") or 0),
                 po.get(str(t["job"].get("platform") or ""), 99),
                 t["session_label"],
@@ -1206,7 +1238,7 @@ class MultiSessionWindow(QMainWindow):
 
         self._log(
             f"[PUBLISH] Bắt đầu thực thi {len(tasks)} job (scope={scope_mode}, "
-            f"đã sắp theo thời gian + platform)…"
+            f"thứ tự: published_at ↑ → scheduled_unix → platform)…"
         )
         self._btn_publish.setEnabled(False)
         self._btn_publish_cancel.setVisible(True)

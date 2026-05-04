@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime
 from pathlib import Path
 
 
@@ -54,6 +55,31 @@ def summarize_publish_plan(meta: dict) -> dict:
         "publish_done_platforms": done_names,
         "publish_incomplete_hint": hint,
     }
+
+
+def published_at_epoch_seconds(value: str | None) -> float:
+    """
+    Parse ``session.json`` ``published_at`` for stable sorting.
+
+    Naive ISO strings use :func:`datetime.timestamp` (local timezone).
+    Missing or unparseable values return ``+inf`` so ascending sorts put them last.
+    """
+    s = (value or "").strip()
+    if not s:
+        return float("inf")
+    try:
+        s2 = s.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(s2)
+        return float(dt.timestamp())
+    except ValueError:
+        pass
+    try:
+        if len(s) >= 10 and s[4] == "-" and s[7] == "-":
+            dt = datetime.strptime(s[:10], "%Y-%m-%d")
+            return float(dt.timestamp())
+    except ValueError:
+        pass
+    return float("inf")
 
 
 def _dir_tree_size_bytes(path: Path) -> int:
