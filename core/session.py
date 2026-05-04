@@ -31,6 +31,7 @@ class Session:
         self.published_at: str = ""
         self._thumb_background: str = ""
         self.subtitle_studio: dict = {}
+        self.publish_plan: list = []
         self.folder.mkdir(parents=True, exist_ok=True)
         self._save_meta()
 
@@ -47,6 +48,9 @@ class Session:
         obj.published_at = meta.get("published_at", "")
         obj._thumb_background = meta.get("thumb_background", "")
         obj.subtitle_studio = meta.get("subtitle_studio", {}) or {}
+        obj.publish_plan = meta.get("publish_plan") or []
+        if not isinstance(obj.publish_plan, list):
+            obj.publish_plan = []
         # thumbnail is detected from folder, not stored in meta
         return obj
 
@@ -194,6 +198,7 @@ class Session:
         obj.description = ""
         obj._thumb_background = ""
         obj.subtitle_studio = {}
+        obj.publish_plan = []
 
         info_file = next(
             (
@@ -254,6 +259,25 @@ class Session:
         self.title = title.strip()
         self.description = description.strip()
         self._save_meta()
+
+    def set_publish_plan(self, plan: list | None):
+        """Replace publish_plan (sorted list of job dicts) and persist."""
+        self.publish_plan = list(plan or [])
+        self._save_meta()
+
+    def append_publish_jobs(self, jobs: list | None):
+        """Append jobs to publish_plan (giữ lịch sử job cũ) và persist."""
+        self.publish_plan = list(self.publish_plan or []) + list(jobs or [])
+        self._save_meta()
+
+    def patch_publish_job(self, job_id: str, **fields):
+        """Update one publish_plan entry by id."""
+        for j in self.publish_plan:
+            if str(j.get("id")) == str(job_id):
+                j.update(fields)
+                self._save_meta()
+                return True
+        return False
 
     def save_subtitle_studio(self, studio: dict | None):
         """Save per-session subtitle studio settings into session.json."""
@@ -493,6 +517,7 @@ class Session:
                     "published_at": self.published_at,
                     "thumb_background": self.thumb_background,
                     "subtitle_studio": self.subtitle_studio,
+                    "publish_plan": self.publish_plan,
                 },
                 ensure_ascii=False,
                 indent=2,

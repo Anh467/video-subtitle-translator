@@ -145,6 +145,7 @@ ehthumbs.db
 
 # API keys / secrets (QUAN TRỌNG)
 
+.subsync_publish_profiles.json
 *.env
 *.key
 *.pem

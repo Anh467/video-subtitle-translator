@@ -19,10 +19,13 @@ Main design rule: Step 5 does API calls and stores reusable assets; Step 6 does 
 ## Repository Structure
 
 - `main.py`: app entry point.
-- `core/session.py`: session paths, state, chaining, title/description/thumbnail metadata.
-- `core/session_listing.py`: `Session.list_sessions()` implementation (folder scan + sizes).
+- `core/session.py`: session paths, state, chaining, title/description/thumbnail metadata; `publish_plan` + `set_publish_plan` / `append_publish_jobs` / `patch_publish_job`.
+- `core/session_listing.py`: `Session.list_sessions()` implementation (folder scan + sizes + **publish summary** từ `publish_plan`).
 - `core/config_store.py`: persist step widget configs per workspace.
 - `core/api_keys.py`: API key manager for `.subsync_keys`. Keys: Gemini, OpenAI, FPT, Zalo, ElevenLabs, Google Cloud TTS.
+- `core/publish_profiles.py`: nhiều **publish profile** (Facebook Page / YouTube OAuth / TikTok fields) → file workspace `.subsync_publish_profiles.json`.
+- `core/publish_jobs.py`: build `publish_plan` jobs, enrich snapshot, `platforms_still_need_upload`, sort.
+- `core/publish/`: `facebook_upload.py`, `youtube_upload.py`, `runner.py` — upload thật (FB/YT), TikTok stub.
 - `core/logger.py` / `core/logging/` / `core/log_file.py`: Qt log handler + daily file log (`FileLogger`).
 - `core/pipeline/base.py`: step abstractions and worker.
 - `core/pipeline/selection.py`: shared backend/model/API-key mapping helpers.
@@ -40,7 +43,9 @@ Main design rule: Step 5 does API calls and stores reusable assets; Step 6 does 
 - `ui/main_window.py`: orchestration, queue, session manager, key loading.
 - `ui/multi_session_window.py`: thin import shim → `ui/multi_session/`.
 - `ui/multi_session/`: `cost_worker.py`, `session_list_panel.py`, `window.py` (`MultiSessionWindow`).
-- `ui/dialogs/`, `ui/theme.py`: shared Qt dialogs and stylesheet.
+- `ui/dialogs/`, `ui/theme.py`: shared Qt dialogs and stylesheet (`ApiKeysDialog`: tab API Keys + **Publish profiles**; `PublishPlatformsDialog`).
+- `ui/widgets/publish_profiles_tab.py`: chỉnh sửa publish profiles trong API Keys Manager.
+- `ui/multi_session/publish_thread.py`: `QThread` chạy publish + log + `patch_publish_job`.
 - `ui/widgets/step_card.py`: auto-width step card widget.
 - `ui/widgets/drop_zone.py`: drag-and-drop file zone.
 - `ui/widgets/subtitle_editor.py`: editable Original+Translated panel, saves to json+srt.
@@ -55,7 +60,7 @@ Each run creates a session folder:
 
 Important outputs:
 
-- `session.json` — metadata: source_file, created, title, description, published_at
+- `session.json` — metadata: source_file, created, title, description, published_at, `subtitle_studio`, **`publish_plan`** (danh sách job đăng đa nền tảng: platform, lịch, media snapshot, status, `remote_asset_id`, …)
 - `thumbnail.*` — optional cover image (jpg/png/webp)
 - `step1_transcript.json`, `step1_transcript.txt`
 - `step2_translated.json`, `step2_translated.srt`
@@ -119,11 +124,17 @@ Managed by `core/api_keys.py`:
 - Known keys: Gemini, OpenAI, FPT, Zalo, ElevenLabs, **Google Cloud TTS**.
 - Step 7 uses `GEMINI_API_KEY` when Generator = Gemini.
 
+### Publish profiles (đăng Facebook / YouTube / TikTok)
+
+- File workspace: `<base_dir>/.subsync_publish_profiles.json` (gitignored cùng kiểu secrets).
+- `core/publish_profiles.py`: `load_profiles` / `save_profiles`, `platform_configured`, `profile_platforms_ready`.
+- UI: **API Keys Manager** → tab **Publish profiles** (`PublishProfilesTab`): nhiều profile đặt tên; mỗi profile có `credentials.facebook` (page_id, page_access_token), `credentials.youtube` (client_id, client_secret, refresh_token), `credentials.tiktok` (access_token — app chưa gọi API TikTok).
+
 UI behavior in `ui/main_window.py`:
 
 - Choosing base folder triggers `_load_api_keys(base_dir)`.
 - Keys are auto-loaded and auto-filled into step config UI.
-- API keys dialog writes back to `.subsync_keys` and refreshes autofill.
+- API keys dialog writes back to `.subsync_keys` **và** (khi có base folder) `.subsync_publish_profiles.json` khi Save; refreshes autofill.
 - Autofill uses normalized candidate mapping from `core/pipeline/selection.py`.
 - Step 1 Whisper API key auto-filled from `OPENAI_API_KEY`.
 - Step 1 field `textChanged` syncs back to `ApiKeyManager` (bidirectional).
@@ -329,6 +340,7 @@ Standalone `QMainWindow`, opened from MainWindow. Receives `steps[]` (shared ins
 
 - `_set_step3_source_file(source_file)`: called in `_on_session_clicked()` and `_run_next()` to keep BurnStep preview in sync with queued session.
 - **Throughput metrics**: `_multi_started_at`, `_multi_total_jobs`, `_multi_done_jobs`, `_multi_session_stats`, `_multi_failed_sessions` logged per-session and as aggregate `actions/min` + `sessions/min`.
+- **📤 Đăng đa nền tảng**: mở `PublishPlatformsDialog` — profile + platform + lịch + phạm vi (`all` ghi đè `publish_plan` vs `only_missing_success` append job chưa `done`). `MultiPublishThread` gọi `core.publish.runner.run_publish` và `Session.patch_publish_job`.
 
 Layout:
 
@@ -337,10 +349,11 @@ Layout:
 │  SessionListPanel   │  SessionInfoEditor (top)         │
 │  - checkbox rows    │  SubtitleEditor (bottom)         │
 │  - thumbnail 48x27  │                                  │
+│  - dòng «Đã đăng»   │                                  │
 ├─────────────────────┴──────────────────────────────────┤
 │  Step cards (shared config, full width, h=220px)       │
 ├────────────────────────────────────────────────────────┤
-│  Run Selected  │  Run All Sessions  │  Stop  │  Cancel │
+│  Run Selected  │  Run All  │  📤 Publish  │ Stop │ …   │
 └────────────────────────────────────────────────────────┘
 ```
 
@@ -355,6 +368,7 @@ Layout:
 - `session_clicked = pyqtSignal(dict)` emitted on row click.
 - Display name: `title` if set, else `folder name`. Tooltip shows folder name.
 - Thumbnail 48×27px shown if `session["thumbnail"]` exists.
+- **Đã đăng (multi-platform)**: mỗi row hiển thị `📤 Đã đăng: Facebook · YouTube` từ `publish_done_platforms` (do `session_listing.summarize_publish_plan` đọc `publish_plan` trong `session.json`). Nếu có job chưa `done`, tooltip dòng đó hiện `publish_incomplete_hint` (platform + status tóm tắt).
 
 #### Run behavior
 

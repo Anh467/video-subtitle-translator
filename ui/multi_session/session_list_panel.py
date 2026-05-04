@@ -292,7 +292,7 @@ class SessionListPanel(QWidget):
         for idx, s in enumerate(self._sessions):
             item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, idx)
-            item.setSizeHint(QSize(0, 76))
+            item.setSizeHint(QSize(0, 92))
             w = self._make_row(s, idx)
             if preserve_checked:
                 chk = w.findChild(QCheckBox)
@@ -360,6 +360,23 @@ class SessionListPanel(QWidget):
         detail = QLabel(f"✅ {done_str}   💾 {s['size_mb']}MB   🕐 {dt}{folder_hint}")
         detail.setStyleSheet("color:#666;font-size:10px;")
         info_v.addWidget(detail)
+
+        done_pf = s.get("publish_done_platforms") or []
+        inc_hint = (s.get("publish_incomplete_hint") or "").strip()
+        if done_pf:
+            pub_txt = "📤 Đã đăng: " + " · ".join(done_pf)
+            pub_style = "color:#7dd3a0;font-size:10px;font-weight:600;"
+        else:
+            pub_txt = "📤 Đã đăng: —"
+            pub_style = "color:#555;font-size:10px;"
+        pub_lbl = QLabel(pub_txt)
+        pub_lbl.setStyleSheet(pub_style)
+        if inc_hint:
+            pub_lbl.setToolTip(
+                "Nền tảng có job nhưng chưa thành công (pending/error/skipped):\n"
+                + inc_hint
+            )
+        info_v.addWidget(pub_lbl)
 
         # Per-step live status row
         step_status = self._session_step_status.get(s["folder"], {})
@@ -509,7 +526,7 @@ class SessionListPanel(QWidget):
             chk = new_w.findChild(QCheckBox)
             if chk:
                 chk.setChecked(was_checked)
-            item.setSizeHint(QSize(0, 76))
+            item.setSizeHint(QSize(0, 92))
             self._list.setItemWidget(item, new_w)
             break
 

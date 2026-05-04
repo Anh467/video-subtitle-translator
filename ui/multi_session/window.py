@@ -10,6 +10,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import Qt, QThreadPool, QTimer
 from PyQt6.QtWidgets import (
+    QDialog,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -33,6 +34,8 @@ from core.pipeline.step2_translate import TRANSLATION_COST_PER_1M_CHARS
 from core.pipeline.step5_tts import COST_PER_1M as TTS_COST_PER_1M
 from core.session import Session
 from ui.multi_session.cost_worker import SelectedCostWorker
+from ui.dialogs.publish_platforms_dialog import PublishPlatformsDialog
+from ui.multi_session.publish_thread import MultiPublishThread
 from ui.multi_session.session_list_panel import SessionListPanel
 from ui.widgets.session_info_editor import SessionInfoEditor
 from ui.widgets.step_card import StepCard
@@ -78,6 +81,8 @@ class MultiSessionWindow(QMainWindow):
         self._cost_timer.setInterval(120)
         self._cost_timer.timeout.connect(self._run_selected_cost_worker)
 
+        self._publish_thread: MultiPublishThread | None = None
+
         self._setup_ui()
         if base_dir:
             self._session_panel.set_base_dir(base_dir)
@@ -122,6 +127,20 @@ class MultiSessionWindow(QMainWindow):
         sub.setStyleSheet("font-size:11px;color:#555;margin-left:12px;margin-top:6px;")
         title_row.addWidget(t)
         title_row.addWidget(sub, stretch=1)
+
+        self._btn_publish = QPushButton("📤 Đăng đa nền tảng")
+        self._btn_publish.setToolTip(
+            "Facebook / YouTube / TikTok — chọn profile trong API Keys Manager, tick session, rồi mở dialog"
+        )
+        self._btn_publish.setStyleSheet(
+            "QPushButton{background:#2a1a3a;color:#e8a0ff;border:1px solid #6a3a8a;"
+            "font-weight:bold;border-radius:6px;padding:6px 12px;font-size:12px;}"
+            "QPushButton:hover{background:#3a2a4a;border-color:#e8a0ff;}"
+            "QPushButton:disabled{background:#1a1a2a;color:#555;border-color:#333;}"
+        )
+        self._btn_publish.clicked.connect(self._open_publish_platforms)
+        title_row.addWidget(self._btn_publish)
+
         title_row.addStretch()
 
         # self._btn_editor_default = QPushButton("Default")
@@ -982,9 +1001,220 @@ class MultiSessionWindow(QMainWindow):
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
+    def _open_publish_platforms(self):
+        if not self._base_dir.strip():
+            QMessageBox.warning(
+                self,
+                "Thiếu workspace",
+                "Chọn base folder (session workspace) ở cửa sổ chính trước.",
+            )
+            return
+        if self._worker is not None:
+            QMessageBox.warning(
+                self,
+                "Đang chạy pipeline",
+                "Đang xử lý multi-session. Chờ xong hoặc dừng hàng đợi rồi thử đăng lại.",
+            )
+            return
+        if self._publish_thread is not None and self._publish_thread.isRunning():
+            QMessageBox.warning(self, "Đang đăng", "Luồng publish đang chạy.")
+            return
+
+        sel = self._session_panel.get_selected_sessions()
+        if not sel:
+            QMessageBox.warning(
+                self,
+                "Chưa chọn session",
+                "Tick chọn ít nhất một session trong danh sách bên trái.",
+            )
+            return
+
+        dlg = PublishPlatformsDialog(self._base_dir, sel, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.payload:
+            return
+
+        p = dlg.payload
+        from core.publish_jobs import (
+            build_publish_jobs,
+            enrich_publish_plan_snapshot,
+            mark_all_jobs_skipped,
+            platforms_still_need_upload,
+        )
+        from core.publish_profiles import PLATFORM_ORDER, load_profiles, save_profiles
+
+        st = load_profiles(self._base_dir)
+        st["last_profile_id"] = str(p["profile"].get("id") or "")
+        save_profiles(self._base_dir, st)
+
+        profile = p["profile"]
+        platforms = p["platforms"]
+        schedule_mode = p["schedule_mode"]
+        start_local = p["start_local"]
+        interval_h = p["interval_hours"]
+        y_mfk = p["youtube_made_for_kids"]
+        scope_mode = p.get("scope_mode") or "all"
+
+        po = {x: i for i, x in enumerate(PLATFORM_ORDER)}
+        tasks: list[dict] = []
+
+        for sess in p["sessions"]:
+            folder = sess["folder"]
+            label = Path(folder).name
+            try:
+                s = Session.load(folder)
+            except Exception as e:
+                self._log(
+                    f"[PUBLISH][ERROR] Không load session session={label!r}: {e}"
+                )
+                continue
+
+            existing = s.publish_plan or []
+            if scope_mode == "only_missing_success":
+                platforms_eff = platforms_still_need_upload(existing, platforms)
+                if not platforms_eff:
+                    self._log(
+                        f"[PUBLISH][SKIP] session={label!r} — các nền tảng đã tick "
+                        f"đều đã có job thành công (done); không thêm job mới."
+                    )
+                    continue
+            else:
+                platforms_eff = list(platforms)
+
+            jobs = build_publish_jobs(
+                platforms_checked=platforms_eff,
+                profile=profile,
+                schedule_mode=schedule_mode,
+                start_local=start_local,
+                interval_hours=interval_h,
+                youtube_made_for_kids=y_mfk,
+            )
+            video, thumb, title, desc = self._resolve_publish_media(folder, sess)
+            start_for_summary = (
+                start_local if schedule_mode == "scheduled" else None
+            )
+            jobs = enrich_publish_plan_snapshot(
+                jobs,
+                video_path=video or "",
+                thumbnail_path=thumb or "",
+                title=title,
+                description=desc,
+                schedule_mode=schedule_mode,
+                interval_hours=interval_h,
+                platforms_ordered=platforms_eff,
+                start_local=start_for_summary,
+                publish_scope_mode=scope_mode,
+            )
+            if not video:
+                mark_all_jobs_skipped(
+                    jobs,
+                    "Không có video output trong result/ (cần step 6 hoặc file video hợp lệ).",
+                )
+                self._log(
+                    f"[PUBLISH][SKIP] session={label!r} — không có video; "
+                    f"đã lưu publish_plan với status=skipped cho {len(jobs)} job."
+                )
+            try:
+                if scope_mode == "only_missing_success":
+                    s.append_publish_jobs(jobs)
+                else:
+                    s.set_publish_plan(jobs)
+            except Exception as e:
+                self._log(
+                    f"[PUBLISH][ERROR] Không ghi publish_plan session={label!r}: {e}"
+                )
+                continue
+
+            if not video:
+                continue
+
+            scope_lbl = (
+                "chỉ-chưa-thành-công (append)"
+                if scope_mode == "only_missing_success"
+                else "đầy-đủ (ghi đè)"
+            )
+            self._log(
+                f"[PUBLISH] Đã lưu publish_plan ({len(jobs)} job, {scope_lbl}) "
+                f"session={label!r} video={video}"
+            )
+
+            for job in sorted(
+                jobs,
+                key=lambda j: (
+                    int(j.get("scheduled_unix") or 0),
+                    po.get(str(j.get("platform") or ""), 99),
+                ),
+            ):
+                tasks.append(
+                    {
+                        "session_folder": folder,
+                        "session_label": label,
+                        "job": job,
+                        "video_path": video,
+                        "thumb_path": thumb,
+                        "title": title,
+                        "description": desc,
+                        "profile": profile,
+                    }
+                )
+
+        tasks.sort(
+            key=lambda t: (
+                int(t["job"].get("scheduled_unix") or 0),
+                po.get(str(t["job"].get("platform") or ""), 99),
+                t["session_label"],
+            )
+        )
+
+        if not tasks:
+            QMessageBox.information(
+                self,
+                "Không có job",
+                "Không có job nào để chạy: kiểm tra session có video trong result/, "
+                "hoặc ở chế độ «chỉ phần chưa thành công» các nền tảng đã chọn đều đã upload OK.",
+            )
+            return
+
+        self._log(
+            f"[PUBLISH] Bắt đầu thực thi {len(tasks)} job (scope={scope_mode}, "
+            f"đã sắp theo thời gian + platform)…"
+        )
+        self._btn_publish.setEnabled(False)
+        self._publish_thread = MultiPublishThread(tasks, self)
+        self._publish_thread.log_line.connect(self._log)
+        self._publish_thread.finished_summary.connect(self._on_publish_summary)
+        self._publish_thread.finished.connect(self._on_publish_thread_finished)
+        self._publish_thread.start()
+
+    def _resolve_publish_media(self, folder: str, sess: dict) -> tuple[str, str, str, str]:
+        """Latest result video, thumbnail path, title, description."""
+        s = Session.load(folder)
+        v = s.step6_video
+        video = str(v) if v.exists() else ""
+        if not video:
+            fp = Path(s.final_video())
+            if fp.is_file():
+                video = str(fp)
+        thumb = s.thumbnail or ""
+        title = (s.title or sess.get("title") or "").strip()
+        desc = (s.description or sess.get("description") or "").strip()
+        return video, thumb, title, desc
+
+    def _on_publish_summary(self, ok: int, fail: int):
+        self._status_bar.showMessage(f"Publish xong: OK={ok} FAIL={fail}")
+
+    def _on_publish_thread_finished(self):
+        self._publish_thread = None
+        pipeline = getattr(self, "_worker", None)
+        busy = pipeline is not None
+        if hasattr(self, "_btn_publish"):
+            self._btn_publish.setEnabled(not busy)
+
     def _set_running(self, running: bool):
         self._btn_run_selected.setEnabled(not running)
         self._btn_run_all_sessions.setEnabled(not running)
+        if hasattr(self, "_btn_publish"):
+            pub_busy = self._publish_thread is not None and self._publish_thread.isRunning()
+            self._btn_publish.setEnabled(not running and not pub_busy)
         self._btn_stop.setVisible(running)
         self._btn_stop.setEnabled(running)
         self._btn_stop.setText("⏹  Stop After Current")

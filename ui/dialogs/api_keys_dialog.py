@@ -1,4 +1,4 @@
-"""Dialog để nhập và quản lý API keys — auto-save vào .subsync_keys"""
+"""Dialog: API keys + publish profiles (multi-platform credentials)."""
 
 from PyQt6.QtWidgets import (
     QDialog,
@@ -7,37 +7,47 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QTabWidget,
     QVBoxLayout,
+    QWidget,
 )
+
+from ui.widgets.publish_profiles_tab import PublishProfilesTab
 
 
 class ApiKeysDialog(QDialog):
-    """Dialog để nhập và quản lý API keys — auto-save vào .subsync_keys"""
+    """API keys (.subsync_keys) và publish profiles (.subsync_publish_profiles.json)."""
 
     def __init__(self, base_dir: str = "", parent=None):
         super().__init__(parent)
         self.base_dir = base_dir
-        self.setWindowTitle("🔑  API Keys Manager")
-        self.setMinimumSize(540, 480)
+        self.setWindowTitle("🔑  API Keys & Publish profiles")
+        self.setMinimumSize(560, 520)
         self.setStyleSheet(parent.styleSheet() if parent else "")
         self._edits: dict = {}
+        self._profiles_tab: PublishProfilesTab | None = None
         self._setup_ui()
         self._load()
 
     def _setup_ui(self):
         from core.api_keys import ENV_FILE, KNOWN_KEYS
 
-        v = QVBoxLayout(self)
-        v.setSpacing(10)
+        root = QVBoxLayout(self)
+        root.setSpacing(8)
+
+        tabs = QTabWidget()
+        keys_w = QWidget()
+        kv = QVBoxLayout(keys_w)
+        kv.setContentsMargins(0, 4, 0, 0)
 
         hdr = QLabel("API Keys — lưu vào file .subsync_keys trong session folder")
         hdr.setStyleSheet("color:#a0a8ff;font-size:12px;")
-        v.addWidget(hdr)
+        kv.addWidget(hdr)
 
         if self.base_dir:
             path_lbl = QLabel(f"📁 {self.base_dir}/{ENV_FILE}")
             path_lbl.setStyleSheet("color:#555;font-size:10px;font-family:monospace;")
-            v.addWidget(path_lbl)
+            kv.addWidget(path_lbl)
 
         for env_key, meta in KNOWN_KEYS.items():
             row = QHBoxLayout()
@@ -62,19 +72,32 @@ class ApiKeysDialog(QDialog):
                 )
             )
             row.addWidget(btn_show)
-            v.addLayout(row)
+            kv.addLayout(row)
             self._edits[env_key] = edit
 
         info = QLabel(
             "💡 Keys được lưu vào file <b>.subsync_keys</b> trong session folder.<br>"
             "App tự động load khi bạn chọn folder.<br>"
-            "<b>Không share file này!</b> Thêm vào <code>.gitignore</code> nếu dùng git."
+            "<b>Không share file này!</b>"
         )
         info.setStyleSheet("color:#666;font-size:11px;padding:8px;")
         info.setWordWrap(True)
-        v.addWidget(info)
+        kv.addWidget(info)
+        kv.addStretch()
 
-        v.addStretch()
+        tabs.addTab(keys_w, "API Keys")
+
+        self._profiles_tab = PublishProfilesTab(self.base_dir, self)
+        tabs.addTab(self._profiles_tab, "Publish profiles")
+
+        root.addWidget(tabs)
+
+        path2 = QLabel(
+            f"Publish profiles: <code>{self.base_dir or '(chọn base folder)'}/.subsync_publish_profiles.json</code>"
+        )
+        path2.setWordWrap(True)
+        path2.setStyleSheet("color:#555;font-size:10px;")
+        root.addWidget(path2)
 
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save
@@ -82,7 +105,7 @@ class ApiKeysDialog(QDialog):
         )
         btns.accepted.connect(self._save)
         btns.rejected.connect(self.reject)
-        v.addWidget(btns)
+        root.addWidget(btns)
 
     def _load(self):
         from core.api_keys import get_manager
@@ -92,6 +115,8 @@ class ApiKeysDialog(QDialog):
             v = mgr.get(env_key, "")
             if v:
                 edit.setText(v)
+        if self._profiles_tab:
+            self._profiles_tab.set_base_dir(self.base_dir)
 
     def _save(self):
         from core.api_keys import get_manager
@@ -100,4 +125,6 @@ class ApiKeysDialog(QDialog):
         for env_key, edit in self._edits.items():
             v = edit.text().strip()
             mgr.set(env_key, v)
+        if self._profiles_tab and self.base_dir.strip():
+            self._profiles_tab.persist_to_disk()
         self.accept()
