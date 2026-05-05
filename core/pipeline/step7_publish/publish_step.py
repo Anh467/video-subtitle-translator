@@ -36,6 +36,12 @@ from PyQt6.QtWidgets import (
 from core.api_keys import get_key
 from core.pipeline.base import BaseStep, CancelledError
 from core.pipeline.step7_publish.stop_words import STOP_WORDS
+from core.pipeline.step7_publish.zh_thumb_helpers import (
+    copy_if_exists,
+    has_cjk,
+    repaint_thumbnail_remove_zh_overlay,
+    translate_block_zh_to_vi,
+)
 
 
 class PublishInfoStep(BaseStep):
@@ -59,6 +65,9 @@ class PublishInfoStep(BaseStep):
         self._thumb_bg_label = None
         self._thumb_bg_preview = None
         self._thumb_bg_path = ""
+        self._thumb_base_combo = None
+        self._thumb_ocr_chk = None
+        self._translate_meta_chk = None
         self._base_dir = ""
         self._ollama_last_failed = False
 
@@ -110,12 +119,44 @@ class PublishInfoStep(BaseStep):
         max_tags = int(config.get("max_tags", 8) or 8)
         thumb_mode = config.get("thumb_mode", "keep")
         thumb_at_sec = float(config.get("thumb_at_sec", 12.0) or 12.0)
+        thumb_base_priority = config.get("thumb_base_priority", "video_only")
+        thumb_ocr_zh_vi = bool(config.get("thumb_ocr_zh_vi", False))
+        translate_session_zh_meta = bool(config.get("translate_session_zh_meta", False))
         overwrite = bool(config.get("overwrite", False))
 
         lines = [s.translated.strip() for s in segments if s.translated.strip()]
         script_text = " ".join(lines)
 
         hashtags = self._build_hashtags(script_text, max_tags=max_tags)
+
+        meta_context = ""
+        if translate_session_zh_meta and gen_backend in ("ollama", "gemini"):
+            parts: list[str] = []
+            st = (session.title or "").strip()
+            sd = (session.description or "").strip()
+
+            def _meta_translate_fn(prompt: str) -> str:
+                if gen_backend == "ollama":
+                    return self._ollama_generate(prompt, model=ollama_model)
+                return self._gemini_generate(
+                    prompt, model=gemini_model, log=log, api_key=api_key
+                )
+
+            if has_cjk(st):
+                vi = translate_block_zh_to_vi(
+                    st, translate_fn=_meta_translate_fn, log=log
+                )
+                if vi:
+                    parts.append(f"PUBLISHER_TITLE_HINT_VI: {vi}")
+            if has_cjk(sd):
+                vi_d = translate_block_zh_to_vi(
+                    sd, translate_fn=_meta_translate_fn, log=log
+                )
+                if vi_d:
+                    parts.append(f"PUBLISHER_DESCRIPTION_HINT_VI: {vi_d}")
+            meta_context = "\n".join(parts)
+            if meta_context:
+                log("🌐 Đã dịch tiêu đề/mô tả session có chữ Trung → gợi ý cho LLM")
 
         if gen_backend == "ollama":
             title, description = self._generate_title_description_ollama(
@@ -124,6 +165,7 @@ class PublishInfoStep(BaseStep):
                 style=style,
                 model=ollama_model,
                 log=log,
+                meta_context=meta_context or None,
             )
         elif gen_backend == "gemini":
             title, description = self._generate_title_description_gemini(
@@ -133,6 +175,7 @@ class PublishInfoStep(BaseStep):
                 model=gemini_model,
                 api_key=api_key,
                 log=log,
+                meta_context=meta_context or None,
             )
         else:
             title = self._build_title(lines, style=style)
@@ -191,6 +234,8 @@ class PublishInfoStep(BaseStep):
                 api_key=api_key,
                 foreground_bg=bg_layer,
                 log=log,
+                thumb_base_priority=thumb_base_priority,
+                thumb_ocr_zh_vi=thumb_ocr_zh_vi,
             )
             if thumb_saved:
                 log(f"🖼️  Saved thumbnail: {Path(thumb_saved).name}")
@@ -362,6 +407,7 @@ class PublishInfoStep(BaseStep):
         style: str,
         model: str,
         log,
+        meta_context: str | None = None,
     ) -> tuple[str, str]:
         excerpt = "\n".join(lines[:80])
         excerpt = excerpt[:9000]
@@ -372,6 +418,13 @@ class PublishInfoStep(BaseStep):
             "short": "tone concise, direct",
             "story": "tone storytelling, emotional",
         }.get(style, "tone storytelling")
+
+        extra = ""
+        if (meta_context or "").strip():
+            extra = (
+                "\nORIGINAL_PUBLISHER_METADATA_TRANSLATED_VI (context only, merge naturally):\n"
+                f"{meta_context.strip()}\n"
+            )
 
         prompt = (
             "You are a Vietnamese YouTube content strategist.\n"
@@ -388,6 +441,7 @@ class PublishInfoStep(BaseStep):
             "- Output JSON only with keys: title, description\n\n"
             f"SCRIPT:\n{excerpt}\n\n"
             f"SUGGESTED_HASHTAGS: {hashtag_line}\n"
+            f"{extra}"
         )
 
         try:
@@ -429,6 +483,7 @@ class PublishInfoStep(BaseStep):
         model: str,
         api_key: str | None,
         log,
+        meta_context: str | None = None,
     ) -> tuple[str, str]:
         excerpt = "\n".join(lines[:90])[:10000]
         hashtag_line = " ".join(hashtags[:10])
@@ -437,6 +492,12 @@ class PublishInfoStep(BaseStep):
             "short": "tone concise, direct",
             "story": "tone storytelling, emotional",
         }.get(style, "tone storytelling")
+        extra = ""
+        if (meta_context or "").strip():
+            extra = (
+                "\nORIGINAL_PUBLISHER_METADATA_TRANSLATED_VI (context only, merge naturally):\n"
+                f"{meta_context.strip()}\n"
+            )
         prompt = (
             "You are a Vietnamese YouTube content strategist.\n"
             "Create HIGH-CTR but truthful metadata in Vietnamese only.\n"
@@ -449,6 +510,7 @@ class PublishInfoStep(BaseStep):
             "- If hashtags provided, append them at the end\n\n"
             f"SCRIPT:\n{excerpt}\n\n"
             f"SUGGESTED_HASHTAGS: {hashtag_line}\n"
+            f"{extra}"
         )
         try:
             log(f"✨ Generating title/description via Gemini ({model})...")
@@ -903,6 +965,8 @@ class PublishInfoStep(BaseStep):
         api_key: str | None,
         foreground_bg: str,
         log,
+        thumb_base_priority: str = "video_only",
+        thumb_ocr_zh_vi: bool = False,
     ) -> str:
         src = session.latest_video() or session.source_file
         if not src or not Path(src).exists():
@@ -913,6 +977,8 @@ class PublishInfoStep(BaseStep):
         raw_frame.close()
         edited = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
         edited.close()
+        ocr_tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+        ocr_tmp.close()
         if gen_backend == "ollama":
             hook = self._generate_hook_text_ollama(
                 hook_title=hook_title,
@@ -946,26 +1012,75 @@ class PublishInfoStep(BaseStep):
         else:
             hook = self._pick_hook_text(hook_title, lines, style)
             pick_sec = at_sec
+
+        translate_backend = gen_backend
+        if gen_backend == "ollama" and self._ollama_last_failed:
+            translate_backend = "rule"
+
         try:
-            if not self._extract_representative_frame(
-                src, pick_sec, raw_frame.name, log
-            ):
-                return ""
+            have_base = False
+            if thumb_base_priority == "session_first":
+                sess_thumb = (session.thumbnail or "").strip()
+                if sess_thumb and copy_if_exists(sess_thumb, raw_frame.name):
+                    have_base = True
+                    log("🖼️  Thumb base: đang dùng thumbnail có sẵn trong session")
+            if not have_base:
+                if not self._extract_representative_frame(
+                    src, pick_sec, raw_frame.name, log
+                ):
+                    return ""
+                log("🖼️  Thumb base: trích khung hình từ video")
+
+            frame_for_render = raw_frame.name
+            if thumb_ocr_zh_vi:
+                if translate_backend == "ollama":
+
+                    def _ocr_translate_fn(p: str) -> str:
+                        return self._ollama_generate(p, model=ollama_model)
+
+                    if repaint_thumbnail_remove_zh_overlay(
+                        raw_frame.name,
+                        ocr_tmp.name,
+                        translate_fn=_ocr_translate_fn,
+                        log=log,
+                    ):
+                        frame_for_render = ocr_tmp.name
+                elif translate_backend == "gemini":
+
+                    def _ocr_translate_fn_g(p: str) -> str:
+                        return self._gemini_generate(
+                            p, model=gemini_model, log=log, api_key=api_key
+                        )
+
+                    if repaint_thumbnail_remove_zh_overlay(
+                        raw_frame.name,
+                        ocr_tmp.name,
+                        translate_fn=_ocr_translate_fn_g,
+                        log=log,
+                    ):
+                        frame_for_render = ocr_tmp.name
+                else:
+                    log(
+                        "⚠️  OCR zh→vi cần Ollama hoặc Gemini; bỏ qua repaint (generator: rule)."
+                    )
+
             log(f"🎯 Thumbnail hook text: {hook}")
             if self._render_edited_thumbnail(
-                raw_frame.name,
+                frame_for_render,
                 edited.name,
                 hook,
                 foreground_bg,
                 log,
             ):
                 return session.save_thumbnail(edited.name)
-            return session.save_thumbnail(raw_frame.name)
+            return session.save_thumbnail(frame_for_render)
         finally:
-            if os.path.exists(raw_frame.name):
-                os.unlink(raw_frame.name)
-            if os.path.exists(edited.name):
-                os.unlink(edited.name)
+            for pth in (raw_frame.name, edited.name, ocr_tmp.name):
+                if os.path.exists(pth):
+                    try:
+                        os.unlink(pth)
+                    except OSError:
+                        pass
 
     def build_config_widget(self, parent=None):
         w = QWidget(parent)
@@ -1073,6 +1188,32 @@ class PublishInfoStep(BaseStep):
         r3.addWidget(self._thumb_mode_combo)
         r3.addStretch()
         v.addLayout(r3)
+
+        rb = QHBoxLayout()
+        rb.addWidget(QLabel("Thumb base:"))
+        self._thumb_base_combo = QComboBox()
+        self._thumb_base_combo.addItems(
+            [
+                "From video only",
+                "Prefer session thumbnail, else video",
+            ]
+        )
+        self._thumb_base_combo.setCurrentIndex(0)
+        rb.addWidget(self._thumb_base_combo)
+        rb.addStretch()
+        v.addLayout(rb)
+
+        self._thumb_ocr_chk = QCheckBox(
+            "OCR: repaint Chinese text on thumb → Vietnamese (PaddleOCR, needs pip install)"
+        )
+        self._thumb_ocr_chk.setChecked(False)
+        v.addWidget(self._thumb_ocr_chk)
+
+        self._translate_meta_chk = QCheckBox(
+            "If session title/description has Chinese, translate to Vi for LLM context"
+        )
+        self._translate_meta_chk.setChecked(False)
+        v.addWidget(self._translate_meta_chk)
 
         r4 = QHBoxLayout()
         r4.addWidget(QLabel("Thumb time:"))
@@ -1227,8 +1368,8 @@ class PublishInfoStep(BaseStep):
             return
         _BE_LABEL = {
             "ollama": "Ollama (local)",
-            "gemini": "Gemini (Google)",
-            "rule": "Rule-based",
+            "gemini": "Gemini (Google API)",
+            "rule": "Rule-based (fast)",
         }
         _STYLE_LABEL = {
             "story": "Story (balanced)",
@@ -1239,6 +1380,10 @@ class PublishInfoStep(BaseStep):
             "keep": "Keep current thumbnail",
             "auto_if_missing": "Auto if missing",
             "auto": "Always auto-generate",
+        }
+        _BASE_LABEL = {
+            "video_only": "From video only",
+            "session_first": "Prefer session thumbnail, else video",
         }
         if self._gen_backend_combo and config.get("gen_backend"):
             lbl = _BE_LABEL.get(config["gen_backend"], "")
@@ -1260,6 +1405,21 @@ class PublishInfoStep(BaseStep):
             )
         if self._thumb_at_spin and config.get("thumb_at_sec") is not None:
             self._thumb_at_spin.setValue(float(config["thumb_at_sec"]))
+        if self._thumb_base_combo and config.get("thumb_base_priority"):
+            self._thumb_base_combo.setCurrentText(
+                _BASE_LABEL.get(
+                    config["thumb_base_priority"], "From video only"
+                )
+            )
+        if self._thumb_ocr_chk and config.get("thumb_ocr_zh_vi") is not None:
+            self._thumb_ocr_chk.setChecked(bool(config["thumb_ocr_zh_vi"]))
+        if (
+            self._translate_meta_chk
+            and config.get("translate_session_zh_meta") is not None
+        ):
+            self._translate_meta_chk.setChecked(
+                bool(config["translate_session_zh_meta"])
+            )
         if self._overwrite_chk and config.get("overwrite") is not None:
             self._overwrite_chk.setChecked(bool(config["overwrite"]))
         # api_key: skip — handled by autofill from ApiKeyManager
@@ -1278,6 +1438,14 @@ class PublishInfoStep(BaseStep):
         }.get(
             self._thumb_mode_combo.currentText() if self._thumb_mode_combo else "",
             "auto_if_missing",
+        )
+
+        thumb_base_priority = {
+            "From video only": "video_only",
+            "Prefer session thumbnail, else video": "session_first",
+        }.get(
+            self._thumb_base_combo.currentText() if self._thumb_base_combo else "",
+            "video_only",
         )
 
         gen_backend = "ollama"
@@ -1310,6 +1478,15 @@ class PublishInfoStep(BaseStep):
             "thumb_mode": thumb_mode,
             "thumb_at_sec": (
                 self._thumb_at_spin.value() if self._thumb_at_spin else 12.0
+            ),
+            "thumb_base_priority": thumb_base_priority,
+            "thumb_ocr_zh_vi": (
+                self._thumb_ocr_chk.isChecked() if self._thumb_ocr_chk else False
+            ),
+            "translate_session_zh_meta": (
+                self._translate_meta_chk.isChecked()
+                if self._translate_meta_chk
+                else False
             ),
             "thumb_bg_path": self._thumb_bg_path
             or self._shared_thumb_background_path(),

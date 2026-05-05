@@ -1,0 +1,14 @@
+# Optional — Step ⑦ Publish thumbnail: PaddleOCR (Chinese) → Vietnamese overlay on image
+#
+# Install (pick instructions matching your OS / CPU / GPU):
+#   https://www.paddlepaddle.org.cn/install/quick
+#   https://github.com/PaddlePaddle/PaddleOCR/blob/main/readme/README_en.md
+#
+# Example CPU:
+#   pip install paddlepaddle paddleocr numpy
+#
+# First run downloads OCR models (~tens of MB) under the user cache (often ~/.paddleocr/).
+
+paddlepaddle
+paddleocr
+numpy

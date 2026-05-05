@@ -109,6 +109,8 @@ pip install -r requirements.txt
 
 > Lần đầu có thể mất 5-10 phút do tải PyTorch + Whisper.
 
+**Tuỳ chọn — Step ⑦ Publish Info (thumbnail có chữ Trung → xoá + vẽ tiếng Việt):** bật checkbox **OCR** trong Step ⑦ cần thêm **PaddleOCR**. Cài theo máy của bạn (CPU/GPU khác nhau), tham khảo file **`requirements-optional-step7-ocr.txt`** và tài liệu chính thức Paddle. Lần chạy đầu OCR sẽ tải model (vài chục MB). Dịch chữ trong ảnh dùng cùng **Generator** đã chọn (Ollama hoặc Gemini).
+
 ---
 
 ### Bước 5 — Chạy app
