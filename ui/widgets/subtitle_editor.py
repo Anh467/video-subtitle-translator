@@ -571,6 +571,34 @@ class SubtitleEditor(QWidget):
                 [pos.itemText(i) for i in range(pos.count())]
             )
 
+    def _sync_studio_font_from_step3(self):
+        """Copy Step ③ burn settings into Studio tab (same values user sees on pipeline card)."""
+        if self._step3 is None:
+            return
+        try:
+            ff = getattr(self._step3, "_font_family_combo", None)
+            fs = getattr(self._step3, "_font_pct_spin", None)
+            pos = getattr(self._step3, "_pos_combo", None)
+            if fs:
+                self._studio_font_pct.blockSignals(True)
+                self._studio_font_pct.setValue(float(fs.value()))
+                self._studio_font_pct.blockSignals(False)
+            if ff and ff.currentText():
+                self._studio_font_combo.blockSignals(True)
+                self._studio_font_combo.setCurrentText(ff.currentText())
+                self._studio_font_combo.blockSignals(False)
+            if pos and pos.currentText():
+                self._studio_pos_combo.blockSignals(True)
+                self._studio_pos_combo.setCurrentText(pos.currentText())
+                self._studio_pos_combo.blockSignals(False)
+            refresh = getattr(self._step3, "_refresh_preview", None)
+            if callable(refresh):
+                refresh()
+        except Exception:
+            pass
+        self._update_live_overlay()
+        self._render_studio_preview(force=True)
+
     def _apply_studio_to_step3(self):
         if self._step3 is None:
             return
@@ -605,14 +633,10 @@ class SubtitleEditor(QWidget):
             studio = {}
 
         self._studio_title_edit.setText(studio.get("title", session.title or ""))
-        if studio.get("font_family"):
-            self._studio_font_combo.setCurrentText(studio.get("font_family"))
-        if studio.get("font_pct") is not None:
-            self._studio_font_pct.setValue(float(studio.get("font_pct")))
-        if studio.get("position"):
-            self._studio_pos_combo.setCurrentText(studio.get("position"))
+        # Do not push subtitle_studio font onto Step ③ — it overwrote workspace / user %
+        # (session.json often still has an old 2.0). Burn card + .subsync_step_configs win.
+        self._sync_studio_font_from_step3()
         self._studio_dirty = False
-        self._apply_studio_to_step3()
 
     def _format_ms(self, ms: int) -> str:
         s = max(0, ms) / 1000.0

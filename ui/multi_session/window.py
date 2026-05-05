@@ -510,32 +510,6 @@ class MultiSessionWindow(QMainWindow):
                 setter(source_file)
             break
 
-    def _apply_session_studio_to_step3(self, session: Session):
-        """Load per-session studio style and push into Step 3 controls."""
-        try:
-            studio = session.load_subtitle_studio()
-        except Exception:
-            studio = {}
-        if not studio:
-            return
-
-        for step in self._steps:
-            if getattr(step, "STEP_ID", "") != "step3_burn":
-                continue
-            ff = getattr(step, "_font_family_combo", None)
-            if ff and studio.get("font_family"):
-                ff.setCurrentText(str(studio.get("font_family")))
-            fs = getattr(step, "_font_pct_spin", None)
-            if fs and studio.get("font_pct") is not None:
-                fs.setValue(float(studio.get("font_pct")))
-            pos = getattr(step, "_pos_combo", None)
-            if pos and studio.get("position"):
-                pos.setCurrentText(str(studio.get("position")))
-            refresh = getattr(step, "_refresh_preview", None)
-            if callable(refresh):
-                refresh()
-            break
-
     def _on_session_deleted(self, folder: str):
         """Remove queued jobs for a deleted workspace folder and clear previews if needed."""
         try:
@@ -885,7 +859,6 @@ class MultiSessionWindow(QMainWindow):
 
         self._current_session = session
         self._set_step3_source_file(session.source_file)
-        self._apply_session_studio_to_step3(session)
         st = self._multi_session_stats.get(folder)
         if st and not st["start_at"]:
             st["start_at"] = time.perf_counter()

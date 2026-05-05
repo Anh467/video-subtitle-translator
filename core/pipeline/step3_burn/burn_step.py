@@ -30,7 +30,6 @@ from core.pipeline.step3_burn.channel_profiles import (
     store_profile_image,
 )
 from core.pipeline.step3_burn.constants import (
-    ASS_PLAYRES_Y,
     BG_BOX_STYLES,
     BG_COLORS,
     BRAND_POSITIONS,
@@ -271,12 +270,13 @@ class BurnStep(BaseStep):
         )
 
         font_pct = config.get("font_pct", 2.0)
-        # subtitles filter (libass) expects style size in ASS script space.
-        # Convert percent to PlayResY-space so on-screen size tracks video percent.
-        font_size = max(6, int(ASS_PLAYRES_Y * font_pct / 100))
+        # ASS PlayRes matches video_w×video_h (srt_writer) — Fontsize must use same h
+        # so % of frame height matches preview (video_h * font_pct / 100).
+        font_size = max(6, int(h * font_pct / 100))
         approx_px = int(h * font_pct / 100)
         log(
-            f"   Font size: {font_pct}% of video height (~{approx_px}px onscreen), ASS size={font_size}"
+            f"   Font size: {font_pct}% of video height (~{approx_px}px), ASS Fontsize={font_size} "
+            f"(PlayRes {w}x{h})"
         )
 
         # Delogo config
@@ -392,7 +392,7 @@ class BurnStep(BaseStep):
                         "opacity": config.get("brand_opacity", 30),
                         "pos": config.get("brand_pos", "random"),
                         "margin_pct": config.get("brand_margin_pct", 2.0),
-                        "name_pct": config.get("brand_name_pct", 2.0),
+                        "name_pct": config.get("brand_name_pct", 4.0),
                     },
                 )
             log(f"   $ {' '.join(str(c) for c in cmd)}")
@@ -768,11 +768,15 @@ class BurnStep(BaseStep):
         self._brand_name_pct_spin = QDoubleSpinBox()
         self._brand_name_pct_spin.setDecimals(1)
         self._brand_name_pct_spin.setSingleStep(0.5)
-        self._brand_name_pct_spin.setRange(1.0, 10.0)
-        self._brand_name_pct_spin.setValue(2.0)
+        self._brand_name_pct_spin.setRange(0.5, 25.0)
+        self._brand_name_pct_spin.setValue(4.0)
         self._brand_name_pct_spin.setFixedWidth(70)
+        self._brand_name_pct_spin.setToolTip(
+            "Kích thước chữ tên kênh (drawtext FFmpeg), tính theo %% chiều cao video — "
+            "khác hẳn ô «Font» %% phụ đề phía trên. Tăng % này nếu tên trên file ra quá nhỏ."
+        )
         r_b.addWidget(self._brand_name_pct_spin)
-        r_b.addWidget(QLabel("% of video height"))
+        r_b.addWidget(QLabel("% of video height (branding only)"))
         r_b.addSpacing(12)
         r_b.addWidget(QLabel("Position:"))
         self._brand_pos_combo = QComboBox()
@@ -793,6 +797,27 @@ class BurnStep(BaseStep):
         v.addLayout(r_b)
 
         self._refresh_profiles_ui()
+
+        def _schedule_brand_preview():
+            if self._preview_timer:
+                self._preview_timer.stop()
+                self._preview_timer.start()
+
+        if self._brand_enable_chk:
+            self._brand_enable_chk.toggled.connect(_schedule_brand_preview)
+        if self._brand_name_edit:
+            self._brand_name_edit.textChanged.connect(_schedule_brand_preview)
+        if self._brand_name_pct_spin:
+            self._brand_name_pct_spin.valueChanged.connect(_schedule_brand_preview)
+        if self._brand_avatar_pct_spin:
+            self._brand_avatar_pct_spin.valueChanged.connect(_schedule_brand_preview)
+        if self._brand_opacity_spin:
+            self._brand_opacity_spin.valueChanged.connect(_schedule_brand_preview)
+        if self._brand_pos_combo:
+            self._brand_pos_combo.currentIndexChanged.connect(_schedule_brand_preview)
+        if self._brand_margin_pct_spin:
+            self._brand_margin_pct_spin.valueChanged.connect(_schedule_brand_preview)
+
         return w
 
     def _sep_label(self, text):
@@ -929,7 +954,8 @@ class BurnStep(BaseStep):
         painter.setPen(QPen(QColor(110, 130, 155), 1))
         painter.drawRect(vx, vy, video_w, video_h)
 
-        font = QFont(family, font_size_px)
+        font = QFont(family)
+        font.setPixelSize(max(1, int(font_size_px)))
         font.setBold(bold)
         font.setItalic(italic)
         painter.setFont(font)
@@ -989,6 +1015,75 @@ class BurnStep(BaseStep):
         # Main text
         painter.setPen(fg_color)
         painter.drawText(x, y, text)
+
+        # Channel name overlay (same % rule as ffmpeg_burn.drawtext — independent of subtitle %)
+        brand_on = self._brand_enable_chk.isChecked() if self._brand_enable_chk else False
+        ch_name = (
+            self._brand_name_edit.text().strip() if self._brand_name_edit else ""
+        )
+        if brand_on and ch_name:
+            name_pct = (
+                float(self._brand_name_pct_spin.value())
+                if self._brand_name_pct_spin
+                else 4.0
+            )
+            name_px = max(12, int(video_h * name_pct / 100.0))
+            margin_pct = (
+                float(self._brand_margin_pct_spin.value())
+                if self._brand_margin_pct_spin
+                else 2.0
+            )
+            margin = max(2, int(min(video_w, video_h) * margin_pct / 100.0))
+            op = (
+                max(0, min(100, int(self._brand_opacity_spin.value())))
+                if self._brand_opacity_spin
+                else 30
+            )
+            alpha = int(255 * op / 100)
+
+            bfont = QFont("Arial")
+            bfont.setPixelSize(name_px)
+            painter.setFont(bfont)
+            bfm = QFontMetrics(bfont)
+            tw = bfm.horizontalAdvance(ch_name)
+            th = bfm.height()
+            pad_x, pad_y = 10, 6
+            pos_lbl = (
+                self._brand_pos_combo.currentText()
+                if self._brand_pos_combo
+                else "Random"
+            ).lower()
+            if "bottom" in pos_lbl and "right" in pos_lbl:
+                bx = vx + video_w - tw - pad_x * 2 - margin
+                by = vy + video_h - th - pad_y * 2 - margin
+            elif "bottom" in pos_lbl and "left" in pos_lbl:
+                bx = vx + margin
+                by = vy + video_h - th - pad_y * 2 - margin
+            elif "top" in pos_lbl and "right" in pos_lbl:
+                bx = vx + video_w - tw - pad_x * 2 - margin
+                by = vy + margin
+            elif "random" in pos_lbl:
+                # FFmpeg dùng chuyển động sin/cos — preview chỉ minh họa góc phải trên.
+                bx = vx + video_w - tw - pad_x * 2 - margin
+                by = vy + margin
+            else:
+                bx = vx + margin
+                by = vy + margin
+
+            box_rect_x = bx - pad_x
+            box_rect_y = by - pad_y
+            box_w = tw + pad_x * 2
+            box_h = th + pad_y * 2
+            painter.fillRect(
+                box_rect_x,
+                box_rect_y,
+                box_w,
+                box_h,
+                QColor(0, 0, 0, min(200, max(40, alpha + 40))),
+            )
+            painter.setPen(QColor(255, 255, 255, min(255, alpha + 50)))
+            painter.drawText(bx, by + bfm.ascent(), ch_name)
+
         painter.end()
 
         self._preview_lbl.setPixmap(QPixmap.fromImage(img))
@@ -1177,6 +1272,6 @@ class BurnStep(BaseStep):
                 else 2.0
             ),
             "brand_name_pct": (
-                self._brand_name_pct_spin.value() if self._brand_name_pct_spin else 2.0
+                self._brand_name_pct_spin.value() if self._brand_name_pct_spin else 4.0
             ),
         }

@@ -84,7 +84,7 @@ def hard_burn_cmd(
 
     opacity = max(0.0, min(1.0, float(branding.get("opacity", 30)) / 100.0))
     avatar_w = max(24, int(video_w * float(branding.get("avatar_pct", 9.0)) / 100.0))
-    name_size = max(12, int(video_h * float(branding.get("name_pct", 2.0)) / 100.0))
+    name_size = max(12, int(video_h * float(branding.get("name_pct", 4.0)) / 100.0))
     margin = max(
         0, int(min(video_w, video_h) * float(branding.get("margin_pct", 2.0)) / 100.0)
     )
