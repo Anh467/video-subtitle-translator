@@ -1,5 +1,8 @@
 """Mix modes and path helpers for Step 6."""
 
+# TTS stems are often quieter than BGM/original after ffmpeg amix.
+TTS_VOLUME_BOOST = 1.35
+
 MIX_MODES = {
     "TTS only (replace original)": "replace",
     "TTS + Background music (Step 4)": "bgm_only",

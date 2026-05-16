@@ -26,7 +26,12 @@ from PyQt6.QtWidgets import (
 from core.ffmpeg_utils import ffmpeg_executable, ffprobe_executable
 from core.pipeline.base import BaseStep, CancelledError
 from core.pipeline.demucs_invoke import run_demucs_in_process
-from core.pipeline.step6_add_voice.constants import BACKEND_LABELS, MIX_MODES, VIDEO_EXTS
+from core.pipeline.step6_add_voice.constants import (
+    BACKEND_LABELS,
+    MIX_MODES,
+    TTS_VOLUME_BOOST,
+    VIDEO_EXTS,
+)
 from core.pipeline.tts_assets import (
     compose_timeline_audio,
     resolve_manifests,
@@ -53,7 +58,7 @@ class AddVoiceStep(BaseStep):
         manifest_pick = (config.get("manifest_pick") or "").strip() or None
         sync_mode = config.get("sync_mode", "trim")
         mix_mode = config.get("mix_mode", "bgm_only")
-        tts_vol = config.get("tts_vol", 1.0)
+        tts_vol = self._effective_tts_volume(config.get("tts_vol", 1.0))
         bgm_vol = config.get("bgm_vol", 0.3)
         orig_vol = config.get("orig_vol", 0.1)
 
@@ -198,12 +203,17 @@ class AddVoiceStep(BaseStep):
             temp_files.append(composed_path)
         return composed_path, temp_files
 
+    @staticmethod
+    def _effective_tts_volume(slider_value: float) -> float:
+        """Map UI 0–200% slider to ffmpeg gain (with headroom for quiet TTS)."""
+        return min(2.0, max(0.0, float(slider_value)) * TTS_VOLUME_BOOST)
+
     def _mix_audio(self, session, tts_path, mix_mode, tts_vol, bgm_vol, orig_vol, log):
         temp_files = []
         has_bgm = session.step4_done and Path(session.step4_background).exists()
 
         if mix_mode == "replace":
-            if tts_vol == 1.0:
+            if abs(tts_vol - 1.0) < 0.02:
                 return tts_path, temp_files
             out = self._apply_volume(tts_path, tts_vol)
             if out != tts_path:
@@ -362,7 +372,8 @@ class AddVoiceStep(BaseStep):
             filter_parts.append(f"[{i}:a]volume={vol:.3f}[a{i}]")
         mix_inputs = "".join(f"[a{i}]" for i in range(len(tracks)))
         filter_parts.append(
-            f"{mix_inputs}amix=inputs={len(tracks)}:duration=first:dropout_transition=2[out]"
+            f"{mix_inputs}amix=inputs={len(tracks)}:duration=first:"
+            f"dropout_transition=2:normalize=0[out]"
         )
         cmd = (
             [ffmpeg_executable(), "-y"]
@@ -613,7 +624,7 @@ class AddVoiceStep(BaseStep):
         v.addWidget(mw)
 
         v.addWidget(self._sep_label("🔊  Volume"))
-        self._tts_vol_slider = self._vol_row(v, "TTS voice:", 124)
+        self._tts_vol_slider = self._vol_row(v, "TTS voice:", 150, max_pct=200)
         self._bgm_vol_slider = self._vol_row(v, "Background music:", 145)
         self._orig_vol_slider = self._vol_row(v, "Original voice:", 31)
         return w
@@ -623,13 +634,13 @@ class AddVoiceStep(BaseStep):
         l.setStyleSheet("color:#a0a8ff;font-size:11px;font-weight:600;margin-top:4px;")
         return l
 
-    def _vol_row(self, parent_layout, label, default_pct):
+    def _vol_row(self, parent_layout, label, default_pct, max_pct=150):
         row = QHBoxLayout()
         lbl = QLabel(label)
         lbl.setFixedWidth(130)
         row.addWidget(lbl)
         slider = QSlider(Qt.Orientation.Horizontal)
-        slider.setRange(0, 150)
+        slider.setRange(0, max_pct)
         slider.setValue(default_pct)
         row.addWidget(slider)
         val_lbl = QLabel(f"{default_pct}%")
