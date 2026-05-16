@@ -40,7 +40,7 @@ from ui.widgets.session_info_editor import SessionInfoEditor
 from ui.widgets.step_card import StepCard
 from ui.dialogs.api_keys_dialog import ApiKeysDialog
 from ui.dialogs.session_picker_dialog import SessionPickerDialog
-from ui.theme import STYLESHEET
+from ui.theme import STYLESHEET, apply_app_theme
 from ui.widgets.subtitle_editor import SubtitleEditor
 
 
@@ -52,7 +52,11 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("SubSync  —  AI Video Pipeline")
         self.setMinimumSize(860, 580)
-        self.setStyleSheet(STYLESHEET)
+        app = QApplication.instance()
+        if app and not app.styleSheet():
+            apply_app_theme(app)
+        else:
+            self.setStyleSheet(STYLESHEET)
 
         self._file = None
         self._session = None

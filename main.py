@@ -13,10 +13,13 @@ except Exception:
 
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
+from ui.theme import apply_app_theme
+
 
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("SubSync")
+    apply_app_theme(app)
     try:
         from ui.main_window import MainWindow
     except Exception as e:

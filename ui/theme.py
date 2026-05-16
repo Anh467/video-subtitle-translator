@@ -1,5 +1,9 @@
 """Shared Qt stylesheet for SubSync."""
 
+import sys
+
+from PyQt6.QtWidgets import QApplication, QComboBox, QStyleFactory
+
 STYLESHEET = """
 QMainWindow,QWidget{background:#1a1a2e;color:#e0e0e0;
 font-family:'SF Pro Display','Segoe UI',Arial,sans-serif;font-size:13px;}
@@ -17,9 +21,17 @@ QLineEdit:read-only{color:#aaa;background:#111828;}
 QComboBox{background:#16213e;border:1px solid #2d2d4e;border-radius:5px;
 padding:4px 10px;color:#e0e0e0;}
 QComboBox:hover{border-color:#6c63ff;}
+QComboBox:on{background:#16213e;}
 QComboBox QAbstractItemView{background:#16213e;border:1px solid #6c63ff;
-color:#e0e0e0;selection-background-color:#6c63ff;}
-QComboBox::drop-down{border:none;}
+color:#e0e0e0;selection-background-color:#6c63ff;selection-color:#ffffff;
+outline:0;padding:2px;}
+QComboBox::drop-down{border:none;width:20px;}
+QComboBox::down-arrow{image:none;border-left:4px solid transparent;
+border-right:4px solid transparent;border-top:6px solid #a0a8ff;margin-right:8px;}
+QComboBox QAbstractItemView::item{min-height:22px;padding:4px 8px;
+background:#16213e;color:#e0e0e0;}
+QComboBox QAbstractItemView::item:selected{background:#6c63ff;color:#ffffff;}
+QComboBox QAbstractItemView::item:hover{background:#2d2d6e;color:#ffffff;}
 QTextEdit{background:#0f0f23;border:1px solid #2d2d4e;border-radius:6px;
 padding:8px;color:#d0d0d0;font-family:'SF Mono','Consolas',monospace;font-size:12px;}
 QProgressBar{border:1px solid #2d2d4e;border-radius:4px;background:#16213e;
@@ -55,3 +67,25 @@ QDoubleSpinBox{background:#16213e;border:1px solid #2d2d4e;border-radius:5px;
 padding:4px 6px;color:#e0e0e0;min-width:70px;}
 QDoubleSpinBox:focus{border-color:#6c63ff;}
 """
+
+_COMBO_POPUP_STYLE = (
+    "background-color:#16213e;color:#e0e0e0;"
+    "selection-background-color:#6c63ff;selection-color:#ffffff;"
+    "outline:0;border:1px solid #6c63ff;"
+)
+
+
+def configure_combo_popup(combo: QComboBox) -> None:
+    """Force dark popup list (macOS native popup ignores app stylesheet)."""
+    view = combo.view()
+    if view is not None:
+        view.setStyleSheet(_COMBO_POPUP_STYLE)
+
+
+def apply_app_theme(app: QApplication) -> None:
+    """Apply global theme; Fusion on macOS avoids white native combo popups."""
+    if sys.platform == "darwin":
+        fusion = QStyleFactory.create("Fusion")
+        if fusion is not None:
+            app.setStyle(fusion)
+    app.setStyleSheet(STYLESHEET)
