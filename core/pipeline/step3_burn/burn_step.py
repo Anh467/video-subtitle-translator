@@ -1086,6 +1086,17 @@ class BurnStep(BaseStep):
             self._brand_margin_pct_spin.setValue(float(config["brand_margin_pct"]))
         if self._brand_name_pct_spin and config.get("brand_name_pct") is not None:
             self._brand_name_pct_spin.setValue(float(config["brand_name_pct"]))
+        if self._preview_text_edit and config.get("preview_text") is not None:
+            self._preview_text_edit.setText(str(config["preview_text"]))
+        if self._brand_profile_combo and config.get("brand_profile"):
+            name = str(config["brand_profile"]).strip()
+            if name and name != "(No profile)":
+                idx = self._brand_profile_combo.findText(name)
+                if idx >= 0:
+                    self._brand_profile_combo.setCurrentIndex(idx)
+                else:
+                    self._brand_profile_combo.setCurrentText(name)
+                self._on_profile_selected(self._brand_profile_combo.currentIndex())
         if self._preview_lbl:
             QTimer.singleShot(0, self._refresh_preview)
 
@@ -1191,5 +1202,14 @@ class BurnStep(BaseStep):
             ),
             "brand_name_pct": (
                 self._brand_name_pct_spin.value() if self._brand_name_pct_spin else 2.0
+            ),
+            "preview_text": (
+                self._preview_text_edit.text() if self._preview_text_edit else ""
+            ),
+            "brand_profile": (
+                self._brand_profile_combo.currentText().strip()
+                if self._brand_profile_combo
+                and self._brand_profile_combo.currentText().strip() != "(No profile)"
+                else ""
             ),
         }

@@ -1265,6 +1265,9 @@ class PublishInfoStep(BaseStep):
             self._thumb_at_spin.setValue(float(config["thumb_at_sec"]))
         if self._overwrite_chk and config.get("overwrite") is not None:
             self._overwrite_chk.setChecked(bool(config["overwrite"]))
+        if self._base_dir:
+            self._load_shared_thumb_background()
+            self._refresh_thumb_bg_preview()
         # api_key: skip — handled by autofill from ApiKeyManager
 
     def collect_config(self):

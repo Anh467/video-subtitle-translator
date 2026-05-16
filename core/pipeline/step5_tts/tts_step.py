@@ -1032,6 +1032,24 @@ class TTSStep(BaseStep):
                 self._cost_lbl.setText(f"💸 Cost: {cost}")
                 self._cost_lbl.setStyleSheet("color:#ffaa55;font-size:10px;")
 
+    def _restore_voice_id(self, voice_id: str, backend: str) -> None:
+        vid = (voice_id or "").strip()
+        if not vid:
+            return
+        if backend == "elevenlabs":
+            if self._voice_edit:
+                self._voice_edit.setText(vid)
+            self._selected_elevenlabs_voice_id = vid
+            return
+        if self._voice_combo:
+            for i in range(self._voice_combo.count()):
+                txt = self._voice_combo.itemText(i)
+                if self._parse_voice_id(txt) == vid or vid in txt:
+                    self._voice_combo.setCurrentIndex(i)
+                    self._selected_voice_id = vid
+                    return
+        self._selected_voice_id = vid
+
     def apply_config(self, config: dict) -> None:
         if not config:
             return
@@ -1039,32 +1057,46 @@ class TTSStep(BaseStep):
 
         _LABEL_BY_KEY = {v: k for k, v in TTS_BACKEND_LABEL_TO_KEY.items()}
         be = config.get("backend", "")
-        label = _LABEL_BY_KEY.get(be, "")
+        label = (config.get("backend_label") or "").strip()
+        if not label:
+            if be == "all":
+                label = "All backends (batch run)"
+            else:
+                label = _LABEL_BY_KEY.get(be, "")
         if label and self._backend_combo:
             self._backend_combo.setCurrentText(label)
-        # language
+            self._on_backend_changed(self._backend_combo.currentIndex())
         _LANG_BY_CODE = {v: k for k, v in GTTS_LANGS.items()}
         if self._lang_combo and config.get("lang"):
             lbl = _LANG_BY_CODE.get(config["lang"], "Vietnamese")
             self._lang_combo.setCurrentText(lbl)
-        # voice_id (stored attrs, UI shows after backend dialog)
+            self._selected_lang = lbl
         if config.get("voice_id"):
-            if be == "elevenlabs":
-                self._selected_elevenlabs_voice_id = config["voice_id"]
-            else:
-                self._selected_voice_id = config["voice_id"]
+            self._restore_voice_id(str(config["voice_id"]), be)
 
     def collect_config(self):
-        key_text = self._selected_backend_label
+        key_text = (
+            self._backend_combo.currentText() if self._backend_combo else ""
+        ) or self._selected_backend_label
         backend = tts_backend_from_label(key_text)
+        lang_label = (
+            self._lang_combo.currentText() if self._lang_combo else self._selected_lang
+        )
         voice_id = ""
-        if backend in ("fpt", "zalo", "google_cloud_tts"):
-            voice_id = self._selected_voice_id
-        elif backend == "elevenlabs":
-            voice_id = self._selected_elevenlabs_voice_id
+        if backend == "elevenlabs":
+            if self._voice_edit and self._voice_edit.isVisible():
+                voice_id = self._voice_edit.text().strip()
+            if not voice_id:
+                voice_id = self._selected_elevenlabs_voice_id
+        elif backend in ("fpt", "zalo", "google_cloud_tts"):
+            if self._voice_combo and self._voice_combo.isVisible():
+                voice_id = self._parse_voice_id(self._voice_combo.currentText())
+            if not voice_id:
+                voice_id = self._selected_voice_id
         return {
             "backend": backend,
-            "lang": GTTS_LANGS.get(self._selected_lang, "vi"),
+            "backend_label": key_text,
+            "lang": GTTS_LANGS.get(lang_label, "vi"),
             "api_key": (self._selected_api_key or "").strip() or None,
             "voice_id": voice_id or None,
         }
