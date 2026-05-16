@@ -181,11 +181,23 @@ class BurnStep(BaseStep):
                 None, "Avatar not found", "Avatar image path does not exist."
             )
             return
-        store_profile_image(self._base_dir, avatar, name)
+        try:
+            stored = store_profile_image(self._base_dir, avatar, name)
+        except Exception as e:
+            QMessageBox.critical(
+                None, "Save profile failed", f"Could not save channel profile:\n{e}"
+            )
+            return
         self._profiles = load_channel_profiles(self._base_dir)
         self._refresh_profiles_ui()
         if self._brand_profile_combo:
-            self._brand_profile_combo.setCurrentText(name)
+            self._brand_profile_combo.blockSignals(True)
+            idx = self._brand_profile_combo.findText(name)
+            if idx >= 0:
+                self._brand_profile_combo.setCurrentIndex(idx)
+            self._brand_profile_combo.blockSignals(False)
+        if self._brand_avatar_edit:
+            self._brand_avatar_edit.setText(stored)
 
     def _on_delogo_toggled(self, checked: bool):
         if self._delogo_frame:

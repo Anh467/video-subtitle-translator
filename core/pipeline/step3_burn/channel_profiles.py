@@ -59,14 +59,18 @@ def store_profile_image(base_dir: str, src_path: str, profile_name: str) -> str:
     root.mkdir(parents=True, exist_ok=True)
     profile_dir = root / safe_profile_dir_name(profile_name)
     profile_dir.mkdir(parents=True, exist_ok=True)
-    src = Path(src_path)
+    src = Path(src_path).resolve()
     ext = src.suffix.lower() or ".png"
-    dst = profile_dir / f"avatar{ext}"
+    dst = (profile_dir / f"avatar{ext}").resolve()
+    name_file = profile_dir / "channel_name.txt"
+    name_file.write_text(profile_name.strip(), encoding="utf-8")
+    if not src.exists():
+        raise FileNotFoundError(f"Avatar image not found: {src}")
+    # Re-saving the same profile points at the stored avatar; copy-to-self corrupts on macOS.
+    if src == dst:
+        return str(dst)
     for old in profile_dir.glob("avatar.*"):
-        if old.resolve() != dst.resolve():
+        if old.resolve() != dst:
             old.unlink(missing_ok=True)
     shutil.copy2(src, dst)
-    (profile_dir / "channel_name.txt").write_text(
-        profile_name.strip(), encoding="utf-8"
-    )
     return str(dst)
