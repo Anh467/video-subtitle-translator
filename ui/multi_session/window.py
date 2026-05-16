@@ -181,8 +181,10 @@ class MultiSessionWindow(QMainWindow):
         cards_h.setSpacing(12)
         cards_h.setContentsMargins(4, 4, 4, 4)
 
+        persist_cb = self._schedule_persist_step_configs
         for step in self._steps:
             card = StepCard(step)
+            card.bind_config_autosave(persist_cb)
             self._cards.append(card)
             cards_h.addWidget(card)
         cards_h.addStretch()
@@ -361,6 +363,18 @@ class MultiSessionWindow(QMainWindow):
         self._base_dir = base_dir
         self._session_panel.set_base_dir(base_dir)
         self._autofill_keys()
+        if base_dir:
+            from core.config_store import load_step_configs
+
+            load_step_configs(base_dir, self._steps, self._cards)
+
+    def _schedule_persist_step_configs(self):
+        p = self.parent()
+        fn = getattr(p, "_schedule_persist_step_configs", None)
+        if callable(fn):
+            fn()
+        else:
+            self._persist_parent_step_configs()
 
     def _autofill_keys(self):
         """Push API keys from manager into step widgets.

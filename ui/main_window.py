@@ -4,7 +4,7 @@ import os
 import time
 from pathlib import Path
 
-from PyQt6.QtCore import QEvent, QObject, Qt, QThreadPool
+from PyQt6.QtCore import QEvent, QObject, Qt, QThreadPool, QTimer
 from PyQt6.QtWidgets import (
     QApplication,
     QDialog,
@@ -79,6 +79,10 @@ class MainWindow(QMainWindow):
         ]
         self._cards: list[StepCard] = []
         self._multi_window: MultiSessionWindow | None = None
+        self._config_save_timer = QTimer(self)
+        self._config_save_timer.setSingleShot(True)
+        self._config_save_timer.setInterval(650)
+        self._config_save_timer.timeout.connect(self._persist_step_configs)
         self._setup_ui()
         self._restore_last_workspace()
         app = QApplication.instance()
@@ -251,6 +255,7 @@ class MainWindow(QMainWindow):
         for step in self._steps:
             card = StepCard(step)
             card.on_run = lambda s=step: self._run_step(s)
+            card.bind_config_autosave(self._schedule_persist_step_configs)
             self._cards.append(card)
             cards_h.addWidget(card)
             # When Step 2 backend changes, re-autofill the API key field
@@ -581,11 +586,25 @@ class MainWindow(QMainWindow):
             # Restore step configs saved for this workspace
             from core.config_store import load_step_configs
 
-            if load_step_configs(d, self._steps):
+            if load_step_configs(d, self._steps, self._all_step_cards()):
                 self._log("⚙️  Step settings restored from workspace")
             self._status_bar.showMessage(f"Base folder: {d}")
             if self._multi_window is not None:
                 self._multi_window.update_base_dir(d)
+
+    def _all_step_cards(self) -> list:
+        cards = list(self._cards)
+        multi = self._multi_window
+        if multi is not None:
+            cards.extend(getattr(multi, "_cards", []))
+        return cards
+
+    def _schedule_persist_step_configs(self):
+        """Debounced save of step UI to the current workspace folder."""
+        base = self._sess_dir_edit.text().strip()
+        if not base or not os.path.isdir(base):
+            return
+        self._config_save_timer.start()
 
     def _persist_step_configs(self):
         """Write step UI to workspace .subsync_step_configs.json (safe to call often)."""
@@ -595,7 +614,7 @@ class MainWindow(QMainWindow):
         try:
             from core.config_store import save_step_configs
 
-            save_step_configs(base, self._steps)
+            save_step_configs(base, self._steps, self._all_step_cards())
         except Exception:
             pass
 
@@ -638,8 +657,10 @@ class MainWindow(QMainWindow):
             self._load_api_keys(last)
             from core.config_store import load_step_configs
 
-            load_step_configs(last, self._steps)
-            self._status_bar.showMessage(f"Restored workspace: {last}")
+            if load_step_configs(last, self._steps, self._all_step_cards()):
+                self._status_bar.showMessage(f"Restored workspace: {last}")
+            else:
+                self._status_bar.showMessage(f"Workspace: {last}")
 
     def _set_steps_base_dir(self, base_dir: str):
         """Pass base directory to steps that keep shared assets/config."""

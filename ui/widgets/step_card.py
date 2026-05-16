@@ -37,6 +37,7 @@ class StepCard(QWidget):
         super().__init__(parent)
         self.step = step
         self.on_run = None  # callable — set by MainWindow
+        self.on_config_changed = None  # callable — workspace autosave hook
 
         self._setup_ui()
 
@@ -87,6 +88,7 @@ class StepCard(QWidget):
         )
         scroll.setWidget(config_w)
         frame_v.addWidget(scroll, stretch=0)
+        self._config_widget = config_w
 
         # Run button
         self._run_btn = QPushButton(f"▶  Run {self.step.LABEL}")
@@ -139,6 +141,13 @@ class StepCard(QWidget):
         self._run_btn.setEnabled(not busy)
         self._run_btn.setText("⏳ Running…" if busy else f"▶  Run {self.step.LABEL}")
 
+    def bind_config_autosave(self, on_change) -> None:
+        """Wire dropdowns/sliders/checkboxes to workspace persistence (call after create)."""
+        self.on_config_changed = on_change
+        from ui.step_config_wiring import wire_widget_tree
+
+        wire_widget_tree(getattr(self, "_config_widget", None), on_change)
+
     def is_enabled(self) -> bool:
         return self._enable_chk.isChecked()
 
@@ -160,6 +169,8 @@ class StepCard(QWidget):
             f"border-radius:8px;"
             f"background:{'#131324' if enabled else '#0e0e1e'};}}"
         )
+        if self.on_config_changed:
+            self.on_config_changed()
 
     @staticmethod
     def _darken(hex_color: str) -> str:
