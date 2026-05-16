@@ -38,11 +38,27 @@ class MultiPublishThread(QThread):
     def run(self):
         ok = 0
         fail = 0
+        skipped = 0
         total = len(self._tasks)
+        blocked: dict[str, str] = {}  # platform -> reason (fatal)
 
         def on_step(msg: str) -> None:
             self.log_line.emit(f"[PUBLISH][STEP] {msg}")
             self.publish_step.emit(msg)
+
+        def fatal_reason(platform: str, err: str) -> str:
+            pl0 = (platform or "").strip().lower()
+            e = (err or "").lower()
+            if pl0 == "facebook":
+                # Graph API OAuth token expired/invalid
+                if "error validating access token" in e and '"code": 190' in e:
+                    return "Facebook token hết hạn/invalid (code 190) — dừng các job Facebook còn lại"
+                if '"code": 190' in e and '"error_subcode": 463' in e:
+                    return "Facebook token expired (subcode 463) — dừng các job Facebook còn lại"
+            if pl0 == "youtube":
+                if "uploadlimitexceeded" in e or "exceeded the number of videos they may upload" in e:
+                    return "YouTube uploadLimitExceeded — dừng các job YouTube còn lại"
+            return ""
 
         for ti, t in enumerate(self._tasks):
             if self.isInterruptionRequested():
@@ -78,6 +94,30 @@ class MultiPublishThread(QThread):
 
             self.publish_job_progress.emit(ti, total)
             self.publish_step.emit(f"{pl}: chuẩn bị upload — {label[:40]}")
+
+            pl_norm = (pl or "").strip().lower()
+            if pl_norm in blocked:
+                skipped += 1
+                now = datetime.now().isoformat(timespec="seconds")
+                reason = blocked[pl_norm]
+                self.log_line.emit(
+                    f"[PUBLISH][SKIP] session={label!r} platform={pl_norm} — {reason}"
+                )
+                try:
+                    sess = Session.load(folder)
+                    if jid:
+                        sess.patch_publish_job(
+                            jid,
+                            status="skipped",
+                            last_error=reason[:4000],
+                            executed_at=now,
+                            remote_asset_id="",
+                            result_message=("skipped: " + reason)[:2000],
+                        )
+                except Exception:
+                    pass
+                continue
+
             self.log_line.emit(
                 f"[PUBLISH] Bắt đầu session={label!r} folder={folder} "
                 f"platform={pl} job_id={jid} timing={timing} video={vid}"
@@ -186,6 +226,10 @@ class MultiPublishThread(QThread):
                 self.log_line.emit(
                     f"[PUBLISH][FAIL] session={label!r} platform={pl} — {err[:2000]}"
                 )
+                fr = fatal_reason(pl_norm, err)
+                if fr and pl_norm not in blocked:
+                    blocked[pl_norm] = fr
+                    self.log_line.emit(f"[PUBLISH][BLOCK] {fr}")
                 if jid:
                     sess.patch_publish_job(
                         jid,
@@ -197,7 +241,8 @@ class MultiPublishThread(QThread):
                     )
 
         self.log_line.emit(
-            f"[PUBLISH] Hoàn tất — thành công={ok} thất bại={fail} (tổng {ok + fail} job đã xử lý)"
+            f"[PUBLISH] Hoàn tất — thành công={ok} thất bại={fail} bỏ qua={skipped} "
+            f"(tổng {ok + fail + skipped} job đã xử lý)"
         )
         self.publish_step.emit("")
         self.finished_summary.emit(ok, fail)

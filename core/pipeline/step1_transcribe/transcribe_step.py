@@ -1,8 +1,13 @@
 """Step 1 — transcribe (UI + Whisper local/API)."""
 
+import math
 import os
 import time
 from pathlib import Path
+
+# OpenAI whisper-1 limit is 25 MiB; leave margin for MP3 framing / multipart.
+_WHISPER_API_MAX_BYTES = 26214400
+_WHISPER_API_SAFE_BYTES = 25000000
 
 from PyQt6.QtWidgets import (
     QComboBox,
@@ -50,6 +55,186 @@ class TranscribeStep(BaseStep):
         if backend == "api":
             return self._run_api(session, config, log, cancel)
         return self._run_local(session, config, log, cancel)
+
+    @staticmethod
+    def _ffprobe_duration(subprocess, path: str) -> float:
+        r = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                path,
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if r.returncode != 0:
+            return 0.0
+        try:
+            return max(0.0, float((r.stdout or "").strip()))
+        except ValueError:
+            return 0.0
+
+    @staticmethod
+    def _ffmpeg_extract_mp3_chunk(
+        subprocess, src: str, dst: str, start_sec: float, dur_sec: float
+    ) -> None:
+        r = subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-ss",
+                f"{max(0.0, start_sec):.3f}",
+                "-i",
+                src,
+                "-t",
+                f"{max(0.1, dur_sec):.3f}",
+                "-vn",
+                "-acodec",
+                "mp3",
+                "-b:a",
+                "64k",
+                "-ar",
+                "16000",
+                "-ac",
+                "1",
+                dst,
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if r.returncode != 0:
+            raise RuntimeError(f"ffmpeg chunk extract failed:\n{r.stderr}")
+
+    @staticmethod
+    def _chunk_length_seconds(file_size: int, duration_sec: float) -> float:
+        """Length of each API chunk so compressed size stays under the limit."""
+        if duration_sec <= 0:
+            return 300.0
+        bps = file_size / duration_sec
+        target = _WHISPER_API_SAFE_BYTES * 0.88
+        sec = target / max(bps, 8.0)
+        return max(45.0, min(sec, 4 * 3600.0))
+
+    @staticmethod
+    def _api_response_to_segments(response) -> tuple[list, str, str]:
+        raw_segs = getattr(response, "segments", []) or []
+        segs = []
+        for s in raw_segs:
+            start = round(
+                float(s.get("start", 0) if isinstance(s, dict) else s.start), 2
+            )
+            end = round(float(s.get("end", 0) if isinstance(s, dict) else s.end), 2)
+            text = (s.get("text", "") if isinstance(s, dict) else s.text).strip()
+            if text:
+                segs.append(Segment(start, end, text))
+        full_text = getattr(
+            response, "text", " ".join(x.text for x in segs)
+        ).strip()
+        lang = getattr(response, "language", None) or "unknown"
+        return segs, full_text, lang
+
+    def _transcribe_openai_file(
+        self, client, path: str, language_code: str | None
+    ):
+        with open(path, "rb") as f:
+            kwargs = {
+                "model": "whisper-1",
+                "file": f,
+                "response_format": "verbose_json",
+                "timestamp_granularities": ["segment"],
+            }
+            if language_code:
+                kwargs["language"] = language_code.split("-")[0].lower()
+            return client.audio.transcriptions.create(**kwargs)
+
+    def _run_api_chunked(
+        self,
+        *,
+        client,
+        audio_path: str,
+        language_cfg: str | None,
+        file_size: int,
+        duration_sec: float,
+        log,
+        cancel,
+        subprocess,
+        tempfile,
+    ) -> tuple[list, str, str]:
+        """Split long audio into time ranges; transcribe each; merge with time offset."""
+        dur = float(duration_sec or 0.0)
+        if dur <= 0 and file_size > 0:
+            dur = file_size / 7500.0
+        chunk_len = self._chunk_length_seconds(file_size, dur)
+        n_est = max(1, int(math.ceil(dur / max(chunk_len, 1.0))))
+        log(
+            f"📎 Vượt giới hạn 25MB — transcribe ~{n_est} phần (~{chunk_len / 60:.0f} phút/phần)…"
+        )
+
+        all_segs: list = []
+        text_parts: list[str] = []
+        merged_lang: str | None = None
+        lang_fixed = (language_cfg or "").strip() or None
+
+        t0 = 0.0
+        part = 0
+        while t0 < dur - 0.01:
+            if cancel.is_set():
+                raise CancelledError()
+            actual_dur = min(chunk_len, dur - t0)
+            if actual_dur < 0.2:
+                break
+            part += 1
+            tmp_c = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
+            tmp_c.close()
+            try:
+                self._ffmpeg_extract_mp3_chunk(
+                    subprocess, audio_path, tmp_c.name, t0, actual_dur
+                )
+                sz = os.path.getsize(tmp_c.name)
+                if sz > _WHISPER_API_MAX_BYTES:
+                    raise RuntimeError(
+                        f"Phần {part} vẫn {sz / 1024 / 1024:.2f} MB — thử giảm bitrate trong code."
+                    )
+                log(
+                    f"   ▶ Phần {part} ({t0 / 60:.1f}–{(t0 + actual_dur) / 60:.1f} phút, "
+                    f"{sz / 1024 / 1024:.2f} MB)…"
+                )
+                response = self._transcribe_openai_file(client, tmp_c.name, lang_fixed)
+                segs, chunk_text, chunk_lang = self._api_response_to_segments(response)
+                if merged_lang is None and chunk_lang:
+                    merged_lang = chunk_lang
+                for seg in segs:
+                    all_segs.append(
+                        Segment(
+                            round(seg.start + t0, 2),
+                            round(seg.end + t0, 2),
+                            seg.text,
+                        )
+                    )
+                if chunk_text:
+                    text_parts.append(chunk_text)
+            finally:
+                if os.path.exists(tmp_c.name):
+                    try:
+                        os.unlink(tmp_c.name)
+                    except OSError:
+                        pass
+            t0 += actual_dur
+
+        full_text = " ".join(text_parts).strip()
+        if not full_text and all_segs:
+            full_text = " ".join(s.text for s in all_segs)
+        lang_out = merged_lang or language_cfg or "unknown"
+        return all_segs, full_text, lang_out
 
     # ── Whisper API ───────────────────────────────────────────────────────────
 
@@ -136,42 +321,43 @@ class TranscribeStep(BaseStep):
                 os.unlink(tmp_audio)
             raise CancelledError()
 
+        audio_sz = os.path.getsize(audio_path)
+        duration_sec = self._ffprobe_duration(subprocess, audio_path)
+        if duration_sec <= 0 and audio_sz > 0:
+            # ffprobe failed — approximate length from ~64k MP3 equivalent (~8000 B/s).
+            duration_sec = audio_sz / 7500.0
+
         client = OpenAI(api_key=api_key)
         log("🎧 Calling Whisper API…")
         t1 = time.perf_counter()
 
         try:
-            with open(audio_path, "rb") as f:
-                kwargs = {
-                    "model": "whisper-1",
-                    "file": f,
-                    "response_format": "verbose_json",
-                    "timestamp_granularities": ["segment"],
-                }
-                if language:
-                    kwargs["language"] = language.split("-")[0].lower()
-                response = client.audio.transcriptions.create(**kwargs)
+            if audio_sz <= _WHISPER_API_SAFE_BYTES:
+                response = self._transcribe_openai_file(client, audio_path, language)
+                segs, full_text, lang = self._api_response_to_segments(response)
+                lang = (
+                    getattr(response, "language", None)
+                    or (language if language else None)
+                    or lang
+                    or "unknown"
+                )
+            else:
+                segs, full_text, lang = self._run_api_chunked(
+                    client=client,
+                    audio_path=audio_path,
+                    language_cfg=language,
+                    file_size=audio_sz,
+                    duration_sec=duration_sec,
+                    log=log,
+                    cancel=cancel,
+                    subprocess=subprocess,
+                    tempfile=tempfile,
+                )
         finally:
             if tmp_audio and os.path.exists(tmp_audio):
                 os.unlink(tmp_audio)
 
         log(f"✅ Transcription done (+{format_elapsed(time.perf_counter()-t1)})")
-
-        lang = getattr(response, "language", language or "unknown")
-        raw_segs = getattr(response, "segments", []) or []
-
-        min_silence = config.get("min_silence", 0.5)
-        segs = []
-        for s in raw_segs:
-            start = round(
-                float(s.get("start", 0) if isinstance(s, dict) else s.start), 2
-            )
-            end = round(float(s.get("end", 0) if isinstance(s, dict) else s.end), 2)
-            text = (s.get("text", "") if isinstance(s, dict) else s.text).strip()
-            if text:
-                segs.append(Segment(start, end, text))
-
-        full_text = getattr(response, "text", " ".join(s.text for s in segs)).strip()
 
         if len(segs) > 1:
             gaps = [segs[i + 1].start - segs[i].end for i in range(len(segs) - 1)]
@@ -370,7 +556,10 @@ class TranscribeStep(BaseStep):
         av.addWidget(self._api_key_lbl)
         av.addWidget(self._api_key_edit)
 
-        api_hint = QLabel("~$0.006/min · no local GPU needed · max 25MB per file")
+        api_hint = QLabel(
+            "~$0.006/min · no local GPU needed · max 25MB per request "
+            "(video dài tự chia chunk)"
+        )
         api_hint.setStyleSheet("color:#555;font-size:10px;")
         av.addWidget(api_hint)
         v.addWidget(self._api_opts)

@@ -14,6 +14,7 @@ import urllib.request
 from core.publish.cancelled import PublishCancelled
 
 DEFAULT_GRAPH_VIDEO_HOST = "graph-video.facebook.com"
+DEFAULT_GRAPH_HOST = "graph.facebook.com"
 DEFAULT_CHUNK_MB = 4
 # Page video lên lịch — Meta: thường 10 phút … 30 ngày so với thời điểm request (finish phase).
 FB_SCHEDULE_MIN_LEAD_SEC = 600
@@ -101,6 +102,110 @@ def _post_multipart_chunk(
         except Exception:
             data = {"raw": err_body[:1200], "status": e.code}
         raise RuntimeError(json.dumps(data, ensure_ascii=False)[:4000]) from None
+
+
+def _post_multipart_file(
+    base_url: str,
+    token: str,
+    fields: dict[str, str],
+    *,
+    file_field: str,
+    filename: str,
+    content_type: str,
+    file_bytes: bytes,
+) -> dict[str, Any]:
+    boundary = f"----SubSyncFbFile{uuid.uuid4().hex}"
+    crlf = b"\r\n"
+    parts: list[bytes] = []
+
+    for key, value in fields.items():
+        parts.append(f"--{boundary}".encode() + crlf)
+        parts.append(
+            f'Content-Disposition: form-data; name="{key}"'.encode() + crlf + crlf
+        )
+        parts.append(str(value).encode() + crlf)
+
+    parts.append(f"--{boundary}".encode() + crlf)
+    parts.append(
+        f'Content-Disposition: form-data; name="{file_field}"; filename="{filename}"'.encode()
+        + crlf
+    )
+    parts.append(f"Content-Type: {content_type}".encode() + crlf + crlf)
+    parts.append(file_bytes + crlf)
+    parts.append(f"--{boundary}--".encode() + crlf)
+
+    body = b"".join(parts)
+    q = urllib.parse.urlencode({"access_token": token})
+    url = f"{base_url}?{q}"
+    req = urllib.request.Request(
+        url,
+        data=body,
+        method="POST",
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=600) as resp:
+            return _read_json(resp)
+    except urllib.error.HTTPError as e:
+        try:
+            err_body = e.read().decode("utf-8", errors="replace")
+            data = json.loads(err_body)
+        except Exception:
+            data = {"raw": err_body[:1200], "status": e.code}
+        raise RuntimeError(json.dumps(data, ensure_ascii=False)[:4000]) from None
+
+
+def set_video_thumbnail(
+    *,
+    video_id: str,
+    page_access_token: str,
+    thumbnail_path: str,
+    graph_version: str = "v21.0",
+    on_progress: Callable[[str], None] | None = None,
+    is_cancelled: Callable[[], bool] | None = None,
+) -> dict[str, Any]:
+    """
+    Best-effort set preferred thumbnail for a Page video:
+      POST /{video_id}/thumbnails?access_token=...  (multipart form: source=@file, is_preferred=true)
+    """
+    from pathlib import Path
+
+    def _p(msg: str) -> None:
+        if on_progress:
+            on_progress(msg)
+
+    def _abort() -> None:
+        if is_cancelled and is_cancelled():
+            raise PublishCancelled()
+
+    vid = (video_id or "").strip()
+    if not vid:
+        raise RuntimeError("Missing video_id for /thumbnails")
+    token = page_access_token.strip()
+    if not token:
+        raise RuntimeError("Missing page_access_token for /thumbnails")
+    p = Path(thumbnail_path)
+    if not p.is_file():
+        raise RuntimeError(f"Thumbnail not found: {p}")
+
+    ver = graph_version.strip().lstrip("/")
+    if not ver.startswith("v"):
+        ver = "v21.0"
+    base_url = f"https://{DEFAULT_GRAPH_HOST}/{ver}/{vid}/thumbnails"
+
+    _abort()
+    img = p.read_bytes()
+    _abort()
+    _p("Facebook: đang set thumbnail…")
+    return _post_multipart_file(
+        base_url,
+        token,
+        {"is_preferred": "true"},
+        file_field="source",
+        filename=p.name,
+        content_type="application/octet-stream",
+        file_bytes=img,
+    )
 
 
 def _page_videos_base(version: str, page_id: str, host: str) -> str:

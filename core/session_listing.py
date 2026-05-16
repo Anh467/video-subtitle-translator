@@ -99,6 +99,60 @@ def _dir_tree_size_bytes(path: Path) -> int:
     return total
 
 
+def aggregate_workspace_publish_job_stats(base_dir: str) -> dict:
+    """
+    Đếm status của mọi job trong publish_plan trên toàn workspace (mọi thư mục có session.json).
+
+    Trả về:
+      sessions_with_plan, jobs_total, done, failed, pending, skipped, other
+    """
+    base = Path(base_dir)
+    out = {
+        "sessions_with_plan": 0,
+        "jobs_total": 0,
+        "done": 0,
+        "failed": 0,
+        "pending": 0,
+        "skipped": 0,
+        "other": 0,
+    }
+    if not base_dir.strip() or not base.is_dir():
+        return out
+
+    fail_like = {"fail", "failed", "error"}
+
+    for d in base.iterdir():
+        if not d.is_dir():
+            continue
+        meta_path = d / "session.json"
+        if not meta_path.is_file():
+            continue
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        plan = meta.get("publish_plan")
+        if not isinstance(plan, list) or not plan:
+            continue
+        out["sessions_with_plan"] += 1
+        for j in plan:
+            if not isinstance(j, dict):
+                continue
+            out["jobs_total"] += 1
+            st = str(j.get("status") or "").strip().lower() or "pending"
+            if st == "done":
+                out["done"] += 1
+            elif st in fail_like:
+                out["failed"] += 1
+            elif st == "pending":
+                out["pending"] += 1
+            elif st == "skipped":
+                out["skipped"] += 1
+            else:
+                out["other"] += 1
+    return out
+
+
 def list_sessions(base_dir: str) -> list[dict]:
     """List all sessions in base_dir, sorted by folder name (case-insensitive)."""
     base = Path(base_dir)

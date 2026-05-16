@@ -7,8 +7,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from core.publish.cancelled import PublishCancelled
-from core.publish.facebook_upload import upload_page_video
-from core.publish.youtube_upload import refresh_access_token, upload_video_simple
+from core.publish.facebook_upload import set_video_thumbnail, upload_page_video
+from core.publish.youtube_upload import refresh_access_token, set_thumbnail, upload_video_simple
 
 
 def _iso_local_to_rfc3339_z(iso_local: str) -> str:
@@ -60,6 +60,18 @@ def run_publish(
                 is_cancelled=is_cancelled,
             )
             rid = str(r.get("id") or "").strip()
+            if rid and thumbnail_path:
+                try:
+                    set_video_thumbnail(
+                        video_id=rid,
+                        page_access_token=str(c.get("page_access_token") or ""),
+                        thumbnail_path=thumbnail_path,
+                        on_progress=on_progress,
+                        is_cancelled=is_cancelled,
+                    )
+                except Exception:
+                    # Best effort: keep video upload OK even if thumbnail fails
+                    pass
             if rid:
                 fb_msg = f"Facebook upload OK — video id {rid}"
             else:
@@ -99,8 +111,18 @@ def run_publish(
             )
             vid = r.get("id", "")
             msg = f"YouTube upload OK — id {vid}"
-            if thumbnail_path:
-                msg += " (thumbnail: set manually in Studio if needed)"
+            if thumbnail_path and vid:
+                try:
+                    set_thumbnail(
+                        access_token=at,
+                        video_id=str(vid),
+                        thumbnail_path=thumbnail_path,
+                        on_progress=on_progress,
+                        is_cancelled=is_cancelled,
+                    )
+                    msg += " (thumbnail OK)"
+                except Exception as e:
+                    msg += f" (thumbnail FAIL: {str(e)[:120]})"
             return {"ok": True, "platform": pl, "message": msg, "detail": r}
         if pl == "tiktok":
             return {

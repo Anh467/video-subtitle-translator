@@ -32,6 +32,9 @@ class Session:
         self._thumb_background: str = ""
         self.subtitle_studio: dict = {}
         self.publish_plan: list = []
+        # Publish scheduling anchor (workspace-level scheduling wants stable times across retries)
+        self.publish_schedule_anchor_unix: int = 0
+        self.publish_interval_hours: int = 0
         self.folder.mkdir(parents=True, exist_ok=True)
         self._save_meta()
 
@@ -51,6 +54,14 @@ class Session:
         obj.publish_plan = meta.get("publish_plan") or []
         if not isinstance(obj.publish_plan, list):
             obj.publish_plan = []
+        try:
+            obj.publish_schedule_anchor_unix = int(meta.get("publish_schedule_anchor_unix") or 0)
+        except Exception:
+            obj.publish_schedule_anchor_unix = 0
+        try:
+            obj.publish_interval_hours = int(meta.get("publish_interval_hours") or 0)
+        except Exception:
+            obj.publish_interval_hours = 0
         # thumbnail is detected from folder, not stored in meta
         return obj
 
@@ -199,6 +210,8 @@ class Session:
         obj._thumb_background = ""
         obj.subtitle_studio = {}
         obj.publish_plan = []
+        obj.publish_schedule_anchor_unix = 0
+        obj.publish_interval_hours = 0
 
         info_file = next(
             (
@@ -518,6 +531,8 @@ class Session:
                     "thumb_background": self.thumb_background,
                     "subtitle_studio": self.subtitle_studio,
                     "publish_plan": self.publish_plan,
+                    "publish_schedule_anchor_unix": int(self.publish_schedule_anchor_unix or 0),
+                    "publish_interval_hours": int(self.publish_interval_hours or 0),
                 },
                 ensure_ascii=False,
                 indent=2,

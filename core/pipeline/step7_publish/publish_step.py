@@ -117,15 +117,39 @@ class PublishInfoStep(BaseStep):
         gemini_model = config.get("gemini_model", "gemini-2.0-flash")
         api_key = (config.get("api_key") or "").strip() or None
         max_tags = int(config.get("max_tags", 8) or 8)
+        _qm = str(config.get("quality_mode") or "high").strip().lower()
+        quality_mode = _qm if _qm in ("high", "balanced") else "high"
         thumb_mode = config.get("thumb_mode", "keep")
         thumb_at_sec = float(config.get("thumb_at_sec", 12.0) or 12.0)
-        thumb_base_priority = config.get("thumb_base_priority", "video_only")
-        thumb_ocr_zh_vi = bool(config.get("thumb_ocr_zh_vi", False))
-        translate_session_zh_meta = bool(config.get("translate_session_zh_meta", False))
+        thumb_base_priority = config.get("thumb_base_priority", "session_first")
+        thumb_ocr_zh_vi = bool(config.get("thumb_ocr_zh_vi", True))
+        ocr_python_exe = (config.get("ocr_python_exe") or "").strip() or None
+        translate_session_zh_meta = bool(config.get("translate_session_zh_meta", True))
         overwrite = bool(config.get("overwrite", False))
 
         lines = [s.translated.strip() for s in segments if s.translated.strip()]
         script_text = " ".join(lines)
+        # High: more lines + optional middle/end anchors so the model tracks arc/characters.
+        if quality_mode == "high":
+            n = len(lines)
+            picks: list[str] = []
+            picks.extend(lines[:100])
+            if n > 120:
+                mid = n // 2
+                picks.extend(lines[max(0, mid - 10) : mid + 10])
+            if n > 30:
+                picks.extend(lines[-20:])
+            seen: set[str] = set()
+            excerpt_lines: list[str] = []
+            for ln in picks:
+                t = re.sub(r"\s+", " ", (ln or "").strip())
+                if not t or t in seen:
+                    continue
+                seen.add(t)
+                excerpt_lines.append(t)
+            script_excerpt_for_llm = "\n".join(excerpt_lines)[:16000]
+        else:
+            script_excerpt_for_llm = "\n".join(lines[:90])[:10000]
 
         hashtags = self._build_hashtags(script_text, max_tags=max_tags)
 
@@ -166,6 +190,8 @@ class PublishInfoStep(BaseStep):
                 model=ollama_model,
                 log=log,
                 meta_context=meta_context or None,
+                quality_mode=quality_mode,
+                excerpt_override=script_excerpt_for_llm,
             )
         elif gen_backend == "gemini":
             title, description = self._generate_title_description_gemini(
@@ -176,6 +202,8 @@ class PublishInfoStep(BaseStep):
                 api_key=api_key,
                 log=log,
                 meta_context=meta_context or None,
+                quality_mode=quality_mode,
+                excerpt_override=script_excerpt_for_llm,
             )
         else:
             title = self._build_title(lines, style=style)
@@ -199,6 +227,35 @@ class PublishInfoStep(BaseStep):
             final_desc = description
         else:
             final_desc = old_desc
+
+        # Normalize: keep hashtags at END of description, not inside title.
+        def _extract_hashtags(text: str) -> list[str]:
+            if not (text or "").strip():
+                return []
+            return re.findall(r"(#[A-Za-z0-9_À-ỹà-ỹ]+)", text, flags=re.UNICODE)
+
+        def _strip_hashtags(text: str) -> str:
+            t = re.sub(r"(?:\s|^)(#[A-Za-z0-9_À-ỹà-ỹ]+)", " ", text, flags=re.UNICODE)
+            return re.sub(r"\s+", " ", (t or "").strip())
+
+        tags_seen: list[str] = []
+        for src in (final_title, final_desc, " ".join(hashtags)):
+            for h in _extract_hashtags(src):
+                if h not in tags_seen:
+                    tags_seen.append(h)
+
+        final_title = _strip_hashtags(final_title)[:95].strip()
+        body_desc = (final_desc or "").strip()
+        body_desc = _strip_hashtags(body_desc)
+        if lines and len(body_desc) < 260:
+            # Make description longer/more informative by adding extra context lines.
+            extra = " ".join(lines[:6]).strip()
+            extra = re.sub(r"\s+", " ", extra)[:600]
+            if extra and extra not in body_desc:
+                body_desc = (body_desc + "\n\n" + extra).strip()
+
+        tag_line = " ".join(tags_seen[:15]).strip()
+        final_desc = (body_desc + (("\n\n" + tag_line) if tag_line else "")).strip()
 
         session.save_info(final_title, final_desc)
         log("✅ Saved title + description to session.json")
@@ -236,6 +293,8 @@ class PublishInfoStep(BaseStep):
                 log=log,
                 thumb_base_priority=thumb_base_priority,
                 thumb_ocr_zh_vi=thumb_ocr_zh_vi,
+                ocr_python_exe=ocr_python_exe,
+                quality_mode=quality_mode,
             )
             if thumb_saved:
                 log(f"🖼️  Saved thumbnail: {Path(thumb_saved).name}")
@@ -321,7 +380,14 @@ class PublishInfoStep(BaseStep):
         except Exception:
             return {}
 
-    def _ollama_generate(self, prompt: str, model: str = "qwen2") -> str:
+    def _ollama_generate(
+        self,
+        prompt: str,
+        model: str = "qwen2",
+        *,
+        num_predict: int = 700,
+        temperature: float = 0.45,
+    ) -> str:
         if self._ollama_last_failed:
             raise RuntimeError("Ollama temporarily disabled in this run")
         last_err = None
@@ -332,9 +398,9 @@ class PublishInfoStep(BaseStep):
                     "prompt": prompt,
                     "stream": False,
                     "options": {
-                        "temperature": 0.45,
+                        "temperature": temperature,
                         "top_p": 0.9,
-                        "num_predict": 700,
+                        "num_predict": int(num_predict),
                         "repeat_penalty": 1.1,
                     },
                 }
@@ -408,9 +474,10 @@ class PublishInfoStep(BaseStep):
         model: str,
         log,
         meta_context: str | None = None,
+        quality_mode: str = "balanced",
+        excerpt_override: str | None = None,
     ) -> tuple[str, str]:
-        excerpt = "\n".join(lines[:80])
-        excerpt = excerpt[:9000]
+        excerpt = (excerpt_override or "\n".join(lines[:80]))[:14000]
         hashtag_line = " ".join(hashtags[:10])
 
         style_hint = {
@@ -426,19 +493,35 @@ class PublishInfoStep(BaseStep):
                 f"{meta_context.strip()}\n"
             )
 
+        quality_hint = (
+            "QUALITY HIGH (mandatory):\n"
+            "- Use correct Vietnamese spelling with full diacritics (ấ ệ ử …).\n"
+            "- Prefer concrete nouns/events from SCRIPT (characters, twists, stakes); do not invent unrelated facts.\n"
+            "- Sounds human: varied sentence openings, zero template phrases.\n\n"
+            if quality_mode == "high"
+            else ""
+        )
+        if quality_mode == "high":
+            desc_rule = (
+                "Description: 6-9 lines, Vietnamese; first line strongest hook grounded in SCRIPT; middle lines raise stakes; "
+                "one suspense question tied to SCRIPT; subtle CTA (e.g. xem đến cuối — NOT 'đăng ký kênh' spam); "
+                "400-950 characters before hashtags.\n"
+            )
+        else:
+            desc_rule = (
+                "Description: 4-6 short lines, storytelling flow: hook -> escalation -> suspense question -> CTA.\n"
+            )
         prompt = (
-            "You are a Vietnamese YouTube content strategist.\n"
-            "Write a highly clickable but truthful title and a strong description in Vietnamese.\n"
-            "Do NOT write generic boilerplate. Keep it specific, emotional, and vivid.\n"
+            "You are a Vietnamese YouTube strategist. Audience: Vietnamese. Output Vietnamese only.\n"
+            "Create truthful, high-CTR metadata that matches SCRIPT (same story/conflict/outcome cues).\n"
             f"Style: {style_hint}.\n\n"
             "Rules:\n"
-            "- Title: 50-78 chars, natural Vietnamese, no misleading claims.\n"
-            "- Description: 4-6 short lines, storytelling flow: hook -> escalation -> suspense question -> CTA.\n"
-            "- Keep content consistent with provided script.\n"
-            "- Avoid phrases like: 'Noi dung duoc trich...', 'toi uu de dang dang tai'.\n"
-            "- Sound like a real creator writing teaser text.\n"
-            "- Include hashtags at the end of description if provided.\n"
-            "- Output JSON only with keys: title, description\n\n"
+            "- Title: 52-88 chars, natural Vietnamese, full diacritics, NO hashtag #, NO emoji.\n"
+            f"- {desc_rule.strip()}\n"
+            "- Do NOT mention 'trích từ script', 'tối ưu SEO', or meta talk about uploading.\n"
+            "- If SUGGESTED_HASHTAGS provided, append them once at the very end of description (after a blank line).\n"
+            '- Output JSON only: {"title":"...","description":"..."}\n\n'
+            f"{quality_hint}"
             f"SCRIPT:\n{excerpt}\n\n"
             f"SUGGESTED_HASHTAGS: {hashtag_line}\n"
             f"{extra}"
@@ -446,29 +529,50 @@ class PublishInfoStep(BaseStep):
 
         try:
             log(f"🤖 Generating title/description via Ollama ({model})...")
-            raw = self._ollama_generate(prompt, model=model)
-            obj = self._extract_json_object(raw)
-            title = str(obj.get("title", "")).strip()
-            desc = str(obj.get("description", "")).strip()
+            last_err = None
+            for attempt in range(1, 4 if quality_mode == "high" else 2):
+                raw = self._ollama_generate(
+                    prompt,
+                    model=model,
+                    num_predict=1100 if quality_mode == "high" else 750,
+                    temperature=0.38 if quality_mode == "high" else 0.45,
+                )
+                obj = self._extract_json_object(raw)
+                title = str(obj.get("title", "")).strip()
+                desc = str(obj.get("description", "")).strip()
 
-            if not title or not desc:
-                raise RuntimeError("Ollama JSON missing title/description")
+                if not title or not desc:
+                    last_err = RuntimeError("Ollama JSON missing title/description")
+                    continue
 
-            bad_markers = (
-                "Noi dung duoc trich",
-                "toi uu de dang dang tai",
-                "nội dung được trích",
-                "tối ưu để đăng tải",
-            )
-            if len(desc) < 140 or any(m.lower() in desc.lower() for m in bad_markers):
-                raise RuntimeError("Ollama description quality too low")
+                bad_markers = (
+                    "Noi dung duoc trich",
+                    "toi uu de dang dang tai",
+                    "nội dung được trích",
+                    "tối ưu để đăng tải",
+                )
+                min_desc = 360 if quality_mode == "high" else 140
+                if len(desc) < min_desc or any(
+                    m.lower() in desc.lower() for m in bad_markers
+                ):
+                    last_err = RuntimeError("Ollama description quality too low")
+                    continue
+                if "#" in title:
+                    last_err = RuntimeError("Ollama title must not contain hashtags")
+                    continue
 
-            if hashtags:
-                hline = " ".join(hashtags)
-                if hline not in desc:
-                    desc = f"{desc}\n\n{hline}"
+                if quality_mode == "high" and re.search(r"\b(đăng ký|subscribe)\b", desc, re.IGNORECASE):
+                    # Avoid spammy CTA markers in high-quality mode.
+                    last_err = RuntimeError("Ollama description includes spammy CTA")
+                    continue
 
-            return title[:90], desc
+                if hashtags:
+                    hline = " ".join(hashtags)
+                    if hline not in desc:
+                        desc = f"{desc}\n\n{hline}"
+
+                return title[:90], desc
+            raise RuntimeError(f"Ollama quality retries exhausted: {last_err}")
         except Exception as e:
             log(f"⚠️  Ollama generation failed, fallback to rule-based: {e}")
             title = self._build_title(lines, style=style)
@@ -484,8 +588,10 @@ class PublishInfoStep(BaseStep):
         api_key: str | None,
         log,
         meta_context: str | None = None,
+        quality_mode: str = "balanced",
+        excerpt_override: str | None = None,
     ) -> tuple[str, str]:
-        excerpt = "\n".join(lines[:90])[:10000]
+        excerpt = (excerpt_override or "\n".join(lines[:90]))[:14000]
         hashtag_line = " ".join(hashtags[:10])
         style_hint = {
             "dramatic": "tone dramatic, high tension",
@@ -498,33 +604,62 @@ class PublishInfoStep(BaseStep):
                 "\nORIGINAL_PUBLISHER_METADATA_TRANSLATED_VI (context only, merge naturally):\n"
                 f"{meta_context.strip()}\n"
             )
+        if quality_mode == "high":
+            desc_rule_g = (
+                "Description: 6-10 lines, 400-1100 chars before hashtags; arc: hook -> stakes -> twist/suspense question -> "
+                "soft CTA (xem hết clip); full Vietnamese diacritics; zero filler about SEO/uploading.\n"
+            )
+        else:
+            desc_rule_g = (
+                "Description: 5-8 short lines: hook -> escalation -> suspense question -> CTA.\n"
+            )
+        quality_hint = (
+            "QUALITY HIGH: ground every claim in SCRIPT; no invented characters/events.\n"
+            if quality_mode == "high"
+            else ""
+        )
         prompt = (
-            "You are a Vietnamese YouTube content strategist.\n"
-            "Create HIGH-CTR but truthful metadata in Vietnamese only.\n"
+            "You are a Vietnamese YouTube strategist. Metadata must match SCRIPT (same story beats).\n"
             f"Style: {style_hint}.\n"
             "Rules:\n"
             '- Output JSON only: {"title":"...","description":"..."}\n'
-            "- Title: 48-78 chars, concrete and emotional, no fake promise\n"
-            "- Description: 4-6 short lines with arc: hook -> escalation -> suspense question -> CTA\n"
-            "- No generic boilerplate sentence\n"
-            "- If hashtags provided, append them at the end\n\n"
+            "- Title: 52-88 chars, Vietnamese with diacritics, NO #hashtag, NO emoji, truthful.\n"
+            f"- {desc_rule_g.strip()}\n"
+            "- Append SUGGESTED_HASHTAGS once at the very end of description (blank line before tags).\n\n"
+            f"{quality_hint}"
             f"SCRIPT:\n{excerpt}\n\n"
             f"SUGGESTED_HASHTAGS: {hashtag_line}\n"
             f"{extra}"
         )
         try:
             log(f"✨ Generating title/description via Gemini ({model})...")
-            raw = self._gemini_generate(prompt, model=model, log=log, api_key=api_key)
-            obj = self._extract_json_object(raw)
-            title = str(obj.get("title", "")).strip()
-            desc = str(obj.get("description", "")).strip()
-            if not title or not desc:
-                raise RuntimeError("Gemini JSON missing title/description")
-            if hashtags:
-                hline = " ".join(hashtags)
-                if hline not in desc:
-                    desc = f"{desc}\n\n{hline}"
-            return title[:90], desc
+            last_ge = None
+            for _gattempt in range(1, 4 if quality_mode == "high" else 2):
+                raw = self._gemini_generate(
+                    prompt,
+                    model=model,
+                    log=log,
+                    api_key=api_key,
+                    retries=6 if quality_mode == "high" else 3,
+                )
+                obj = self._extract_json_object(raw)
+                title = str(obj.get("title", "")).strip()
+                desc = str(obj.get("description", "")).strip()
+                min_d = 360 if quality_mode == "high" else 160
+                if (
+                    not title
+                    or not desc
+                    or len(desc) < min_d
+                    or ("#" in title)
+                ):
+                    last_ge = RuntimeError("Gemini JSON missing/low-quality title/description")
+                    continue
+                if hashtags:
+                    hline = " ".join(hashtags)
+                    if hline not in desc:
+                        desc = f"{desc}\n\n{hline}"
+                return title[:90], desc
+            raise RuntimeError(str(last_ge or "Gemini quality retries exhausted"))
         except Exception as e:
             log(f"⚠️  Gemini generation failed, fallback to rule-based: {e}")
             return self._build_title(lines, style=style), self._build_description(
@@ -626,6 +761,51 @@ class PublishInfoStep(BaseStep):
             out = "SUC THAT QUA BAT NGO"
         return out
 
+    def _hook_llm_script_context(
+        self,
+        lines: list[str],
+        segments,
+        center_sec: float,
+        quality_mode: str,
+    ) -> str:
+        xs = [x.strip() for x in (lines or []) if (x or "").strip()]
+        if not xs:
+            return ""
+        if quality_mode != "high":
+            return "SCRIPT_EXCERPT:\n" + " ".join(xs[:12])[:2200]
+
+        blocks: list[str] = []
+        blocks.append("OPENING:\n" + "\n".join(xs[:12])[:3200])
+        if len(xs) > 16:
+            mid = len(xs) // 2
+            blocks.append(
+                "MID:\n" + "\n".join(xs[max(0, mid - 4) : mid + 4])[:3200]
+            )
+        if len(xs) > 10:
+            blocks.append("ENDING:\n" + "\n".join(xs[-8:])[:2800])
+        near: list[str] = []
+        try:
+            lo = float(center_sec) - 55.0
+            hi = float(center_sec) + 55.0
+        except Exception:
+            lo, hi = 0.0, 0.0
+        for s in segments or []:
+            try:
+                st = float(getattr(s, "start", 0.0) or 0.0)
+            except Exception:
+                st = 0.0
+            if st < lo or st > hi:
+                continue
+            tx = (getattr(s, "translated", "") or "").strip()
+            if not tx:
+                continue
+            near.append(re.sub(r"\s+", " ", tx))
+            if len(near) >= 12:
+                break
+        if near:
+            blocks.append("AROUND_THUMB_TIME:\n" + "\n".join(near)[:4000])
+        return "\n\n".join(blocks).strip()[:9500]
+
     def _generate_hook_text_ollama(
         self,
         hook_title: str,
@@ -633,41 +813,63 @@ class PublishInfoStep(BaseStep):
         style: str,
         model: str,
         log,
+        *,
+        script_context: str = "",
+        quality_mode: str = "high",
     ) -> str:
-        seed = " ".join((lines or [])[:6])[:1200]
+        ctx = (script_context or "").strip() or (
+            "SCRIPT_EXCERPT:\n" + " ".join((lines or [])[:10])[:2000]
+        )
         style_hint = {
             "dramatic": "dramatic",
             "short": "very short",
             "story": "storytelling",
         }.get(style, "storytelling")
-        prompt = (
-            "You create Vietnamese thumbnail hooks.\n"
-            "Write ONE very short uppercase hook line for a YouTube thumbnail.\n"
-            f"Style: {style_hint}.\n"
-            "Rules:\n"
-            "- Exactly 4 to 5 words\n"
-            "- Punchy, emotional, no clickbait lies\n"
-            "- No hashtag, no emoji, no quotes\n"
-            "- Output plain text only\n\n"
-            f"VIDEO_CONTEXT: {hook_title}\n"
-            f"SCRIPT_SAMPLE: {seed}\n"
+        qx = (
+            "HOOK QUALITY: pick ONE concrete conflict/reveal/stake from SCRIPT (names/places ok). "
+            "Do not invent events not implied by SCRIPT.\n"
+            if quality_mode == "high"
+            else ""
         )
-        try:
-            raw = self._ollama_generate(prompt, model=model)
-            txt = re.sub(r"\s+", " ", (raw or "").strip())
-            txt = re.sub(r"[^A-Za-z0-9À-ỹà-ỹ\s:!?-]", "", txt)
-            if not txt:
-                raise RuntimeError("empty hook")
-            words = [w for w in txt.split() if w]
-            if len(words) > 5:
-                words = words[:5]
-            if len(words) < 4:
-                raise RuntimeError("hook too short")
-            txt = " ".join(words)
-            return txt.upper()
-        except Exception as e:
-            log(f"⚠️  Ollama hook fallback: {e}")
-            return self._pick_hook_text(hook_title, lines, style)
+        prompt = (
+            "You write Vietnamese YouTube thumbnail overlay text (will be shown in UPPERCASE on image).\n"
+            f"Style: {style_hint}.\n"
+            f"{qx}"
+            "Rules:\n"
+            "- Exactly 4 or 5 words (never 3 or 6+)\n"
+            "- Natural Vietnamese with full diacritics in output (we uppercase later)\n"
+            "- High emotional punch but truthful vs SCRIPT\n"
+            "- No hashtags, emoji, quotation marks, or line breaks\n"
+            "- Output plain text only, one line\n\n"
+            f"TITLE_FOR_CONTEXT: {hook_title}\n\n"
+            f"{ctx}\n"
+        )
+        attempts = 3 if quality_mode == "high" else 2
+        last_exc: Exception | None = None
+        for _att in range(1, attempts + 1):
+            try:
+                raw = self._ollama_generate(
+                    prompt,
+                    model=model,
+                    num_predict=120 if quality_mode == "high" else 96,
+                    temperature=0.35 if quality_mode == "high" else 0.45,
+                )
+                txt = re.sub(r"\s+", " ", (raw or "").strip())
+                txt = re.sub(r"[^A-Za-z0-9À-ỹà-ỹ\s:!?-]", "", txt)
+                if not txt:
+                    raise RuntimeError("empty hook")
+                words = [w for w in txt.split() if w]
+                if len(words) > 5:
+                    words = words[:5]
+                if len(words) < 4:
+                    raise RuntimeError("hook word count invalid")
+                txt = " ".join(words)
+                return txt.upper()
+            except Exception as e:
+                last_exc = e
+                continue
+        log(f"⚠️  Ollama hook fallback: {last_exc}")
+        return self._pick_hook_text(hook_title, lines, style)
 
     def _generate_hook_text_gemini(
         self,
@@ -677,38 +879,56 @@ class PublishInfoStep(BaseStep):
         model: str,
         api_key: str | None,
         log,
+        *,
+        script_context: str = "",
+        quality_mode: str = "high",
     ) -> str:
-        seed = " ".join((lines or [])[:8])[:1400]
+        ctx = (script_context or "").strip() or (
+            "SCRIPT_EXCERPT:\n" + " ".join((lines or [])[:10])[:2000]
+        )
         style_hint = {
             "dramatic": "dramatic",
             "short": "very short",
             "story": "storytelling",
         }.get(style, "storytelling")
-        prompt = (
-            "Write ONE Vietnamese YouTube thumbnail hook.\n"
-            "Rules:\n"
-            "- Exactly 4 to 5 words\n"
-            "- UPPERCASE\n"
-            "- Emotional and truthful\n"
-            "- No emoji, no hashtag, no quote\n"
-            "- Output plain text only\n"
-            f"Style: {style_hint}\n"
-            f"VIDEO_CONTEXT: {hook_title}\n"
-            f"SCRIPT_SAMPLE: {seed}\n"
+        qx = (
+            "Faithful to SCRIPT_CONTEXT: one concrete stakes/reveal, no fabricated plot.\n"
+            if quality_mode == "high"
+            else ""
         )
-        try:
-            raw = self._gemini_generate(prompt, model=model, log=log, api_key=api_key)
-            txt = re.sub(r"\s+", " ", (raw or "").strip())
-            txt = re.sub(r"[^A-Za-z0-9À-ỹà-ỹ\s:!?-]", "", txt)
-            words = [w for w in txt.split() if w]
-            if len(words) < 4:
-                raise RuntimeError("hook too short")
-            if len(words) > 5:
-                words = words[:5]
-            return " ".join(words).upper()
-        except Exception as e:
-            log(f"⚠️  Gemini hook fallback: {e}")
-            return self._pick_hook_text(hook_title, lines, style)
+        prompt = (
+            "Vietnamese YouTube thumbnail overlay line.\n"
+            f"Style: {style_hint}.\n"
+            f"{qx}"
+            "Rules: exactly 4 or 5 words; Vietnamese with diacritics (uppercase optional); "
+            "no emoji/hashtag/quotes/newlines; plain text one line.\n\n"
+            f"TITLE_FOR_CONTEXT: {hook_title}\n\n"
+            f"{ctx}\n"
+        )
+        attempts = 3 if quality_mode == "high" else 2
+        last_exc: Exception | None = None
+        for _att in range(1, attempts + 1):
+            try:
+                raw = self._gemini_generate(
+                    prompt,
+                    model=model,
+                    log=log,
+                    api_key=api_key,
+                    retries=4 if quality_mode == "high" else 3,
+                )
+                txt = re.sub(r"\s+", " ", (raw or "").strip())
+                txt = re.sub(r"[^A-Za-z0-9À-ỹà-ỹ\s:!?-]", "", txt)
+                words = [w for w in txt.split() if w]
+                if len(words) < 4:
+                    raise RuntimeError("hook too short")
+                if len(words) > 5:
+                    words = words[:5]
+                return " ".join(words).upper()
+            except Exception as e:
+                last_exc = e
+                continue
+        log(f"⚠️  Gemini hook fallback: {last_exc}")
+        return self._pick_hook_text(hook_title, lines, style)
 
     def _pick_thumb_timestamp_ollama(
         self,
@@ -967,6 +1187,8 @@ class PublishInfoStep(BaseStep):
         log,
         thumb_base_priority: str = "video_only",
         thumb_ocr_zh_vi: bool = False,
+        ocr_python_exe: str | None = None,
+        quality_mode: str = "high",
     ) -> str:
         src = session.latest_video() or session.source_file
         if not src or not Path(src).exists():
@@ -980,28 +1202,25 @@ class PublishInfoStep(BaseStep):
         ocr_tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
         ocr_tmp.close()
         if gen_backend == "ollama":
-            hook = self._generate_hook_text_ollama(
-                hook_title=hook_title,
-                lines=lines,
-                style=style,
-                model=ollama_model,
-                log=log,
-            )
             pick_sec = self._pick_thumb_timestamp_ollama(
                 segments=segments,
                 fallback_sec=at_sec,
                 model=ollama_model,
                 log=log,
             )
-        elif gen_backend == "gemini":
-            hook = self._generate_hook_text_gemini(
+            hook_ctx = self._hook_llm_script_context(
+                lines, segments, pick_sec, quality_mode
+            )
+            hook = self._generate_hook_text_ollama(
                 hook_title=hook_title,
                 lines=lines,
                 style=style,
-                model=gemini_model,
-                api_key=api_key,
+                model=ollama_model,
                 log=log,
+                script_context=hook_ctx,
+                quality_mode=quality_mode,
             )
+        elif gen_backend == "gemini":
             pick_sec = self._pick_thumb_timestamp_gemini(
                 segments=segments,
                 fallback_sec=at_sec,
@@ -1009,13 +1228,70 @@ class PublishInfoStep(BaseStep):
                 api_key=api_key,
                 log=log,
             )
+            hook_ctx = self._hook_llm_script_context(
+                lines, segments, pick_sec, quality_mode
+            )
+            hook = self._generate_hook_text_gemini(
+                hook_title=hook_title,
+                lines=lines,
+                style=style,
+                model=gemini_model,
+                api_key=api_key,
+                log=log,
+                script_context=hook_ctx,
+                quality_mode=quality_mode,
+            )
         else:
-            hook = self._pick_hook_text(hook_title, lines, style)
             pick_sec = at_sec
+            hook = self._pick_hook_text(hook_title, lines, style)
 
         translate_backend = gen_backend
         if gen_backend == "ollama" and self._ollama_last_failed:
             translate_backend = "rule"
+
+        def _step2_context_sample(all_lines: list[str]) -> str:
+            """6 first + 2 middle + 2 last (dedup), to guide OCR translation."""
+            xs = [x.strip() for x in (all_lines or []) if (x or "").strip()]
+            if not xs:
+                return ""
+            picks: list[str] = []
+            picks += xs[:6]
+            mid = len(xs) // 2
+            if len(xs) > 8:
+                picks += xs[max(0, mid - 1) : mid + 1]
+            picks += xs[-2:]
+            out: list[str] = []
+            seen = set()
+            for s in picks:
+                s2 = re.sub(r"\s+", " ", s).strip()
+                if not s2 or s2 in seen:
+                    continue
+                seen.add(s2)
+                out.append(s2)
+            return "\n".join(out)[:1800]
+
+        def _step2_context_near_timestamp(segs, center_sec: float, window_sec: float = 60.0) -> str:
+            """Pick translated lines near thumbnail timestamp (±window_sec)."""
+            out: list[str] = []
+            try:
+                lo = float(center_sec) - float(window_sec)
+                hi = float(center_sec) + float(window_sec)
+            except Exception:
+                lo, hi = 0.0, 0.0
+            for s in segs or []:
+                try:
+                    st = float(getattr(s, "start", 0.0) or 0.0)
+                except Exception:
+                    st = 0.0
+                if st < lo or st > hi:
+                    continue
+                tx = (getattr(s, "translated", "") or "").strip()
+                if not tx:
+                    continue
+                out.append(re.sub(r"\s+", " ", tx))
+                if len(out) >= 12:
+                    break
+            return "\n".join(out)[:2200]
 
         try:
             have_base = False
@@ -1033,6 +1309,27 @@ class PublishInfoStep(BaseStep):
 
             frame_for_render = raw_frame.name
             if thumb_ocr_zh_vi:
+                # Build OCR context: metadata + global script sample + local (timestamp) script sample.
+                ctx_parts: list[str] = []
+                meta = "\n".join(
+                    x
+                    for x in [
+                        (hook_title or "").strip(),
+                        (getattr(session, "title", "") or "").strip(),
+                        (getattr(session, "description", "") or "").strip(),
+                    ]
+                    if x
+                ).strip()
+                if meta:
+                    ctx_parts.append(meta)
+                global_sample = _step2_context_sample(lines)
+                if global_sample:
+                    ctx_parts.append("STEP2_SCRIPT_SAMPLE_GLOBAL:\n" + global_sample)
+                local_sample = _step2_context_near_timestamp(segments, pick_sec, window_sec=60.0)
+                if local_sample:
+                    ctx_parts.append("STEP2_SCRIPT_SAMPLE_NEAR_THUMB:\n" + local_sample)
+                ocr_context = "\n\n".join(ctx_parts).strip()[:6000]
+
                 if translate_backend == "ollama":
 
                     def _ocr_translate_fn(p: str) -> str:
@@ -1041,6 +1338,8 @@ class PublishInfoStep(BaseStep):
                     if repaint_thumbnail_remove_zh_overlay(
                         raw_frame.name,
                         ocr_tmp.name,
+                        context=ocr_context,
+                        ocr_python_exe=ocr_python_exe,
                         translate_fn=_ocr_translate_fn,
                         log=log,
                     ):
@@ -1055,6 +1354,8 @@ class PublishInfoStep(BaseStep):
                     if repaint_thumbnail_remove_zh_overlay(
                         raw_frame.name,
                         ocr_tmp.name,
+                        context=ocr_context,
+                        ocr_python_exe=ocr_python_exe,
                         translate_fn=_ocr_translate_fn_g,
                         log=log,
                     ):
@@ -1174,6 +1475,15 @@ class PublishInfoStep(BaseStep):
         r2.addStretch()
         v.addLayout(r2)
 
+        rq = QHBoxLayout()
+        rq.addWidget(QLabel("Quality:"))
+        self._quality_combo = QComboBox()
+        self._quality_combo.addItems(["Balanced (fast)", "High (slower, better)"])
+        self._quality_combo.setCurrentIndex(1)
+        rq.addWidget(self._quality_combo)
+        rq.addStretch()
+        v.addLayout(rq)
+
         r3 = QHBoxLayout()
         r3.addWidget(QLabel("Thumbnail:"))
         self._thumb_mode_combo = QComboBox()
@@ -1198,7 +1508,7 @@ class PublishInfoStep(BaseStep):
                 "Prefer session thumbnail, else video",
             ]
         )
-        self._thumb_base_combo.setCurrentIndex(0)
+        self._thumb_base_combo.setCurrentIndex(1)
         rb.addWidget(self._thumb_base_combo)
         rb.addStretch()
         v.addLayout(rb)
@@ -1206,13 +1516,27 @@ class PublishInfoStep(BaseStep):
         self._thumb_ocr_chk = QCheckBox(
             "OCR: repaint Chinese text on thumb → Vietnamese (PaddleOCR, needs pip install)"
         )
-        self._thumb_ocr_chk.setChecked(False)
+        self._thumb_ocr_chk.setChecked(True)
         v.addWidget(self._thumb_ocr_chk)
+
+        r_ocr = QHBoxLayout()
+        r_ocr.addWidget(QLabel("OCR Python (optional):"))
+        self._ocr_python_edit = QLineEdit()
+        self._ocr_python_edit.setPlaceholderText(
+            "VD: C:\\Users\\van12\\AppData\\Local\\Programs\\Python\\Python310\\python.exe"
+        )
+        self._ocr_python_edit.setToolTip(
+            "Nếu app chạy Python 3.13 (NumPy 2.x), PaddleOCR có thể không chạy trong-process.\n"
+            "Điền đường dẫn python.exe của env Python 3.10/3.11 đã cài paddleocr để chạy OCR qua subprocess.\n"
+            "Hoặc set env var SUBSYNC_OCR_PYTHON."
+        )
+        r_ocr.addWidget(self._ocr_python_edit, stretch=1)
+        v.addLayout(r_ocr)
 
         self._translate_meta_chk = QCheckBox(
             "If session title/description has Chinese, translate to Vi for LLM context"
         )
-        self._translate_meta_chk.setChecked(False)
+        self._translate_meta_chk.setChecked(True)
         v.addWidget(self._translate_meta_chk)
 
         r4 = QHBoxLayout()
@@ -1399,6 +1723,11 @@ class PublishInfoStep(BaseStep):
             )
         if self._max_tags_spin and config.get("max_tags") is not None:
             self._max_tags_spin.setValue(int(config["max_tags"]))
+        if getattr(self, "_quality_combo", None) is not None:
+            qm = str(config.get("quality_mode") or "high").strip().lower()
+            self._quality_combo.setCurrentText(
+                "High (slower, better)" if qm == "high" else "Balanced (fast)"
+            )
         if self._thumb_mode_combo and config.get("thumb_mode"):
             self._thumb_mode_combo.setCurrentText(
                 _THUMB_LABEL.get(config["thumb_mode"], "Auto if missing")
@@ -1413,6 +1742,8 @@ class PublishInfoStep(BaseStep):
             )
         if self._thumb_ocr_chk and config.get("thumb_ocr_zh_vi") is not None:
             self._thumb_ocr_chk.setChecked(bool(config["thumb_ocr_zh_vi"]))
+        if getattr(self, "_ocr_python_edit", None) is not None:
+            self._ocr_python_edit.setText(str(config.get("ocr_python_exe") or ""))
         if (
             self._translate_meta_chk
             and config.get("translate_session_zh_meta") is not None
@@ -1460,6 +1791,11 @@ class PublishInfoStep(BaseStep):
         ):
             gen_backend = "rule"
 
+        quality_mode = (
+            "high"
+            if (getattr(self, "_quality_combo", None) is not None and "High" in self._quality_combo.currentText())
+            else "balanced"
+        )
         return {
             "gen_backend": gen_backend,
             "ollama_model": (
@@ -1475,6 +1811,7 @@ class PublishInfoStep(BaseStep):
             "api_key": (self._selected_api_key or "").strip() or None,
             "style": style_key,
             "max_tags": self._max_tags_spin.value() if self._max_tags_spin else 8,
+            "quality_mode": quality_mode,
             "thumb_mode": thumb_mode,
             "thumb_at_sec": (
                 self._thumb_at_spin.value() if self._thumb_at_spin else 12.0
@@ -1482,6 +1819,11 @@ class PublishInfoStep(BaseStep):
             "thumb_base_priority": thumb_base_priority,
             "thumb_ocr_zh_vi": (
                 self._thumb_ocr_chk.isChecked() if self._thumb_ocr_chk else False
+            ),
+            "ocr_python_exe": (
+                (self._ocr_python_edit.text() or "").strip()
+                if getattr(self, "_ocr_python_edit", None) is not None
+                else ""
             ),
             "translate_session_zh_meta": (
                 self._translate_meta_chk.isChecked()

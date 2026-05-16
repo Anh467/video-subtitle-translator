@@ -147,6 +147,26 @@ def build_publish_jobs(
     return sort_publish_jobs(jobs)
 
 
+def scheduled_unix_for_platform(
+    *,
+    anchor_unix: int,
+    interval_hours: int,
+    platform: str,
+) -> int:
+    """
+    Deterministic scheduled time for a platform.
+
+    NEW RULE (workspace scheduling):
+    - One video (one session) has ONE scheduled slot time.
+    - All platforms (Facebook/YouTube/...) for that session use the SAME slot.
+    - interval_hours is applied between sessions (videos), not between platforms.
+
+    Used to keep scheduling stable across retries / partial success.
+    """
+    _ = (interval_hours, platform)  # kept for backward-compatible signature
+    return int(anchor_unix)
+
+
 def _job_dict(
     platform: str,
     profile: dict,

@@ -6,7 +6,7 @@ import os
 import subprocess
 import sys
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QThreadPool, QTimer
@@ -34,7 +34,14 @@ from core.pipeline.step1_transcribe import WHISPER_API_COST_PER_MINUTE
 from core.pipeline.step2_translate import TRANSLATION_COST_PER_1M_CHARS
 from core.pipeline.step5_tts import COST_PER_1M as TTS_COST_PER_1M
 from core.session import Session
-from core.session_listing import published_at_epoch_seconds
+from core.session_listing import (
+    aggregate_workspace_publish_job_stats,
+    published_at_epoch_seconds,
+)
+from core.workspace_publish_prefs import (
+    load_workspace_publish_prefs,
+    save_workspace_publish_prefs,
+)
 from ui.multi_session.cost_worker import SelectedCostWorker
 from ui.dialogs.publish_platforms_dialog import PublishPlatformsDialog
 from ui.multi_session.publish_thread import MultiPublishThread
@@ -95,7 +102,12 @@ class MultiSessionWindow(QMainWindow):
             self._schedule_selected_cost_summary
         )
         self._session_panel.session_added.connect(self._schedule_selected_cost_summary)
+        self._session_panel.sessions_refreshed.connect(
+            self._refresh_workspace_publish_stats
+        )
         self._schedule_selected_cost_summary()
+        if base_dir:
+            self._refresh_workspace_publish_stats()
 
     def closeEvent(self, event):
         self._persist_parent_step_configs()
@@ -186,6 +198,13 @@ class MultiSessionWindow(QMainWindow):
         # self._btn_editor_studio.clicked.connect(lambda: self._set_editor_mode("studio"))
         # title_row.addWidget(self._btn_editor_studio)
         root.addLayout(title_row)
+
+        self._lbl_workspace_publish_stats = QLabel("")
+        self._lbl_workspace_publish_stats.setWordWrap(True)
+        self._lbl_workspace_publish_stats.setStyleSheet(
+            "color:#94a3b8;font-size:11px;padding:2px 0 6px 0;"
+        )
+        root.addWidget(self._lbl_workspace_publish_stats)
 
         # ── Top area: session list (left) + preview (right) ───────────────
         self._top_split = QSplitter(Qt.Orientation.Horizontal)
@@ -408,6 +427,28 @@ class MultiSessionWindow(QMainWindow):
         self._base_dir = base_dir
         self._session_panel.set_base_dir(base_dir)
         self._autofill_keys()
+        self._refresh_workspace_publish_stats()
+
+    def _refresh_workspace_publish_stats(self):
+        if not getattr(self, "_lbl_workspace_publish_stats", None):
+            return
+        if not (self._base_dir or "").strip():
+            self._lbl_workspace_publish_stats.setText("")
+            return
+        st = aggregate_workspace_publish_job_stats(self._base_dir)
+        jt = st["jobs_total"]
+        if jt <= 0:
+            self._lbl_workspace_publish_stats.setText(
+                "📊 Publish (workspace): chưa có publish_plan trong các session."
+            )
+            return
+        self._lbl_workspace_publish_stats.setText(
+            "📊 Publish (workspace): "
+            f"{st['sessions_with_plan']} session có plan · "
+            f"{jt} job — ✅ {st['done']}  ❌ {st['failed']}  "
+            f"⏳ {st['pending']}  ⏭️ {st['skipped']}"
+            + (f"  · khác {st['other']}" if st["other"] else "")
+        )
 
     def _autofill_keys(self):
         """Push API keys from manager into step widgets.
@@ -1055,6 +1096,7 @@ class MultiSessionWindow(QMainWindow):
             enrich_publish_plan_snapshot,
             mark_all_jobs_skipped,
             platforms_still_need_upload,
+            scheduled_unix_for_platform,
         )
         from core.publish_profiles import PLATFORM_ORDER, load_profiles, save_profiles
 
@@ -1068,10 +1110,15 @@ class MultiSessionWindow(QMainWindow):
         start_local = p["start_local"]
         interval_h = p["interval_hours"]
         y_mfk = p["youtube_made_for_kids"]
-        scope_mode = p.get("scope_mode") or "all"
+        scope_mode = p.get("scope_mode") or "only_missing_success"
 
         po = {x: i for i, x in enumerate(PLATFORM_ORDER)}
         tasks: list[dict] = []
+
+        wprefs = load_workspace_publish_prefs(self._base_dir)
+        limit_on = bool(p.get("limit_sessions_enabled", False))
+        limit_n = max(1, min(500, int(p.get("limit_sessions_count") or 10)))
+        cursor = int(wprefs.get("batch_cursor") or 0)
 
         sessions_chrono = sorted(
             p["sessions"],
@@ -1080,10 +1127,45 @@ class MultiSessionWindow(QMainWindow):
                 (Path(s["folder"]).name.lower() if s.get("folder") else ""),
             ),
         )
+
+        if cursor >= len(sessions_chrono):
+            cursor = 0
+
+        if limit_on:
+            slice_sessions = sessions_chrono[cursor : cursor + limit_n]
+            if not slice_sessions:
+                QMessageBox.warning(
+                    self,
+                    "Hết danh sách",
+                    "Cursor «tiếp tục N» đã vượt quá các session đã tick "
+                    "(published_at ↑). Dùng «Đặt lại tiếp tục» trong dialog đăng "
+                    "hoặc tick thêm session.",
+                )
+                return
+        else:
+            slice_sessions = sessions_chrono
+
+        prefs_max = int(wprefs.get("last_max_scheduled_unix") or 0)
+        batch_scheduled_max = 0
+
         schedule_cursor = start_local
         iv_hours = max(int(interval_h or 0), 1)
 
-        for sess in sessions_chrono:
+        def _latest_job_for_platform(plan: list, platform: str) -> dict | None:
+            best = None
+            best_key = -1
+            for j in plan or []:
+                if not isinstance(j, dict):
+                    continue
+                if str(j.get("platform") or "").strip().lower() != platform:
+                    continue
+                k = int(j.get("scheduled_unix") or 0)
+                if k >= best_key:
+                    best_key = k
+                    best = j
+            return best
+
+        for sess in slice_sessions:
             folder = sess["folder"]
             label = Path(folder).name
             try:
@@ -1095,30 +1177,105 @@ class MultiSessionWindow(QMainWindow):
                 continue
 
             existing = s.publish_plan or []
+            platforms_eff: list[str] = []
+            reusable_jobs: list[dict] = []
+
             if scope_mode == "only_missing_success":
-                platforms_eff = platforms_still_need_upload(existing, platforms)
-                if not platforms_eff:
+                # 1) If platform already done => skip
+                # 2) If platform has job not done (pending/error/cancelled/...) => reuse same job (stable schedule)
+                # 3) If platform has no job => create a new one (using session anchor if available)
+                for pl in platforms:
+                    pl_norm = str(pl or "").strip().lower()
+                    if not pl_norm:
+                        continue
+                    # done?
+                    done = False
+                    for j in existing:
+                        if (
+                            isinstance(j, dict)
+                            and str(j.get("platform") or "").strip().lower() == pl_norm
+                            and str(j.get("status") or "").strip().lower() == "done"
+                        ):
+                            done = True
+                            break
+                    if done:
+                        continue
+                    latest = _latest_job_for_platform(existing, pl_norm)
+                    if latest and str(latest.get("status") or "").strip().lower() != "done":
+                        reusable_jobs.append(latest)
+                    else:
+                        platforms_eff.append(pl_norm)
+
+                if not reusable_jobs and not platforms_eff:
                     self._log(
                         f"[PUBLISH][SKIP] session={label!r} — các nền tảng đã tick "
-                        f"đều đã có job thành công (done); không thêm job mới."
+                        f"đều đã có job thành công (done); không có gì để chạy."
                     )
                     continue
             else:
                 platforms_eff = list(platforms)
 
-            job_start = (
-                schedule_cursor if schedule_mode == "scheduled" else start_local
-            )
-            jobs = build_publish_jobs(
-                platforms_checked=platforms_eff,
-                profile=profile,
-                schedule_mode=schedule_mode,
-                start_local=job_start,
-                interval_hours=interval_h,
-                youtube_made_for_kids=y_mfk,
-            )
+            jobs: list[dict] = []
+            job_start = None
+
+            # Reuse existing jobs first (only_missing_success)
+            if reusable_jobs:
+                jobs.extend(reusable_jobs)
+
+            # Create missing jobs (if any)
+            if platforms_eff:
+                job_start = (
+                    schedule_cursor if schedule_mode == "scheduled" else start_local
+                )
+
+                if schedule_mode == "scheduled":
+                    # Persist a stable anchor in session.json so later additions keep consistent times.
+                    if int(getattr(s, "publish_schedule_anchor_unix", 0) or 0) <= 0:
+                        s.publish_schedule_anchor_unix = int(job_start.timestamp())
+                    if int(getattr(s, "publish_interval_hours", 0) or 0) <= 0:
+                        s.publish_interval_hours = int(interval_h or 0)
+
+                    # If we already have anchor, use it to compute platform times deterministically.
+                    anchor = int(getattr(s, "publish_schedule_anchor_unix", 0) or 0)
+                    ivh = max(int(getattr(s, "publish_interval_hours", interval_h) or interval_h), 1)
+                    base_jobs = build_publish_jobs(
+                        platforms_checked=platforms_eff,
+                        profile=profile,
+                        schedule_mode="scheduled",
+                        start_local=datetime.fromtimestamp(anchor),
+                        interval_hours=ivh,
+                        youtube_made_for_kids=y_mfk,
+                    )
+                    # Ensure exact per-platform unix from anchor (no drift)
+                    for j in base_jobs:
+                        pln = str(j.get("platform") or "").strip().lower()
+                        su = scheduled_unix_for_platform(
+                            anchor_unix=anchor, interval_hours=ivh, platform=pln
+                        )
+                        j["scheduled_unix"] = int(su)
+                        j["scheduled_at"] = datetime.fromtimestamp(int(su)).isoformat(
+                            timespec="seconds"
+                        )
+                    jobs.extend(base_jobs)
+                else:
+                    jobs.extend(
+                        build_publish_jobs(
+                            platforms_checked=platforms_eff,
+                            profile=profile,
+                            schedule_mode=schedule_mode,
+                            start_local=job_start,
+                            interval_hours=interval_h,
+                            youtube_made_for_kids=y_mfk,
+                        )
+                    )
             video, thumb, title, desc = self._resolve_publish_media(folder, sess)
-            start_for_summary = job_start if schedule_mode == "scheduled" else None
+            anchor_u = int(getattr(s, "publish_schedule_anchor_unix", 0) or 0)
+            if schedule_mode == "scheduled" and anchor_u > 0:
+                start_for_summary = datetime.fromtimestamp(anchor_u)
+            elif schedule_mode == "scheduled" and job_start is not None:
+                start_for_summary = job_start
+            else:
+                start_for_summary = None
             jobs = enrich_publish_plan_snapshot(
                 jobs,
                 video_path=video or "",
@@ -1127,10 +1284,15 @@ class MultiSessionWindow(QMainWindow):
                 description=desc,
                 schedule_mode=schedule_mode,
                 interval_hours=interval_h,
-                platforms_ordered=platforms_eff,
+                platforms_ordered=platforms_eff or list(platforms),
                 start_local=start_for_summary,
                 publish_scope_mode=scope_mode,
             )
+            if schedule_mode == "scheduled" and jobs:
+                for job in jobs:
+                    su = int(job.get("scheduled_unix") or 0)
+                    if su > batch_scheduled_max:
+                        batch_scheduled_max = su
             if not video:
                 mark_all_jobs_skipped(
                     jobs,
@@ -1142,7 +1304,16 @@ class MultiSessionWindow(QMainWindow):
                 )
             try:
                 if scope_mode == "only_missing_success":
-                    s.append_publish_jobs(jobs)
+                    # Only append newly created jobs (reused jobs already exist in session.publish_plan)
+                    if platforms_eff:
+                        # new jobs are those whose id is not in existing plan
+                        existing_ids = {str(j.get("id") or "") for j in existing if isinstance(j, dict)}
+                        new_jobs = [j for j in jobs if str(j.get("id") or "") not in existing_ids]
+                        if new_jobs:
+                            s.append_publish_jobs(new_jobs)
+                    else:
+                        # Still persist anchor/interval if we set them
+                        s._save_meta()
                 else:
                     s.set_publish_plan(jobs)
             except Exception as e:
@@ -1151,10 +1322,10 @@ class MultiSessionWindow(QMainWindow):
                 )
                 continue
 
-            if schedule_mode == "scheduled" and jobs:
-                schedule_cursor = schedule_cursor + timedelta(
-                    hours=len(jobs) * iv_hours
-                )
+            if schedule_mode == "scheduled" and platforms_eff:
+                # Only advance cursor for newly created sessions (videos),
+                # NOT per-platform. All platforms share the same slot for a session.
+                schedule_cursor = schedule_cursor + timedelta(hours=iv_hours)
 
             if not video:
                 continue
@@ -1199,6 +1370,32 @@ class MultiSessionWindow(QMainWindow):
                 t["session_label"],
             )
         )
+
+        new_last_max = (
+            max(prefs_max, batch_scheduled_max)
+            if schedule_mode == "scheduled"
+            else prefs_max
+        )
+        if limit_on:
+            new_cursor = cursor + len(slice_sessions)
+            if new_cursor >= len(sessions_chrono):
+                new_cursor = 0
+        else:
+            new_cursor = 0
+
+        save_workspace_publish_prefs(
+            self._base_dir,
+            {
+                "batch_cursor": new_cursor,
+                "last_max_scheduled_unix": new_last_max,
+                "limit_sessions_enabled": limit_on,
+                "limit_sessions_count": limit_n,
+                "scope_mode": scope_mode,
+                "schedule_mode": schedule_mode,
+                "interval_hours": iv_hours,
+            },
+        )
+        self._refresh_workspace_publish_stats()
 
         if not tasks:
             QMessageBox.information(
@@ -1288,6 +1485,7 @@ class MultiSessionWindow(QMainWindow):
         busy = pipeline is not None
         if hasattr(self, "_btn_publish"):
             self._btn_publish.setEnabled(not busy)
+        self._refresh_workspace_publish_stats()
 
     def _set_running(self, running: bool):
         self._btn_run_selected.setEnabled(not running)

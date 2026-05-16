@@ -55,6 +55,8 @@ class SessionListPanel(QWidget):
     session_added = pyqtSignal()
     # Emits when selected session checkboxes change
     selection_changed = pyqtSignal()
+    # After session list reload from disk (for workspace-wide aggregates)
+    sessions_refreshed = pyqtSignal()
     # Emitted after a session folder is removed from disk (workspace path)
     session_deleted = pyqtSignal(str)
 
@@ -234,6 +236,7 @@ class SessionListPanel(QWidget):
         self._apply_sort()
         self._rebuild_list(preserve_checked=True)
         self.selection_changed.emit()
+        self.sessions_refreshed.emit()
 
     def get_selected_sessions(self) -> list[dict]:
         result = []

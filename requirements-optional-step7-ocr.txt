@@ -9,6 +9,11 @@
 #
 # First run downloads OCR models (~tens of MB) under the user cache (often ~/.paddleocr/).
 
+# Note: PaddleOCR v3+ pulls PaddleX which currently drags native deps (e.g. python-bidi)
+# that may fail to build on Windows + Python 3.13 without MSVC build tools.
+# Use PaddleOCR v2.x to avoid that dependency chain.
 paddlepaddle
-paddleocr
+paddleocr==2.7.3
 numpy
+# PaddleOCR 2.7.x recommends OpenCV <= 4.6.0.66
+opencv-python<=4.6.0.66

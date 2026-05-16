@@ -142,3 +142,60 @@ def upload_video_simple(
         except Exception:
             data = {"raw": err[:2000], "status": e.code}
         raise RuntimeError(json.dumps(data, ensure_ascii=False)[:4000]) from None
+
+
+def set_thumbnail(
+    *,
+    access_token: str,
+    video_id: str,
+    thumbnail_path: str,
+    on_progress: Callable[[str], None] | None = None,
+    is_cancelled: Callable[[], bool] | None = None,
+) -> dict[str, Any]:
+    """
+    Call YouTube thumbnails.set (simple upload) to apply a custom thumbnail.
+    """
+    from pathlib import Path
+
+    def _p(msg: str) -> None:
+        if on_progress:
+            on_progress(msg)
+
+    def _abort() -> None:
+        if is_cancelled and is_cancelled():
+            raise PublishCancelled()
+
+    vid = (video_id or "").strip()
+    if not vid:
+        raise RuntimeError("Missing video_id for thumbnails.set")
+    p = Path(thumbnail_path)
+    if not p.is_file():
+        raise RuntimeError(f"Thumbnail not found: {p}")
+
+    _abort()
+    img = p.read_bytes()
+    _abort()
+    _p(f"YouTube: đang set thumbnail (~{len(img) // 1024} KB)…")
+
+    q = urllib.parse.urlencode({"uploadType": "media", "videoId": vid})
+    url = f"https://www.googleapis.com/upload/youtube/v3/thumbnails/set?{q}"
+    req = urllib.request.Request(
+        url,
+        data=img,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {access_token.strip()}",
+            "Content-Type": "application/octet-stream",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=600) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            return json.loads(raw)
+    except urllib.error.HTTPError as e:
+        err = e.read().decode("utf-8", errors="replace")
+        try:
+            data = json.loads(err)
+        except Exception:
+            data = {"raw": err[:2000], "status": e.code}
+        raise RuntimeError(json.dumps(data, ensure_ascii=False)[:4000]) from None

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from PyQt6.QtCore import QDateTime
 from PyQt6.QtWidgets import (
@@ -16,6 +17,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMessageBox,
+    QPushButton,
     QRadioButton,
     QSpinBox,
     QVBoxLayout,
@@ -26,6 +28,11 @@ from core.publish_profiles import (
     PLATFORM_ORDER,
     load_profiles,
     profile_platforms_ready,
+)
+from core.session_listing import published_at_epoch_seconds
+from core.workspace_publish_prefs import (
+    load_workspace_publish_prefs,
+    save_workspace_publish_prefs,
 )
 
 
@@ -44,10 +51,19 @@ class PublishPlatformsDialog(QDialog):
         self.setMinimumWidth(560)
         self.setStyleSheet(parent.styleSheet() if parent else "")
         self._profiles: list[dict] = []
+        self._wp_prefs_open = load_workspace_publish_prefs(self.base_dir)
+        self._sorted_sessions = sorted(
+            self._sessions,
+            key=lambda s: (
+                published_at_epoch_seconds(s.get("published_at")),
+                (Path(s["folder"]).name.lower() if s.get("folder") else ""),
+            ),
+        )
         self._setup_ui()
         self._reload_profiles_combo()
 
     def _setup_ui(self):
+        wp = self._wp_prefs_open
         root = QVBoxLayout(self)
         n = len(self._sessions)
         root.addWidget(
@@ -71,6 +87,7 @@ class PublishPlatformsDialog(QDialog):
         for pl in PLATFORM_ORDER:
             cb = QCheckBox(PLATFORM_LABELS.get(pl, pl))
             cb.setChecked(False)
+            cb.toggled.connect(self._clamp_fb_start_if_needed)
             self._chk[pl] = cb
             pv.addWidget(cb)
         root.addWidget(plat)
@@ -85,7 +102,9 @@ class PublishPlatformsDialog(QDialog):
             "Chỉ phần chưa thành công: với mỗi session, chỉ đăng lên nền tảng đã chọn "
             "mà chưa có job status «done» — giữ lịch sử publish_plan, thêm job mới."
         )
-        self._rad_scope_all.setChecked(True)
+        use_missing = str(wp.get("scope_mode") or "only_missing_success") != "all"
+        self._rad_scope_missing.setChecked(use_missing)
+        self._rad_scope_all.setChecked(not use_missing)
         sv.addWidget(self._rad_scope_all)
         sv.addWidget(self._rad_scope_missing)
         root.addWidget(scope)
@@ -96,22 +115,72 @@ class PublishPlatformsDialog(QDialog):
         self._chk_yt_not_kids.setChecked(True)
         root.addWidget(self._chk_yt_not_kids)
 
+        batch = QGroupBox("Tiếp tục theo lượt (workspace)")
+        bv = QVBoxLayout(batch)
+        self._chk_limit_batch = QCheckBox(
+            "Mỗi lần chỉ xử lý tối đa N session tiếp theo "
+            "(thứ tự published_at ↑ trong các session đã tick)"
+        )
+        self._chk_limit_batch.setChecked(bool(wp.get("limit_sessions_enabled", True)))
+        row_b = QHBoxLayout()
+        row_b.addWidget(self._chk_limit_batch)
+        row_b.addWidget(QLabel("N ="))
+        self._spin_limit_sessions = QSpinBox()
+        self._spin_limit_sessions.setRange(1, 500)
+        self._spin_limit_sessions.setValue(int(wp.get("limit_sessions_count") or 10))
+        row_b.addWidget(self._spin_limit_sessions)
+        self._btn_prev_page = QPushButton("← Trang trước")
+        self._btn_prev_page.clicked.connect(lambda: self._nudge_cursor(-1))
+        row_b.addWidget(self._btn_prev_page)
+        self._btn_next_page = QPushButton("Trang sau →")
+        self._btn_next_page.clicked.connect(lambda: self._nudge_cursor(+1))
+        row_b.addWidget(self._btn_next_page)
+        self._btn_reset_cursor = QPushButton("Đặt lại tiếp tục (từ đầu)")
+        self._btn_reset_cursor.setToolTip(
+            "Đưa cursor «tiếp tục N» về 0 — lần sau bắt đầu lại từ session đầu trong danh sách đã tick."
+        )
+        self._btn_reset_cursor.clicked.connect(self._on_reset_batch_cursor)
+        row_b.addWidget(self._btn_reset_cursor)
+        bv.addLayout(row_b)
+        self._lbl_batch_hint = QLabel("")
+        self._lbl_batch_hint.setWordWrap(True)
+        self._lbl_batch_hint.setStyleSheet("color:#888;font-size:11px;")
+        bv.addWidget(self._lbl_batch_hint)
+        self._chk_limit_batch.toggled.connect(self._refresh_batch_hint)
+        self._spin_limit_sessions.valueChanged.connect(self._refresh_batch_hint)
+        root.addWidget(batch)
+
         timing = QGroupBox("Thời điểm đăng")
         tv = QVBoxLayout(timing)
         self._rad_immediate = QRadioButton("Đăng ngay (tất cả platform cùng lúc)")
         self._rad_scheduled = QRadioButton("Lên lịch: từ thời điểm bắt đầu, mỗi platform cách nhau một khoảng")
-        self._rad_immediate.setChecked(True)
-        self._rad_immediate.toggled.connect(self._update_schedule_widgets)
-        self._rad_scheduled.toggled.connect(self._update_schedule_widgets)
+        sched_sel = str(wp.get("schedule_mode") or "scheduled") == "scheduled"
+        self._rad_scheduled.setChecked(sched_sel)
+        self._rad_immediate.setChecked(not sched_sel)
+
+        def _on_timing_toggle():
+            self._update_schedule_widgets()
+            self._clamp_fb_start_if_needed()
+
+        self._rad_immediate.toggled.connect(_on_timing_toggle)
+        self._rad_scheduled.toggled.connect(_on_timing_toggle)
         tv.addWidget(self._rad_immediate)
         tv.addWidget(self._rad_scheduled)
         form = QFormLayout()
-        self._dt_start = QDateTimeEdit(QDateTime.currentDateTime())
+        last_u = int(wp.get("last_max_scheduled_unix") or 0)
+        iv_open = max(1, min(168, int(wp.get("interval_hours") or 24)))
+        if last_u > 0:
+            start_hint = datetime.fromtimestamp(last_u) + timedelta(hours=iv_open)
+        else:
+            start_hint = datetime.now() + timedelta(minutes=15)
+        self._dt_start = QDateTimeEdit(
+            QDateTime.fromSecsSinceEpoch(int(start_hint.timestamp()))
+        )
         self._dt_start.setCalendarPopup(True)
         self._dt_start.setDisplayFormat("yyyy-MM-dd HH:mm")
         self._spin_interval = QSpinBox()
         self._spin_interval.setRange(1, 168)
-        self._spin_interval.setValue(4)
+        self._spin_interval.setValue(iv_open)
         self._spin_interval.setSuffix(" giờ")
         form.addRow("Bắt đầu:", self._dt_start)
         form.addRow("Khoảng cách:", self._spin_interval)
@@ -137,6 +206,72 @@ class PublishPlatformsDialog(QDialog):
         root.addWidget(btns)
 
         self._update_schedule_widgets()
+        self._clamp_fb_start_if_needed()
+        self._refresh_batch_hint()
+
+    def _clamp_fb_start_if_needed(self) -> None:
+        if not self._rad_scheduled.isChecked():
+            return
+        fb = self._chk.get("facebook")
+        if fb is None or not fb.isEnabled() or not fb.isChecked():
+            return
+        now = datetime.now()
+        min_fb = now + timedelta(minutes=11)
+        dt = self._dt_start.dateTime().toPyDateTime()
+        if dt < min_fb:
+            self._dt_start.setDateTime(
+                QDateTime.fromSecsSinceEpoch(int(min_fb.timestamp()))
+            )
+
+    def _refresh_batch_hint(self) -> None:
+        prefs = load_workspace_publish_prefs(self.base_dir)
+        cur = int(prefs.get("batch_cursor") or 0)
+        total = len(self._sorted_sessions)
+        if total == 0:
+            self._lbl_batch_hint.setText("")
+            return
+        if self._chk_limit_batch.isChecked():
+            n = int(self._spin_limit_sessions.value())
+            end = min(cur + n, total)
+            page = (cur // n) + 1
+            pages = max(1, (total + n - 1) // n)
+            self._btn_prev_page.setEnabled(page > 1)
+            self._btn_next_page.setEnabled(page < pages)
+            tail = ""
+            if cur >= total:
+                tail = (
+                    " Cursor đã vượt quá số session đã tick — lần chạy sẽ quay về đầu "
+                    "(hoặc báo hết danh sách)."
+                )
+            self._lbl_batch_hint.setText(
+                f"Trang {page}/{pages}: [{cur}:{end}] / {total} session đã tick (published_at ↑).{tail}"
+            )
+        else:
+            self._btn_prev_page.setEnabled(False)
+            self._btn_next_page.setEnabled(False)
+            self._lbl_batch_hint.setText(
+                f"Không giới hạn — xử lý cả {total} session đã tick (cursor không dùng)."
+            )
+
+    def _nudge_cursor(self, delta_pages: int) -> None:
+        if not self._chk_limit_batch.isChecked():
+            return
+        n = int(self._spin_limit_sessions.value())
+        prefs = load_workspace_publish_prefs(self.base_dir)
+        cur = int(prefs.get("batch_cursor") or 0)
+        cur2 = max(0, cur + int(delta_pages) * n)
+        save_workspace_publish_prefs(self.base_dir, {"batch_cursor": cur2})
+        self._refresh_batch_hint()
+
+    def _on_reset_batch_cursor(self) -> None:
+        save_workspace_publish_prefs(self.base_dir, {"batch_cursor": 0})
+        self._refresh_batch_hint()
+        QMessageBox.information(
+            self,
+            "Đã đặt lại",
+            "Cursor «tiếp tục N» đã về 0 — lần đăng sau bắt đầu lại từ session đầu "
+            "trong danh sách đã tick.",
+        )
 
     def _update_schedule_widgets(self):
         en = self._rad_scheduled.isChecked()
@@ -176,6 +311,12 @@ class PublishPlatformsDialog(QDialog):
                 cb.setToolTip("Thiếu thông tin trong profile → mở API Keys Manager → tab Publish profiles")
             else:
                 cb.setToolTip("")
+        for pl in ("facebook", "youtube"):
+            cb = self._chk.get(pl)
+            if cb and cb.isEnabled():
+                cb.setChecked(True)
+        self._clamp_fb_start_if_needed()
+        self._refresh_batch_hint()
 
     def _on_accept(self):
         if not self.base_dir.strip():
@@ -231,5 +372,7 @@ class PublishPlatformsDialog(QDialog):
             "youtube_made_for_kids": youtube_mfk,
             "sessions": list(self._sessions),
             "scope_mode": scope_mode,
+            "limit_sessions_enabled": self._chk_limit_batch.isChecked(),
+            "limit_sessions_count": int(self._spin_limit_sessions.value()),
         }
         self.accept()
