@@ -83,6 +83,15 @@ class SubtitleEditor(QWidget):
         self._mode = "default"
         self._dirty = False
         self._studio_dirty = False
+        self._autosave_pending = False
+        self._segment_apply_timer = QTimer(self)
+        self._segment_apply_timer.setSingleShot(True)
+        self._segment_apply_timer.setInterval(350)
+        self._segment_apply_timer.timeout.connect(self._apply_selected_segment)
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setSingleShot(True)
+        self._autosave_timer.setInterval(900)
+        self._autosave_timer.timeout.connect(self._autosave)
         self._setup_ui()
 
     def set_step3_bridge(self, step3):
@@ -438,14 +447,8 @@ class SubtitleEditor(QWidget):
         self._studio_seg_edit.setPlaceholderText(
             "Select a segment to edit translated text…"
         )
+        self._studio_seg_edit.textChanged.connect(self._on_studio_segment_text_changed)
         studio_right_v.addWidget(self._studio_seg_edit)
-
-        edit_row = QHBoxLayout()
-        self._btn_update_segment = QPushButton("Update segment")
-        self._btn_update_segment.clicked.connect(self._update_selected_segment)
-        edit_row.addWidget(self._btn_update_segment)
-        edit_row.addStretch()
-        studio_right_v.addLayout(edit_row)
 
         studio_split.addWidget(studio_right)
         studio_split.setStretchFactor(0, 2)
@@ -491,7 +494,7 @@ class SubtitleEditor(QWidget):
         trans_lbl = QLabel("Translated  (editable)")
         trans_lbl.setStyleSheet("color:#5dca8e;font-size:10px;font-weight:600;")
         trans_hdr.addWidget(trans_lbl)
-        hint = QLabel("Edit → lines  ·  Ctrl+S to save")
+        hint = QLabel("Auto-saves while editing  ·  Ctrl+S to save now")
         hint.setStyleSheet("color:#444;font-size:10px;")
         trans_hdr.addStretch()
         trans_hdr.addWidget(hint)
@@ -519,11 +522,22 @@ class SubtitleEditor(QWidget):
         if not self._dirty:
             self._dirty = True
             self._update_title()
+        self._schedule_autosave()
+
+    def _on_studio_segment_text_changed(self):
+        self._segment_apply_timer.start()
+
+    def _schedule_autosave(self):
+        if self._session is None:
+            return
+        self._autosave_pending = True
+        self._autosave_timer.start()
 
     def _on_studio_changed(self):
         if not self._studio_dirty:
             self._studio_dirty = True
             self._update_title()
+        self._schedule_autosave()
 
     def _set_mode(self, mode: str):
         new_mode = "studio" if mode == "studio" else "default"
@@ -810,6 +824,7 @@ class SubtitleEditor(QWidget):
         idx = self._find_segment_idx_at(sec)
         if idx == self._active_idx:
             return
+        self._flush_studio_segment_edit()
         self._active_idx = idx
         if idx < 0:
             self._studio_seg_edit.blockSignals(True)
@@ -835,6 +850,7 @@ class SubtitleEditor(QWidget):
         idx = item.data(Qt.ItemDataRole.UserRole)
         if idx is None or not (0 <= idx < len(self._segments)):
             return
+        self._flush_studio_segment_edit()
         self._active_idx = int(idx)
         seg = self._segments[self._active_idx]
         self._studio_seg_edit.setPlainText(seg.get("translated", ""))
@@ -842,20 +858,38 @@ class SubtitleEditor(QWidget):
         if not self._has_realtime_player:
             self._render_studio_preview(force=True)
 
-    def _update_selected_segment(self):
+    def _flush_studio_segment_edit(self):
+        if self._segment_apply_timer.isActive():
+            self._segment_apply_timer.stop()
+            self._apply_selected_segment()
+
+    def _apply_selected_segment(self):
         if self._active_idx < 0 or self._active_idx >= len(self._segments):
-            QMessageBox.information(self, "No segment", "Select a segment first.")
             return
-        self._segments[self._active_idx][
-            "translated"
-        ] = self._studio_seg_edit.toPlainText().strip()
+        new_text = self._studio_seg_edit.toPlainText().strip()
+        if self._segments[self._active_idx].get("translated", "") == new_text:
+            return
+        self._segments[self._active_idx]["translated"] = new_text
         self._dirty = True
         self._reload_studio_segments()
+        item = self._studio_segment_list.item(self._active_idx)
+        if item:
+            self._studio_segment_list.blockSignals(True)
+            self._studio_segment_list.setCurrentItem(item)
+            self._studio_segment_list.blockSignals(False)
         self._trans_edit.blockSignals(True)
         self._trans_edit.setPlainText(self._segments_to_text())
         self._trans_edit.blockSignals(False)
         self._update_title()
+        self._update_live_overlay()
         self._render_studio_preview(force=True)
+        self._schedule_autosave()
+
+    def _update_selected_segment(self):
+        if self._active_idx < 0 or self._active_idx >= len(self._segments):
+            QMessageBox.information(self, "No segment", "Select a segment first.")
+            return
+        self._apply_selected_segment()
 
     def _render_studio_preview(self, force: bool = False):
         if self._has_realtime_player:
@@ -1005,10 +1039,22 @@ class SubtitleEditor(QWidget):
         else:
             self._dirty_lbl.setText("")
 
-    def _save(self):
-        if self._session is None:
-            QMessageBox.warning(self, "No session", "Load a session first.")
+    def _autosave(self):
+        if self._session is None or not self._autosave_pending:
             return
+        if not self._dirty and not self._studio_dirty:
+            self._autosave_pending = False
+            return
+        self._save(silent=True)
+
+    def _save(self, silent: bool = False):
+        if self._session is None:
+            if not silent:
+                QMessageBox.warning(self, "No session", "Load a session first.")
+            return
+
+        if self._mode == "studio":
+            self._flush_studio_segment_edit()
 
         text = self._trans_edit.toPlainText()
         if self._mode == "studio" and self._segments:
@@ -1019,15 +1065,16 @@ class SubtitleEditor(QWidget):
         segments = parse_translated_panel_text(text)
 
         if not segments:
-            QMessageBox.warning(
-                self,
-                "Parse error",
-                "Could not parse subtitle blocks.\n\n"
-                "Make sure each block has the format:\n"
-                "[start–end]\n"
-                "  original\n"
-                "  → translated",
-            )
+            if not silent:
+                QMessageBox.warning(
+                    self,
+                    "Parse error",
+                    "Could not parse subtitle blocks.\n\n"
+                    "Make sure each block has the format:\n"
+                    "[start–end]\n"
+                    "  original\n"
+                    "  → translated",
+                )
             return
 
         # Write JSON
@@ -1048,14 +1095,19 @@ class SubtitleEditor(QWidget):
             if hasattr(self._session, "save_subtitle_studio"):
                 self._session.save_subtitle_studio(payload)
         except Exception as e:
-            QMessageBox.critical(self, "Save failed", f"Could not write files:\n{e}")
+            if not silent:
+                QMessageBox.critical(self, "Save failed", f"Could not write files:\n{e}")
             return
 
         self._dirty = False
         self._studio_dirty = False
+        self._autosave_pending = False
         self._segments = segments
         self._reload_studio_segments()
         self._apply_studio_to_step3()
         self._update_title()
-        self._dirty_lbl.setText(f"✅ Saved {len(segments)} segments")
+        if silent:
+            self._dirty_lbl.setText(f"✅ Auto-saved {len(segments)} segments")
+        else:
+            self._dirty_lbl.setText(f"✅ Saved {len(segments)} segments")
         self.saved.emit(str(self._session.folder))
